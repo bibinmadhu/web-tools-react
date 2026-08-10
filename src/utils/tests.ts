@@ -182,6 +182,24 @@ public class AppRunner {
     assertTrue(res.obfuscatedCode.includes('public static void main('), 'main() method signature should be preserved');
   });
 
+  test('Java Code Obfuscator', 'Obfuscates class names used in field types and variable declarations', () => {
+    const javaCode = `package com.acme.financial.controller;
+import com.acme.financial.service.PaymentService;
+public class PaymentController {
+    private PaymentService paymentService;
+}`;
+
+    const res = obfuscateJavaCode(javaCode, {
+      obfuscateClasses: true,
+      obfuscateVariables: true,
+    });
+
+    assertTrue(!res.obfuscatedCode.includes('PaymentService'), 'Field class type PaymentService should be obfuscated');
+    assertTrue(!res.obfuscatedCode.includes('paymentService'), 'Field variable paymentService should be obfuscated');
+    assertTrue(Boolean(res.mapping.classes['PaymentService']), 'PaymentService mapping should exist in classes');
+    assertTrue(Boolean(res.mapping.variables['paymentService']), 'paymentService mapping should exist in variables');
+  });
+
   test('Java Code Obfuscator & De-Obfuscator', 'Round-trip obfuscation and de-obfuscation', () => {
     const sampleCode = `package com.acme.service;
 public class OrderService {

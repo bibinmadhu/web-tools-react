@@ -61,11 +61,33 @@ export const DEFAULT_JAVA_KEYWORDS = new Set([
   'new', 'package', 'private', 'protected', 'public', 'return', 'short', 'static', 'strictfp',
   'super', 'switch', 'synchronized', 'this', 'throw', 'throws', 'transient', 'try', 'void',
   'volatile', 'while', 'record', 'sealed', 'non-sealed', 'permits', 'var', 'yield', 'true',
-  'false', 'null', 'String', 'Object', 'Integer', 'Long', 'Boolean', 'Double', 'Float', 'Byte',
-  'Short', 'Character', 'List', 'ArrayList', 'Map', 'HashMap', 'Set', 'HashSet', 'Collection',
-  'Arrays', 'Collections', 'Optional', 'Stream', 'System', 'Math', 'Exception', 'RuntimeException',
-  'Throwable', 'Override', 'Deprecated', 'SuppressWarnings', 'main', 'args', 'toString', 'equals',
-  'hashCode', 'clone', 'getClass', 'notify', 'notifyAll', 'wait'
+  'false', 'null',
+  // Java Standard Types
+  'String', 'Object', 'Integer', 'Long', 'Boolean', 'Double', 'Float', 'Byte', 'Short', 'Character', 'Number', 'Void',
+  'List', 'ArrayList', 'LinkedList', 'Map', 'HashMap', 'TreeMap', 'Set', 'HashSet', 'TreeSet', 'Collection', 'Collections', 'Arrays', 'Vector', 'Stack',
+  'Optional', 'Stream', 'Collectors', 'Collector', 'Iterator', 'Iterable',
+  'System', 'Math', 'Thread', 'Runnable', 'Callable', 'Future', 'CompletableFuture', 'Executor', 'Executors',
+  'Exception', 'RuntimeException', 'Throwable', 'Error', 'IllegalArgumentException', 'IllegalStateException', 'NullPointerException', 'IndexOutOfBoundsException', 'IOException',
+  'Override', 'Deprecated', 'SuppressWarnings', 'FunctionalInterface', 'SafeVarargs',
+  'Date', 'Calendar', 'TimeZone', 'Instant', 'Duration', 'LocalDate', 'LocalDateTime', 'ZonedDateTime', 'LocalTime', 'DateTimeFormatter',
+  'UUID', 'BigInteger', 'BigDecimal', 'Base64',
+  'InputStream', 'OutputStream', 'FileInputStream', 'FileOutputStream', 'BufferedReader', 'BufferedWriter', 'File', 'Path', 'Paths', 'Files', 'StringBuilder', 'StringBuffer',
+  'Logger', 'LoggerFactory', 'Log',
+  // Spring Framework Annotations & Types
+  'RestController', 'Controller', 'Service', 'Component', 'Repository', 'Bean', 'Configuration', 'Autowired', 'Qualifier', 'Value',
+  'RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping', 'PathVariable', 'RequestParam', 'RequestBody', 'ResponseBody', 'RequestHeader',
+  'SpringBootApplication', 'EnableAutoConfiguration', 'ComponentScan', 'SpringBootTest',
+  'Valid', 'NotNull', 'NotBlank', 'NotEmpty', 'Size', 'Min', 'Max',
+  'ResponseEntity', 'HttpStatus', 'HttpHeaders',
+  // JPA / Jakarta / Hibernate
+  'Entity', 'Table', 'Id', 'GeneratedValue', 'Column', 'Transient', 'ManyToOne', 'OneToMany', 'ManyToMany', 'JoinColumn', 'Embedded', 'Embeddable',
+  // Jackson / Gson / Lombok
+  'JsonProperty', 'JsonIgnore', 'JsonInclude', 'Getter', 'Setter', 'NoArgsConstructor', 'AllArgsConstructor', 'RequiredArgsConstructor', 'Builder', 'Data', 'EqualsAndHashCode', 'ToString', 'Slf4j',
+  // Android
+  'Bundle', 'AppCompatActivity', 'Activity', 'Fragment', 'Context', 'Intent', 'View', 'TextView', 'Button', 'ImageView', 'Toast', 'SavedState', 'Lifecycle', 'ViewModel',
+  // JUnit / Testing
+  'Test', 'BeforeEach', 'AfterEach', 'BeforeAll', 'AfterAll', 'DisplayName', 'Nested', 'Disabled', 'ExtendWith', 'Mock', 'InjectMocks', 'Mockito', 'Assert', 'Assertions',
+  'main', 'args', 'toString', 'equals', 'hashCode', 'clone', 'getClass', 'notify', 'notifyAll', 'wait'
 ]);
 
 // Helper to generate obfuscated names
@@ -199,8 +221,9 @@ export function obfuscateJavaCode(
     });
   }
 
-  // 3. Class/Interface/Enum/Record Obfuscation
+  // 3. Class/Interface/Enum/Record & Referenced Custom Types Obfuscation
   if (opts.obfuscateClasses) {
+    // 3a. Declared classes/interfaces/enums/records
     const classRegex = /\b(class|interface|enum|record)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
     let match: RegExpExecArray | null;
     while ((match = classRegex.exec(code)) !== null) {
@@ -210,6 +233,46 @@ export function obfuscateJavaCode(
         mapping.classes[className] = newClass;
         mapping.reverseMapping[newClass] = className;
       }
+    }
+
+    // 3b. Single imports: import com.acme.service.PaymentService;
+    const importRegex = /\bimport\s+([\w.]+)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*;/g;
+    while ((match = importRegex.exec(code)) !== null) {
+      const pkgPath = match[1] + '.';
+      const className = match[2];
+
+      const isExcludedPkg = opts.excludedPackages.some((p) => pkgPath.startsWith(p));
+      if (!isExcludedPkg && !exclusionSet.has(className) && !mapping.classes[className]) {
+        const newClass = generateName(classCount++, 'class', opts.namingStyle, opts.customClassPrefix);
+        mapping.classes[className] = newClass;
+        mapping.reverseMapping[newClass] = className;
+      }
+    }
+
+    // 3c. Scan for referenced custom class names in fields, return types, parameters, generics & instantiations
+    const customTypeRegex = /\b([A-Z][A-Za-z0-9_$]*)\b/g;
+    while ((match = customTypeRegex.exec(code)) !== null) {
+      const className = match[1];
+
+      if (exclusionSet.has(className) || mapping.classes[className]) continue;
+
+      // Check if preceded by @ (annotation)
+      const prevCharIndex = match.index - 1;
+      let isAnnotation = false;
+      for (let i = prevCharIndex; i >= 0; i--) {
+        const ch = code[i];
+        if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') continue;
+        if (ch === '@') {
+          isAnnotation = true;
+        }
+        break;
+      }
+
+      if (isAnnotation) continue;
+
+      const newClass = generateName(classCount++, 'class', opts.namingStyle, opts.customClassPrefix);
+      mapping.classes[className] = newClass;
+      mapping.reverseMapping[newClass] = className;
     }
   }
 
@@ -267,30 +330,38 @@ export function obfuscateJavaCode(
   }
 
   // 6. Apply Replacements to Code
-  // Replace Classes first
-  Object.entries(mapping.classes).forEach(([orig, obfuscated]) => {
-    const regex = new RegExp(`\\b${orig}\\b`, 'g');
-    code = code.replace(regex, obfuscated);
-  });
-
-  // Replace Methods
-  Object.entries(mapping.methods).forEach(([orig, obfuscated]) => {
-    const regex = new RegExp(`\\b${orig}\\b`, 'g');
-    code = code.replace(regex, obfuscated);
-  });
-
-  // Replace Variables
-  Object.entries(mapping.variables).forEach(([orig, obfuscated]) => {
-    const regex = new RegExp(`\\b${orig}\\b`, 'g');
-    code = code.replace(regex, obfuscated);
-  });
-
-  // Replace Packages inside imports/qualified names
-  if (opts.obfuscatePackages) {
-    Object.entries(mapping.packages).forEach(([orig, obfuscated]) => {
+  // Replace Classes first (longer names first)
+  Object.entries(mapping.classes)
+    .sort((a, b) => b[0].length - a[0].length)
+    .forEach(([orig, obfuscated]) => {
       const regex = new RegExp(`\\b${orig}\\b`, 'g');
       code = code.replace(regex, obfuscated);
     });
+
+  // Replace Methods
+  Object.entries(mapping.methods)
+    .sort((a, b) => b[0].length - a[0].length)
+    .forEach(([orig, obfuscated]) => {
+      const regex = new RegExp(`\\b${orig}\\b`, 'g');
+      code = code.replace(regex, obfuscated);
+    });
+
+  // Replace Variables
+  Object.entries(mapping.variables)
+    .sort((a, b) => b[0].length - a[0].length)
+    .forEach(([orig, obfuscated]) => {
+      const regex = new RegExp(`\\b${orig}\\b`, 'g');
+      code = code.replace(regex, obfuscated);
+    });
+
+  // Replace Packages inside imports/qualified names
+  if (opts.obfuscatePackages) {
+    Object.entries(mapping.packages)
+      .sort((a, b) => b[0].length - a[0].length)
+      .forEach(([orig, obfuscated]) => {
+        const regex = new RegExp(`\\b${orig}\\b`, 'g');
+        code = code.replace(regex, obfuscated);
+      });
   }
 
   // 7. Unmask / Encrypt String Literals
