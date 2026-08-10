@@ -103,14 +103,16 @@ function generateName(
   }
 
   if (style === 'hexadecimal') {
-    return `_0x${(idx + 1).toString(16)}`;
+    const pfx = category === 'class' ? '_0xC' : category === 'method' ? '_0xm' : category === 'package' ? '_0xp' : '_0xv';
+    return `${pfx}${(idx + 1).toString(16)}`;
   }
 
   if (style === 'numeric') {
-    return `v${idx + 1}`;
+    const pfx = category === 'class' ? 'C' : category === 'method' ? 'm' : category === 'package' ? 'pkg' : 'v';
+    return `${pfx}${idx + 1}`;
   }
 
-  // Default: Alphabetical (A, B, C... for classes; a, b, c... for vars/methods)
+  // Default: Alphabetical
   if (category === 'class') {
     let name = '';
     let n = idx;
@@ -119,7 +121,15 @@ function generateName(
       n = Math.floor(n / 26) - 1;
     }
     return name;
-  } else {
+  } else if (category === 'package') {
+    let name = '';
+    let n = idx;
+    while (n >= 0) {
+      name = String.fromCharCode(97 + (n % 26)) + name;
+      n = Math.floor(n / 26) - 1;
+    }
+    return `pkg_${name}`;
+  } else if (category === 'method') {
     let name = '';
     let n = idx;
     while (n >= 0) {
@@ -127,6 +137,15 @@ function generateName(
       n = Math.floor(n / 26) - 1;
     }
     return name;
+  } else {
+    // variable
+    let name = '';
+    let n = idx;
+    while (n >= 0) {
+      name = String.fromCharCode(97 + (n % 26)) + name;
+      n = Math.floor(n / 26) - 1;
+    }
+    return `v_${name}`;
   }
 }
 
@@ -433,8 +452,9 @@ export function deobfuscateJavaCode(
 
   keys.forEach((obfKey) => {
     const origValue = reverseMap[obfKey];
-    if (origValue) {
-      const regex = new RegExp(`\\b${obfKey}\\b`, 'g');
+    if (origValue && obfKey) {
+      const escapedKey = obfKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`\\b${escapedKey}\\b`, 'g');
       code = code.replace(regex, origValue);
     }
   });
