@@ -13,6 +13,7 @@ import { UrlEncoderTool } from './tools/UrlEncoderTool';
 import { CronParserTool } from './tools/CronParserTool';
 import { MarkdownPreviewTool } from './tools/MarkdownPreviewTool';
 import { CodeFormatterTool } from './tools/CodeFormatterTool';
+import { JavaObfuscatorTool } from './tools/JavaObfuscatorTool';
 import { GenericTool } from './tools/GenericTool';
 
 interface ToolModalProps {
@@ -36,6 +37,8 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return <JsonBeautifierTool />;
       case 'code-obfuscator':
         return <CodeObfuscatorTool />;
+      case 'java-obfuscator':
+        return <JavaObfuscatorTool />;
       case 'base64-encoder':
         return <Base64Tool />;
       case 'regex-tester':

@@ -9,6 +9,7 @@ import {
   generateUuid,
   parseCron,
 } from './toolFunctions';
+import { obfuscateJavaCode, deobfuscateJavaCode } from './javaObfuscator';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export function runAllUnitTests(): TestSuiteSummary {
@@ -141,6 +142,60 @@ export function runAllUnitTests(): TestSuiteSummary {
     assertEqual(parseCron('* * * * *'), 'Every minute');
     assertEqual(parseCron('0 0 * * *'), 'Every day at midnight (00:00)');
     assertEqual(parseCron('*/15 * * * *'), 'Every 15 minutes');
+  });
+
+  // --- Suite 9: Java Code Obfuscator & De-Obfuscator ---
+  test('Java Code Obfuscator', 'Obfuscates class, method, variable & custom package names', () => {
+    const javaCode = `package com.acme.financial.service;
+import java.util.List;
+public class PaymentProcessor {
+    private double totalAmount;
+    public void executePayment(double amount) {
+        this.totalAmount = amount * 1.05;
+    }
+}`;
+
+    const res = obfuscateJavaCode(javaCode, {
+      namingStyle: 'alphabetical',
+      obfuscateClasses: true,
+      obfuscateMethods: true,
+      obfuscateVariables: true,
+      obfuscatePackages: true,
+      preserveGettersSetters: false,
+    });
+
+    assertTrue(!res.obfuscatedCode.includes('PaymentProcessor'), 'Class name should be obfuscated');
+    assertTrue(!res.obfuscatedCode.includes('executePayment'), 'Method name should be obfuscated');
+    assertTrue(res.obfuscatedCode.includes('import java.util.List;'), 'Framework import java.util.List should be preserved');
+    assertTrue(res.stats.classesRenamed > 0, 'Class renamed stat should be > 0');
+  });
+
+  test('Java Code Obfuscator', 'Preserves main() entry point & framework annotations', () => {
+    const javaCode = `package com.example.app;
+public class AppRunner {
+    public static void main(String[] args) {
+        System.out.println("Started");
+    }
+}`;
+
+    const res = obfuscateJavaCode(javaCode, { preserveMain: true });
+    assertTrue(res.obfuscatedCode.includes('public static void main('), 'main() method signature should be preserved');
+  });
+
+  test('Java Code Obfuscator & De-Obfuscator', 'Round-trip obfuscation and de-obfuscation', () => {
+    const sampleCode = `package com.acme.service;
+public class OrderService {
+    public void processOrder(String orderId) {
+        System.out.println("Processing " + orderId);
+    }
+}`;
+
+    const obfRes = obfuscateJavaCode(sampleCode);
+    const restoredCode = deobfuscateJavaCode(obfRes.obfuscatedCode, obfRes.mapping);
+
+    assertTrue(restoredCode.includes('OrderService'), 'De-obfuscation should restore original Class name');
+    assertTrue(restoredCode.includes('processOrder'), 'De-obfuscation should restore original Method name');
+    assertTrue(restoredCode.includes('com.acme.service'), 'De-obfuscation should restore original package name');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

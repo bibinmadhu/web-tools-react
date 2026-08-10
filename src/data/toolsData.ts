@@ -22,6 +22,16 @@ export const TOOLS_DATA: DevTool[] = [
     isPopular: true,
   },
   {
+    id: 'java-obfuscator',
+    name: 'Java Code Obfuscator',
+    description: 'Obfuscate & de-obfuscate Java packages, classes, methods & fields',
+    category: 'security',
+    tags: ['Java', 'Security', 'Obfuscator', 'Deobfuscate'],
+    iconText: '☕',
+    iconType: 'shield',
+    isPopular: true,
+  },
+  {
     id: 'code-formatter',
     name: 'Code Format',
     description: 'Beautify JS, HTML & CSS',
