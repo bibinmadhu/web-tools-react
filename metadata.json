@@ -1,0 +1,6 @@
+{
+  "name": "DevHub - Developer Utilities Platform",
+  "description": "A comprehensive developer tool suite featuring formatters, converters, security utilities, generators, regex testers, and code obfuscators with dark mode and search.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
