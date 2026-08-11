@@ -41,6 +41,16 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'code',
   },
   {
+    id: 'java-formatter',
+    name: 'Java Code Formatter',
+    description: 'Beautify Java with custom indentation, braces, imports & modifiers',
+    category: 'formatters',
+    tags: ['Java', 'Formatter', 'Code', 'Beautify', 'Clean'],
+    iconText: '☕',
+    iconType: 'code',
+    isPopular: true,
+  },
+  {
     id: 'converter-platform',
     name: 'Converter Platform',
     description: 'Data & units converter',

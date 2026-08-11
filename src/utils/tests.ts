@@ -12,6 +12,7 @@ import {
 import { obfuscateJavaCode, deobfuscateJavaCode } from './javaObfuscator';
 import { createSamplePdf, getPdfMetadata, signPdfDocument } from './pdfSigner';
 import { convertPdfDocument, extractPdfContent } from './pdfConverter';
+import { formatJavaCode, sampleUnformattedJavaCode } from './javaFormatter';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -306,6 +307,53 @@ public class OrderService {
 
     const epubRes = await convertPdfDocument({ pdfBuffer: pdfBytes, targetFormat: 'epub', title: 'Test' });
     assertTrue(epubRes.blob.size > 200, 'EPUB zip blob should have valid size');
+  });
+
+  // --- Suite 12: Java Code Formatter ---
+  test('Java Formatter', 'Formats raw Java code with Google Java Style', () => {
+    const formatted = formatJavaCode(sampleUnformattedJavaCode, {
+      indentType: 'spaces',
+      indentSize: 2,
+      braceStyle: 'same-line',
+      sortImports: true,
+      groupImports: true,
+      removeDuplicateImports: true,
+      spaceBeforeControlParentheses: true,
+      spaceAroundOperators: true,
+      spaceInsideParentheses: false,
+      maxConsecutiveBlankLines: 1,
+      blankLinesBetweenMethods: 1,
+      normalizeModifiers: true,
+      alignSingleLineComments: false,
+      trimTrailingWhitespace: true,
+      ensureFinalNewline: true,
+    });
+
+    assertTrue(formatted.includes('  public UserService'), 'Indentation should use 2 spaces');
+    assertTrue(formatted.includes('public static final User findUserById'), 'Modifiers should be normalized');
+    assertTrue(!formatted.includes('import java.util.List; // duplicate'), 'Duplicate imports should be removed');
+  });
+
+  test('Java Formatter', 'Formats Java code with Allman (next-line) brace style', () => {
+    const formatted = formatJavaCode(sampleUnformattedJavaCode, {
+      indentType: 'spaces',
+      indentSize: 4,
+      braceStyle: 'next-line',
+      sortImports: true,
+      groupImports: false,
+      removeDuplicateImports: true,
+      spaceBeforeControlParentheses: true,
+      spaceAroundOperators: true,
+      spaceInsideParentheses: false,
+      maxConsecutiveBlankLines: 1,
+      blankLinesBetweenMethods: 1,
+      normalizeModifiers: true,
+      alignSingleLineComments: false,
+      trimTrailingWhitespace: true,
+      ensureFinalNewline: true,
+    });
+
+    assertTrue(formatted.includes('{\n'), 'Braces should be placed on separate lines in Allman style');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
