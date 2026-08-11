@@ -1,4 +1,4 @@
-export type ToolCategory = 'favorites' | 'converters' | 'formatters' | 'security' | 'generators' | 'network' | 'all';
+export type ToolCategory = 'favorites' | 'converters' | 'formatters' | 'security' | 'generators' | 'network' | 'documents' | 'all';
 
 export interface DevTool {
   id: string;
@@ -8,7 +8,7 @@ export interface DevTool {
   tags: string[];
   iconText: string;
   iconBgClass?: string;
-  iconType: 'json' | 'shield' | 'code' | 'dice' | 'terminal' | 'base64' | 'regex' | 'key' | 'color' | 'hash' | 'globe' | 'markdown' | 'clock';
+  iconType: 'json' | 'shield' | 'code' | 'dice' | 'terminal' | 'base64' | 'regex' | 'key' | 'color' | 'hash' | 'globe' | 'markdown' | 'clock' | 'pdf';
   isPopular?: boolean;
 }
 

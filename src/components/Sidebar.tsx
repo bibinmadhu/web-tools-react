@@ -1,5 +1,5 @@
 import React from 'react';
-import { Star, RefreshCw, Paintbrush, ShieldCheck, Box, Globe, LayoutGrid } from 'lucide-react';
+import { Star, RefreshCw, Paintbrush, ShieldCheck, Box, Globe, FileText, LayoutGrid } from 'lucide-react';
 import { ToolCategory } from '../types';
 
 interface SidebarProps {
@@ -48,6 +48,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'network',
       label: 'Network',
       icon: <Globe className="w-4 h-4" />,
+    },
+    {
+      id: 'documents',
+      label: 'Documents',
+      icon: <FileText className="w-4 h-4" />,
     },
     {
       id: 'all',

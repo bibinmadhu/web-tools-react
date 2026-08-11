@@ -10,11 +10,33 @@ import {
   parseCron,
 } from './toolFunctions';
 import { obfuscateJavaCode, deobfuscateJavaCode } from './javaObfuscator';
+import { createSamplePdf, getPdfMetadata, signPdfDocument } from './pdfSigner';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
-export function runAllUnitTests(): TestSuiteSummary {
+export async function runAllUnitTests(): Promise<TestSuiteSummary> {
   const results: UnitTestResult[] = [];
   const startTime = performance.now();
+
+  async function testAsync(suiteName: string, testName: string, fn: () => Promise<void> | void) {
+    const start = performance.now();
+    try {
+      await fn();
+      results.push({
+        suiteName,
+        testName,
+        status: 'passed',
+        durationMs: Math.round((performance.now() - start) * 100) / 100,
+      });
+    } catch (err: any) {
+      results.push({
+        suiteName,
+        testName,
+        status: 'failed',
+        durationMs: Math.round((performance.now() - start) * 100) / 100,
+        error: err?.message || String(err),
+      });
+    }
+  }
 
   function test(suiteName: string, testName: string, fn: () => void) {
     const start = performance.now();
@@ -214,6 +236,37 @@ public class OrderService {
     assertTrue(restoredCode.includes('OrderService'), 'De-obfuscation should restore original Class name');
     assertTrue(restoredCode.includes('processOrder'), 'De-obfuscation should restore original Method name');
     assertTrue(restoredCode.includes('com.acme.service'), 'De-obfuscation should restore original package name');
+  });
+
+  // --- Suite 10: PDF Signer & Annotator ---
+  await testAsync('PDF Signer', 'Generates sample PDF & parses page metadata', async () => {
+    const pdfBytes = await createSamplePdf();
+    assertTrue(pdfBytes.length > 100, 'Sample PDF should generate valid bytes');
+
+    const meta = await getPdfMetadata(pdfBytes);
+    assertEqual(meta.pageCount, 2, 'Sample PDF should have 2 pages');
+    assertTrue(meta.pagesDimensions[0].width > 0, 'Page width should be positive');
+  });
+
+  await testAsync('PDF Signer', 'Embeds signature image and metadata onto PDF', async () => {
+    const pdfBytes = await createSamplePdf();
+
+    // 1x1 transparent PNG data url
+    const dummyPng =
+      'data:image/png;base64,iVBORw0KGgoAAAANSU5ErkJggg==';
+
+    const signedBytes = await signPdfDocument({
+      pdfBuffer: pdfBytes,
+      signatureDataUrl: dummyPng,
+      pagesToSign: 'first',
+      position: 'bottom-right',
+      printedName: 'Alex Morgan',
+      signDate: '2026-08-11',
+      signReason: 'Approved',
+      showBorder: true,
+    });
+
+    assertTrue(signedBytes.length > pdfBytes.length, 'Signed PDF byte length should increase after embedding signature & metadata');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

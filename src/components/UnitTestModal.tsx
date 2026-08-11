@@ -12,13 +12,16 @@ export const UnitTestModal: React.FC<UnitTestModalProps> = ({ isOpen, onClose })
   const [testSummary, setTestSummary] = useState<TestSuiteSummary | null>(null);
   const [isRunning, setIsRunning] = useState(false);
 
-  const executeTests = () => {
+  const executeTests = async () => {
     setIsRunning(true);
-    setTimeout(() => {
-      const summary = runAllUnitTests();
+    try {
+      const summary = await runAllUnitTests();
       setTestSummary(summary);
+    } catch (err) {
+      console.error(err);
+    } finally {
       setIsRunning(false);
-    }, 250);
+    }
   };
 
   useEffect(() => {

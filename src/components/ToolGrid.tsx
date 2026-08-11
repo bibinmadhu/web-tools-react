@@ -27,6 +27,7 @@ export const ToolGrid: React.FC<ToolGridProps> = ({
     security: 'SECURITY & ENCRYPTION',
     generators: 'GENERATORS & UTILITIES',
     network: 'NETWORK & WEB TOOLS',
+    documents: 'DOCUMENTS & PDF UTILITIES',
     all: 'ALL DEVELOPER TOOLS',
   };
 

@@ -141,4 +141,14 @@ export const TOOLS_DATA: DevTool[] = [
     iconText: '⏱️',
     iconType: 'clock',
   },
+  {
+    id: 'pdf-signer',
+    name: 'PDF Signer & Annotator',
+    description: 'Upload PDF, draw or type signature, configure placement & download signed document',
+    category: 'documents',
+    tags: ['PDF', 'Signature', 'Document', 'Sign', 'PDF Editor'],
+    iconText: 'PDF',
+    iconType: 'pdf',
+    isPopular: true,
+  },
 ];
