@@ -95,8 +95,10 @@ export const JavaObfuscatorTool: React.FC = () => {
   };
 
   useEffect(() => {
-    handleRunObfuscation();
-  }, [sourceCode, options]);
+    if (mode === 'obfuscate') {
+      handleRunObfuscation();
+    }
+  }, [sourceCode, options, mode]);
 
   // Execute De-obfuscation
   const handleRunDeobfuscation = () => {
@@ -115,6 +117,12 @@ export const JavaObfuscatorTool: React.FC = () => {
       setDeobfuscatedCode('// Error during de-obfuscation: Check mapping JSON format');
     }
   };
+
+  useEffect(() => {
+    if (mode === 'deobfuscate') {
+      handleRunDeobfuscation();
+    }
+  }, [sourceCode, mappingJsonInput, mode]);
 
   // Preset Selection
   const handleSelectPreset = (preset: JavaPreset) => {

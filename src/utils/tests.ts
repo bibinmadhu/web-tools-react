@@ -240,6 +240,25 @@ public class OrderService {
     assertTrue(restoredCode.includes('com.acme.service'), 'De-obfuscation should restore original package name');
   });
 
+  test('Java Code Obfuscator & De-Obfuscator', 'De-obfuscates stack traces and supports flat dictionary mappings', () => {
+    const stackTrace = `java.lang.NullPointerException: Cannot invoke paymentService because it is null
+    at com.a.a.A.a(A.java:24)
+    at com.a.b.B.main(B.java:15)`;
+
+    const flatMapping = {
+      'com.a.a': 'com.acme.financial.controller',
+      'com.a.b': 'com.acme.financial.service',
+      'A': 'PaymentController',
+      'B': 'PaymentService',
+      'a': 'executePayment',
+    };
+
+    const deobfuscated = deobfuscateJavaCode(stackTrace, flatMapping);
+
+    assertTrue(deobfuscated.includes('com.acme.financial.controller.PaymentController.executePayment(PaymentController.java:24)'), 'Stack trace should be de-obfuscated accurately');
+    assertTrue(deobfuscated.includes('com.acme.financial.service.PaymentService.main(PaymentService.java:15)'), 'Package and class in stack trace should be restored');
+  });
+
   // --- Suite 10: PDF Signer & Annotator ---
   await testAsync('PDF Signer', 'Generates sample PDF & parses page metadata', async () => {
     const pdfBytes = await createSamplePdf();

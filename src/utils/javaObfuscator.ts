@@ -418,46 +418,90 @@ export function deobfuscateJavaCode(
 ): string {
   if (!inputCode.trim()) return '';
 
-  let reverseMap: Record<string, string> = {};
+  const reverseMap: Record<string, string> = {};
 
-  if ('reverseMapping' in mapping && mapping.reverseMapping) {
-    reverseMap = mapping.reverseMapping as Record<string, string>;
-  } else {
-    // Build reverse mapping from dictionary if flat or nested
-    const flatMap = mapping as any;
-    if (flatMap.classes || flatMap.variables || flatMap.methods || flatMap.packages) {
-      const allMaps = [
-        flatMap.classes || {},
-        flatMap.variables || {},
-        flatMap.methods || {},
-        flatMap.packages || {},
-      ];
-      allMaps.forEach((map) => {
-        Object.entries(map).forEach(([orig, obf]) => {
-          reverseMap[obf as string] = orig;
-        });
-      });
-    } else {
-      // It's a simple key-value where key is obfuscated or original
-      Object.entries(flatMap).forEach(([k, v]) => {
-        reverseMap[k] = v as string;
+  if (mapping && typeof mapping === 'object') {
+    // 1a. If mapping has reverseMapping with entries, use obf -> orig
+    if ('reverseMapping' in mapping && mapping.reverseMapping && typeof mapping.reverseMapping === 'object') {
+      Object.entries(mapping.reverseMapping).forEach(([obf, orig]) => {
+        if (obf && orig && typeof obf === 'string' && typeof orig === 'string') {
+          reverseMap[obf.trim()] = orig.trim();
+        }
       });
     }
+
+    // 1b. Also collect from categories (classes, variables, methods, packages) where orig -> obf
+    const categoryMaps = [
+      (mapping as JavaObfuscationMapping).classes,
+      (mapping as JavaObfuscationMapping).variables,
+      (mapping as JavaObfuscationMapping).methods,
+      (mapping as JavaObfuscationMapping).packages,
+    ];
+
+    categoryMaps.forEach((catMap) => {
+      if (catMap && typeof catMap === 'object') {
+        Object.entries(catMap).forEach(([orig, obf]) => {
+          if (orig && obf && typeof orig === 'string' && typeof obf === 'string') {
+            const trimmedObf = obf.trim();
+            const trimmedOrig = orig.trim();
+            if (!reverseMap[trimmedObf]) {
+              reverseMap[trimmedObf] = trimmedOrig;
+            }
+          }
+        });
+      }
+    });
+
+    // 1c. If reverseMap is still empty or flat object with simple key-value entries
+    const knownKeys = new Set(['classes', 'variables', 'methods', 'packages', 'reverseMapping']);
+    Object.entries(mapping).forEach(([k, v]) => {
+      if (knownKeys.has(k)) return;
+      if (typeof k !== 'string' || !v) return;
+
+      const kStr = k.trim();
+      const vStr = String(v).trim();
+
+      // Check which key is in inputCode to determine obfuscated token
+      if (inputCode.includes(kStr)) {
+        reverseMap[kStr] = vStr;
+      } else if (inputCode.includes(vStr)) {
+        reverseMap[vStr] = kStr;
+      } else {
+        if (!reverseMap[kStr]) {
+          reverseMap[kStr] = vStr;
+        }
+      }
+    });
   }
+
+  // 2. Filter out empty or self-referential keys
+  const validKeys = Object.keys(reverseMap)
+    .filter((k) => k && reverseMap[k] && k !== reverseMap[k])
+    .sort((a, b) => b.length - a.length);
+
+  if (validKeys.length === 0) return inputCode;
 
   let code = inputCode;
 
-  // Sort obfuscated keys by length descending so longer tokens get replaced first
-  const keys = Object.keys(reverseMap).sort((a, b) => b.length - a.length);
+  // 3. Single-pass token replacement using negative lookbehind and lookahead
+  const escapedKeys = validKeys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const regex = new RegExp(`(?<![a-zA-Z0-9_$])(?:${escapedKeys.join('|')})(?![a-zA-Z0-9_$])`, 'g');
 
-  keys.forEach((obfKey) => {
-    const origValue = reverseMap[obfKey];
-    if (origValue && obfKey) {
-      const escapedKey = obfKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`\\b${escapedKey}\\b`, 'g');
-      code = code.replace(regex, origValue);
-    }
+  code = code.replace(regex, (matched) => {
+    return reverseMap[matched] || matched;
   });
+
+  // 4. Decrypt Base64 string expressions if present
+  code = code.replace(
+    /new\s+String\s*\(\s*java\.util\.Base64\.getDecoder\(\)\.decode\(\s*"([A-Za-z0-9+/=]+)"\s*\)\s*\)/g,
+    (_, b64) => {
+      try {
+        return `"${atob(b64)}"`;
+      } catch {
+        return _;
+      }
+    }
+  );
 
   return code;
 }
