@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { TOOLS_DATA } from './data/toolsData';
 import { DevTool, ToolCategory } from './types';
 import { Header } from './components/Header';
@@ -109,7 +109,7 @@ export default function App() {
     return tool.category === activeCategory;
   });
 
-  const testSummary = runAllUnitTests();
+  const testSummary = useMemo(() => runAllUnitTests(), []);
 
   return (
     <div className="min-h-screen bg-slate-900 dark:bg-[#0B0F1A] text-slate-100 transition-colors font-sans antialiased selection:bg-indigo-500 selection:text-white flex flex-col justify-between">
