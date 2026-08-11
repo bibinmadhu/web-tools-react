@@ -15,6 +15,7 @@ import { MarkdownPreviewTool } from './tools/MarkdownPreviewTool';
 import { CodeFormatterTool } from './tools/CodeFormatterTool';
 import { JavaObfuscatorTool } from './tools/JavaObfuscatorTool';
 import { PdfSignerTool } from './tools/PdfSignerTool';
+import { PdfConverterTool } from './tools/PdfConverterTool';
 import { GenericTool } from './tools/GenericTool';
 
 interface ToolModalProps {
@@ -62,6 +63,8 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return <CodeFormatterTool />;
       case 'pdf-signer':
         return <PdfSignerTool />;
+      case 'pdf-converter':
+        return <PdfConverterTool />;
       default:
         return <GenericTool tool={tool} />;
     }

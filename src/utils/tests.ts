@@ -11,6 +11,7 @@ import {
 } from './toolFunctions';
 import { obfuscateJavaCode, deobfuscateJavaCode } from './javaObfuscator';
 import { createSamplePdf, getPdfMetadata, signPdfDocument } from './pdfSigner';
+import { convertPdfDocument, extractPdfContent } from './pdfConverter';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -267,6 +268,44 @@ public class OrderService {
     });
 
     assertTrue(signedBytes.length > pdfBytes.length, 'Signed PDF byte length should increase after embedding signature & metadata');
+  });
+
+  // --- Suite 11: PDF to Docx & Docs Converter ---
+  await testAsync('PDF Converter', 'Extracts text content and pages from PDF', async () => {
+    const pdfBytes = await createSamplePdf();
+    const content = await extractPdfContent(pdfBytes);
+    assertEqual(content.pageCount, 2, 'Should extract 2 pages');
+    assertTrue(content.fullText.length > 50, 'Full text should contain extracted lines');
+  });
+
+  await testAsync('PDF Converter', 'Converts PDF to Word (.docx) format blob', async () => {
+    const pdfBytes = await createSamplePdf();
+    const res = await convertPdfDocument({
+      pdfBuffer: pdfBytes,
+      targetFormat: 'docx',
+      title: 'Agreement_Test',
+      author: 'Test Suite',
+      fontFamily: 'Calibri',
+    });
+
+    assertTrue(res.blob.size > 500, 'Docx blob should be generated with valid binary length');
+    assertTrue(res.filename.endsWith('.docx'), 'Filename should have .docx extension');
+  });
+
+  await testAsync('PDF Converter', 'Converts PDF to HTML, TXT, ODT, RTF & EPUB formats', async () => {
+    const pdfBytes = await createSamplePdf();
+
+    const txtRes = await convertPdfDocument({ pdfBuffer: pdfBytes, targetFormat: 'txt', title: 'Test' });
+    assertTrue(txtRes.filename.endsWith('.txt'), 'Should output .txt filename');
+
+    const htmlRes = await convertPdfDocument({ pdfBuffer: pdfBytes, targetFormat: 'html', title: 'Test' });
+    assertTrue(htmlRes.filename.endsWith('.html'), 'Should output .html filename');
+
+    const odtRes = await convertPdfDocument({ pdfBuffer: pdfBytes, targetFormat: 'odt', title: 'Test' });
+    assertTrue(odtRes.blob.size > 200, 'ODT zip blob should have valid size');
+
+    const epubRes = await convertPdfDocument({ pdfBuffer: pdfBytes, targetFormat: 'epub', title: 'Test' });
+    assertTrue(epubRes.blob.size > 200, 'EPUB zip blob should have valid size');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

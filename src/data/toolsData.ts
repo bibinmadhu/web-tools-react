@@ -151,4 +151,14 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'pdf',
     isPopular: true,
   },
+  {
+    id: 'pdf-converter',
+    name: 'PDF to Docx & Docs Converter',
+    description: 'Convert PDF documents to Microsoft Word (.docx), ODT, HTML, RTF, EPUB, and TXT formats',
+    category: 'documents',
+    tags: ['PDF', 'Docx', 'Google Docs', 'Word', 'Converter', 'Document'],
+    iconText: 'DOC',
+    iconType: 'pdf',
+    isPopular: true,
+  },
 ];
