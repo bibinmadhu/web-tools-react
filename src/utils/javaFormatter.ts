@@ -8,6 +8,10 @@ export interface JavaFormatterOptions {
   spaceBeforeControlParentheses: boolean; // if (...) vs if(...)
   spaceAroundOperators: boolean; // a + b vs a+b
   spaceInsideParentheses: boolean; // ( x ) vs (x)
+  spaceAfterComma: boolean; // a, b vs a,b
+  breakMultipleStatements: boolean; // split statements on same line at ;
+  breakInlineBraces: boolean; // split code around { and }
+  breakAnnotations: boolean; // place annotations on separate line
   maxConsecutiveBlankLines: number; // 1, 2
   blankLinesBetweenMethods: number; // 1, 2
   normalizeModifiers: boolean; // public static final
@@ -26,6 +30,10 @@ export const defaultJavaFormatterOptions: JavaFormatterOptions = {
   spaceBeforeControlParentheses: true,
   spaceAroundOperators: true,
   spaceInsideParentheses: false,
+  spaceAfterComma: true,
+  breakMultipleStatements: true,
+  breakInlineBraces: true,
+  breakAnnotations: true,
   maxConsecutiveBlankLines: 1,
   blankLinesBetweenMethods: 1,
   normalizeModifiers: true,
@@ -44,6 +52,10 @@ export const googleJavaStyleOptions: JavaFormatterOptions = {
   spaceBeforeControlParentheses: true,
   spaceAroundOperators: true,
   spaceInsideParentheses: false,
+  spaceAfterComma: true,
+  breakMultipleStatements: true,
+  breakInlineBraces: true,
+  breakAnnotations: true,
   maxConsecutiveBlankLines: 1,
   blankLinesBetweenMethods: 1,
   normalizeModifiers: true,
@@ -62,6 +74,10 @@ export const sunJavaStyleOptions: JavaFormatterOptions = {
   spaceBeforeControlParentheses: true,
   spaceAroundOperators: true,
   spaceInsideParentheses: false,
+  spaceAfterComma: true,
+  breakMultipleStatements: true,
+  breakInlineBraces: true,
+  breakAnnotations: true,
   maxConsecutiveBlankLines: 2,
   blankLinesBetweenMethods: 1,
   normalizeModifiers: true,
@@ -80,6 +96,10 @@ export const allmanStyleOptions: JavaFormatterOptions = {
   spaceBeforeControlParentheses: true,
   spaceAroundOperators: true,
   spaceInsideParentheses: false,
+  spaceAfterComma: true,
+  breakMultipleStatements: true,
+  breakInlineBraces: true,
+  breakAnnotations: true,
   maxConsecutiveBlankLines: 1,
   blankLinesBetweenMethods: 1,
   normalizeModifiers: true,
@@ -202,6 +222,206 @@ function processImports(
 }
 
 /**
+ * Smart Preprocessor that splits multiple statements, inline braces, and inline annotations
+ * into clean individual lines while respecting comments and string literals.
+ */
+function preprocessJavaLines(code: string, options: JavaFormatterOptions): string[] {
+  const lines: string[] = [];
+  let cur = '';
+
+  let inString = false;
+  let stringChar = '';
+  let inLineComment = false;
+  let inBlockComment = false;
+  let forParenDepth = 0;
+  let isInsideForHeader = false;
+
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    const nextCh = code[i + 1] || '';
+
+    // Handle line comments
+    if (!inString && !inBlockComment && !inLineComment && ch === '/' && nextCh === '/') {
+      inLineComment = true;
+      cur += '//';
+      i++;
+      continue;
+    }
+
+    if (inLineComment) {
+      if (ch === '\n' || ch === '\r') {
+        inLineComment = false;
+        lines.push(cur);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+      continue;
+    }
+
+    // Handle block comments
+    if (!inString && !inLineComment && !inBlockComment && ch === '/' && nextCh === '*') {
+      inBlockComment = true;
+      cur += '/*';
+      i++;
+      continue;
+    }
+
+    if (inBlockComment) {
+      cur += ch;
+      if (ch === '*' && nextCh === '/') {
+        cur += '/';
+        i++;
+        inBlockComment = false;
+      }
+      continue;
+    }
+
+    // Handle string/char literals
+    if (!inLineComment && !inBlockComment) {
+      if (inString) {
+        cur += ch;
+        if (ch === '\\') {
+          if (i + 1 < code.length) {
+            cur += code[i + 1];
+            i++;
+          }
+        } else if (ch === stringChar) {
+          inString = false;
+        }
+        continue;
+      } else if (ch === '"' || ch === "'") {
+        inString = true;
+        stringChar = ch;
+        cur += ch;
+        continue;
+      }
+    }
+
+    // Track for loop parens: for (int i=0; i<10; i++)
+    if (!inString && !inLineComment && !inBlockComment) {
+      const trimmedSoFar = cur.trim();
+      if (ch === '(') {
+        if (/\bfor\s*$/i.test(trimmedSoFar) || isInsideForHeader) {
+          isInsideForHeader = true;
+          forParenDepth++;
+        }
+      } else if (ch === ')' && isInsideForHeader) {
+        forParenDepth--;
+        if (forParenDepth <= 0) {
+          isInsideForHeader = false;
+          forParenDepth = 0;
+        }
+      }
+    }
+
+    // Break multiple statements at ';'
+    if (
+      options.breakMultipleStatements &&
+      ch === ';' &&
+      !inString &&
+      !inLineComment &&
+      !inBlockComment &&
+      !isInsideForHeader
+    ) {
+      cur += ';';
+      lines.push(cur);
+      cur = '';
+      continue;
+    }
+
+    // Break inline braces '{' and '}'
+    if (options.breakInlineBraces && !inString && !inLineComment && !inBlockComment) {
+      if (ch === '{') {
+        const preText = cur.trim();
+        if (preText.length > 0) {
+          if (options.braceStyle === 'next-line') {
+            lines.push(cur);
+            lines.push('{');
+          } else {
+            cur += ' {';
+            lines.push(cur);
+          }
+          cur = '';
+        } else {
+          cur += '{';
+          lines.push(cur);
+          cur = '';
+        }
+        continue;
+      }
+
+      if (ch === '}') {
+        const preText = cur.trim();
+        if (preText.length > 0) {
+          lines.push(cur);
+          cur = '}';
+        } else {
+          cur += '}';
+        }
+        continue;
+      }
+    }
+
+    // Break inline annotations (e.g., @Override public void foo())
+    if (
+      options.breakAnnotations &&
+      ch === '@' &&
+      !inString &&
+      !inLineComment &&
+      !inBlockComment
+    ) {
+      const preText = cur.trim();
+      if (preText.length > 0 && !preText.endsWith('(') && !preText.endsWith(',')) {
+        lines.push(cur);
+        cur = '@';
+        continue;
+      }
+    }
+
+    if (ch === '\n') {
+      lines.push(cur);
+      cur = '';
+      continue;
+    }
+
+    if (ch === '\r') {
+      continue;
+    }
+
+    cur += ch;
+  }
+
+  if (cur.trim().length > 0) {
+    lines.push(cur);
+  }
+
+  return lines;
+}
+
+/**
+ * Detects whether a Java line is a method/constructor or class member definition.
+ */
+function isMethodOrMemberDeclaration(line: string): boolean {
+  const trimmed = line.trim();
+  if (
+    trimmed.startsWith('//') ||
+    trimmed.startsWith('/*') ||
+    trimmed.startsWith('*') ||
+    trimmed.startsWith('package ') ||
+    trimmed.startsWith('import ') ||
+    trimmed.startsWith('@')
+  ) {
+    return false;
+  }
+
+  const methodPattern = /^\s*(?:(?:public|protected|private|static|final|abstract|synchronized|native)\s+)+[\w<>[\]]+\s+\w+\s*\([^)]*\)\s*(?:throws\s+[\w.,\s]+)?\s*\{?$/;
+  const ctorPattern = /^\s*(?:public|protected|private)\s+[A-Z]\w*\s*\([^)]*\)\s*(?:throws\s+[\w.,\s]+)?\s*\{?$/;
+
+  return methodPattern.test(trimmed) || ctorPattern.test(trimmed);
+}
+
+/**
  * Main Java Formatter Logic.
  */
 export function formatJavaCode(
@@ -213,8 +433,9 @@ export function formatJavaCode(
   const singleIndent =
     options.indentType === 'tabs' ? '\t' : ' '.repeat(options.indentSize);
 
-  // Split lines
-  const rawLines = sourceCode.split(/\r?\n/);
+  // Preprocess source code into discrete statements/lines
+  const rawLines = preprocessJavaLines(sourceCode, options);
+
   const formattedLines: string[] = [];
   const importLines: string[] = [];
   let isInImportBlock = false;
@@ -267,6 +488,21 @@ export function formatJavaCode(
       consecutiveBlankLines = 0;
     }
 
+    // Check method declaration to insert blank lines between methods
+    if (
+      !inBlockComment &&
+      options.blankLinesBetweenMethods > 0 &&
+      isMethodOrMemberDeclaration(trimmed) &&
+      formattedLines.length > 0
+    ) {
+      const lastLine = formattedLines[formattedLines.length - 1].trim();
+      if (lastLine !== '' && lastLine !== '{' && !lastLine.startsWith('import')) {
+        for (let b = 0; b < options.blankLinesBetweenMethods; b++) {
+          formattedLines.push('');
+        }
+      }
+    }
+
     // Process line content modifications
     let processedLine = trimmed;
 
@@ -288,15 +524,19 @@ export function formatJavaCode(
       );
     }
 
-    // 3. Space around operators
+    // 3. Space after commas
+    if (options.spaceAfterComma && !inBlockComment) {
+      processedLine = processedLine.replace(/,([^\s,])/g, ', $1');
+    }
+
+    // 4. Space around operators
     if (options.spaceAroundOperators && !inBlockComment) {
-      // Equals, arithmetic, logical (avoiding ++, --, ->, ::)
       processedLine = processedLine
         .replace(/([^=<>!+-/*&|^~%])([=+\-*/%&|^]=?|==|!=|<=|>=|&&|\|\|)([^=<>!+-/*&|^~%])/g, '$1 $2 $3')
         .replace(/\s+/g, ' ');
     }
 
-    // 4. Space inside parentheses: ( x ) vs (x)
+    // 5. Space inside parentheses: ( x ) vs (x)
     if (options.spaceInsideParentheses && !inBlockComment) {
       processedLine = processedLine
         .replace(/\(([^()\s][^()]*)\)/g, '( $1 )')
@@ -304,20 +544,17 @@ export function formatJavaCode(
         .replace(/\s+\)/g, ' )');
     }
 
-    // 5. Handle Brace Style (K&R vs Allman)
+    // 6. Handle Brace Style (K&R vs Allman)
     if (options.braceStyle === 'next-line' && !inBlockComment) {
-      // If line ends with '{' and has code before it, split brace to next line
       if (processedLine.length > 1 && processedLine.endsWith('{') && !processedLine.startsWith('{')) {
         const lineWithoutBrace = processedLine.substring(0, processedLine.length - 1).trimEnd();
         
-        // Add line before brace
         let openIndent = currentIndentLevel;
         if (lineWithoutBrace.startsWith('}')) {
           openIndent = Math.max(0, currentIndentLevel - 1);
         }
         formattedLines.push(singleIndent.repeat(openIndent) + lineWithoutBrace);
         
-        // Place brace on next line
         const closingCount = (lineWithoutBrace.match(/}/g) || []).length;
         const openingCount = (lineWithoutBrace.match(/{/g) || []).length;
         currentIndentLevel += openingCount - closingCount;
@@ -328,7 +565,6 @@ export function formatJavaCode(
         continue;
       }
     } else if (options.braceStyle === 'same-line' && !inBlockComment) {
-      // If line is just '{', attach to previous line if possible
       if (processedLine === '{' && formattedLines.length > 0) {
         const prevIdx = formattedLines.length - 1;
         if (formattedLines[prevIdx].trim() !== '' && !formattedLines[prevIdx].trim().endsWith('{')) {
@@ -345,7 +581,11 @@ export function formatJavaCode(
 
     // If line starts with closing brace, decrease indent BEFORE printing line
     let effectiveIndent = currentIndentLevel;
-    if (processedLine.startsWith('}')) {
+    if (
+      processedLine.startsWith('}') ||
+      processedLine.startsWith('else') ||
+      processedLine.startsWith('catch')
+    ) {
       effectiveIndent = Math.max(0, currentIndentLevel - 1);
     }
 
@@ -389,30 +629,18 @@ import com.example.model.User;
 import java.util.Map;
 import java.util.List; // duplicate
 
-final public class UserService {
+@Service @Transactional final public class UserService {
 
-private final String serviceName;
-private int retryCount=3;
+private final String serviceName; private int retryCount=3;
 
-public UserService(String serviceName){
-this.serviceName=serviceName;
-}
+public UserService(String serviceName){ this.serviceName=serviceName; }
 
-final static public User findUserById(  List<User> users,int id  ){
-for(User u:users){
-if(u.getId()==id){
-return u;
-}
-}
-return null;
+@Override final static public User findUserById( List<User> users,int id ){
+for(User u:users){ if(u.getId()==id){ return u; } } return null;
 }
 
 public void processBatch(List<String> items){
-if(items!=null&&!items.isEmpty()){
-for(String item:items){
-System.out.println("Processing item: "+item);
-}
-}
+if(items!=null&&!items.isEmpty()){ for(String item:items){ System.out.println("Processing item: "+item); } }
 }
 }
 `;

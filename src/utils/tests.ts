@@ -321,6 +321,10 @@ public class OrderService {
       spaceBeforeControlParentheses: true,
       spaceAroundOperators: true,
       spaceInsideParentheses: false,
+      spaceAfterComma: true,
+      breakMultipleStatements: true,
+      breakInlineBraces: true,
+      breakAnnotations: true,
       maxConsecutiveBlankLines: 1,
       blankLinesBetweenMethods: 1,
       normalizeModifiers: true,
@@ -334,6 +338,35 @@ public class OrderService {
     assertTrue(!formatted.includes('import java.util.List; // duplicate'), 'Duplicate imports should be removed');
   });
 
+  test('Java Formatter', 'Splits compressed single-line Java code into readable statements with proper indents', () => {
+    const compressed = 'public class Test { public void run() { int a=1; int b=2; if(a<b){ System.out.println("Hello"); } } }';
+    const formatted = formatJavaCode(compressed, {
+      indentType: 'spaces',
+      indentSize: 4,
+      braceStyle: 'same-line',
+      sortImports: true,
+      groupImports: true,
+      removeDuplicateImports: true,
+      spaceBeforeControlParentheses: true,
+      spaceAroundOperators: true,
+      spaceInsideParentheses: false,
+      spaceAfterComma: true,
+      breakMultipleStatements: true,
+      breakInlineBraces: true,
+      breakAnnotations: true,
+      maxConsecutiveBlankLines: 1,
+      blankLinesBetweenMethods: 1,
+      normalizeModifiers: true,
+      alignSingleLineComments: false,
+      trimTrailingWhitespace: true,
+      ensureFinalNewline: true,
+    });
+
+    assertTrue(formatted.includes('    int a = 1;'), 'Should break statements and indent correctly (4 spaces)');
+    assertTrue(formatted.includes('    int b = 2;'), 'Should place second statement on a new line with 4 space indent');
+    assertTrue(formatted.includes('        System.out.println("Hello");'), 'Should indent nested statements inside if block (8 spaces)');
+  });
+
   test('Java Formatter', 'Formats Java code with Allman (next-line) brace style', () => {
     const formatted = formatJavaCode(sampleUnformattedJavaCode, {
       indentType: 'spaces',
@@ -345,6 +378,10 @@ public class OrderService {
       spaceBeforeControlParentheses: true,
       spaceAroundOperators: true,
       spaceInsideParentheses: false,
+      spaceAfterComma: true,
+      breakMultipleStatements: true,
+      breakInlineBraces: true,
+      breakAnnotations: true,
       maxConsecutiveBlankLines: 1,
       blankLinesBetweenMethods: 1,
       normalizeModifiers: true,

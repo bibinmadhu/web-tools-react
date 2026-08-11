@@ -319,11 +319,51 @@ export const JavaFormatterTool: React.FC = () => {
               </label>
             </div>
 
-            {/* Column 3: Whitespace & Parentheses */}
+            {/* Column 3: Spacing & Line Breaks */}
             <div className="space-y-3 p-3 rounded-lg bg-slate-800/40 border border-slate-700/50">
               <span className="block font-bold text-xs text-orange-300 uppercase tracking-wider">
-                Spacing & Formatting
+                Line Breaks & Spacing
               </span>
+
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={options.breakMultipleStatements}
+                  onChange={(e) => handleOptionChange('breakMultipleStatements', e.target.checked)}
+                  className="w-4 h-4 accent-orange-500 rounded"
+                />
+                <span>Break Statements at <code className="text-[10px] text-slate-400">;</code></span>
+              </label>
+
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={options.breakInlineBraces}
+                  onChange={(e) => handleOptionChange('breakInlineBraces', e.target.checked)}
+                  className="w-4 h-4 accent-orange-500 rounded"
+                />
+                <span>Break Inline Braces <code className="text-[10px] text-slate-400">&#123; &#125;</code></span>
+              </label>
+
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={options.breakAnnotations}
+                  onChange={(e) => handleOptionChange('breakAnnotations', e.target.checked)}
+                  className="w-4 h-4 accent-orange-500 rounded"
+                />
+                <span>Annotations on New Lines <code className="text-[10px] text-slate-400">@Override</code></span>
+              </label>
+
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={options.spaceAfterComma}
+                  onChange={(e) => handleOptionChange('spaceAfterComma', e.target.checked)}
+                  className="w-4 h-4 accent-orange-500 rounded"
+                />
+                <span>Space After Commas <code className="text-[10px] text-slate-400">a, b</code></span>
+              </label>
 
               <label className="flex items-center gap-2 text-xs font-medium text-slate-300 cursor-pointer">
                 <input
@@ -344,23 +384,28 @@ export const JavaFormatterTool: React.FC = () => {
                 />
                 <span>Space Around Operators <code className="text-[10px] text-slate-400">a + b</code></span>
               </label>
-
-              <label className="flex items-center gap-2 text-xs font-medium text-slate-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={options.spaceInsideParentheses}
-                  onChange={(e) => handleOptionChange('spaceInsideParentheses', e.target.checked)}
-                  className="w-4 h-4 accent-orange-500 rounded"
-                />
-                <span>Space Inside Parentheses <code className="text-[10px] text-slate-400">( x )</code></span>
-              </label>
             </div>
 
-            {/* Column 4: Line Hygiene */}
+            {/* Column 4: Line Hygiene & Separation */}
             <div className="space-y-3 p-3 rounded-lg bg-slate-800/40 border border-slate-700/50">
               <span className="block font-bold text-xs text-orange-300 uppercase tracking-wider">
-                Line Hygiene
+                Line Hygiene & Structure
               </span>
+
+              <div>
+                <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                  Blank Lines Between Methods
+                </label>
+                <select
+                  value={options.blankLinesBetweenMethods}
+                  onChange={(e) => handleOptionChange('blankLinesBetweenMethods', parseInt(e.target.value))}
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-white focus:outline-hidden"
+                >
+                  <option value={0}>0 Blank Lines</option>
+                  <option value={1}>1 Blank Line</option>
+                  <option value={2}>2 Blank Lines</option>
+                </select>
+              </div>
 
               <div>
                 <label className="block text-[11px] font-medium text-slate-400 mb-1">
