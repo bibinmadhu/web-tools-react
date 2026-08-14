@@ -83,41 +83,41 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       />
 
       {/* Modal Dialog */}
-      <div className="relative z-50 w-full max-w-4xl bg-[#1E293B] text-slate-100 rounded-2xl shadow-2xl border border-slate-800 overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="relative z-50 w-full max-w-4xl bg-white dark:bg-[#1E293B] text-slate-900 dark:text-slate-100 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header Bar */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-[#0F172A]">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0F172A]">
           <div className="flex items-center gap-3.5">
-            <div className="w-10 h-10 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center font-mono font-bold text-sm text-indigo-400 shadow-2xs">
+            <div className="w-10 h-10 rounded-lg bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/20 flex items-center justify-center font-mono font-bold text-sm text-indigo-600 dark:text-indigo-400 shadow-2xs">
               {tool.iconText}
             </div>
 
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="font-bold text-white text-lg">{tool.name}</h2>
-                <span className="text-[10px] font-mono font-semibold uppercase px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                <h2 className="font-bold text-slate-900 dark:text-white text-lg">{tool.name}</h2>
+                <span className="text-[10px] font-mono font-semibold uppercase px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-500/10 dark:text-indigo-300 dark:border-indigo-500/20">
                   {tool.category}
                 </span>
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">{tool.description}</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{tool.description}</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               onClick={(e) => onToggleFavorite(tool.id, e)}
-              className="p-2 rounded-lg hover:bg-slate-800 transition-colors"
+              className="p-2 rounded-lg hover:bg-slate-200/80 dark:hover:bg-slate-800 transition-colors"
               aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
             >
               <Star
                 className={`w-5 h-5 ${
-                  isFavorite ? 'text-amber-400 fill-amber-400' : 'text-slate-600'
+                  isFavorite ? 'text-amber-500 dark:text-amber-400 fill-amber-500 dark:fill-amber-400' : 'text-slate-300 dark:text-slate-600'
                 }`}
               />
             </button>
 
             <button
               onClick={onClose}
-              className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-200/80 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 transition-colors"
               aria-label="Close modal"
             >
               <X className="w-5 h-5" />

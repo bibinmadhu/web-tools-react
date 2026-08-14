@@ -37,19 +37,19 @@ export const ToolGrid: React.FC<ToolGridProps> = ({
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.8)]"></div>
-          <h2 className="text-xs font-bold tracking-wider text-slate-300 uppercase font-mono">
+          <h2 className="text-xs font-bold tracking-wider text-slate-700 dark:text-slate-300 uppercase font-mono">
             {categoryTitles[activeCategory] || activeCategory.toUpperCase()}
           </h2>
         </div>
 
         {/* View Mode Switcher */}
-        <div className="flex items-center gap-1 p-1 rounded-lg bg-[#0F172A] border border-slate-800">
+        <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0F172A] border border-slate-200 dark:border-slate-800">
           <button
             onClick={() => setViewMode('grid')}
             className={`p-1.5 rounded-md text-xs font-medium transition-colors ${
               viewMode === 'grid'
                 ? 'bg-indigo-600 text-white shadow-xs'
-                : 'text-slate-400 hover:text-white'
+                : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
             }`}
             aria-label="Grid View"
             title="Grid View"
@@ -61,7 +61,7 @@ export const ToolGrid: React.FC<ToolGridProps> = ({
             className={`p-1.5 rounded-md text-xs font-medium transition-colors ${
               viewMode === 'list'
                 ? 'bg-indigo-600 text-white shadow-xs'
-                : 'text-slate-400 hover:text-white'
+                : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
             }`}
             aria-label="List View"
             title="List View"

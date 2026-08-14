@@ -71,12 +71,12 @@ export const SearchModal: React.FC<SearchModalProps> = ({
 
       {/* Spotlight Box */}
       <div
-        className="relative z-50 w-full max-w-2xl bg-[#1E293B] text-slate-100 rounded-2xl shadow-2xl border border-slate-800 overflow-hidden flex flex-col max-h-[80vh] animate-in fade-in zoom-in-95 duration-150"
+        className="relative z-50 w-full max-w-2xl bg-white dark:bg-[#1E293B] text-slate-900 dark:text-slate-100 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[80vh] animate-in fade-in zoom-in-95 duration-150"
         onKeyDown={handleKeyDown}
       >
         {/* Search Input Bar */}
-        <div className="flex items-center px-4 py-3 border-b border-slate-800 bg-[#0F172A] gap-3">
-          <Search className="w-5 h-5 text-indigo-400 shrink-0" />
+        <div className="flex items-center px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0F172A] gap-3">
+          <Search className="w-5 h-5 text-indigo-500 dark:text-indigo-400 shrink-0" />
           <input
             ref={inputRef}
             type="text"
@@ -86,12 +86,12 @@ export const SearchModal: React.FC<SearchModalProps> = ({
               setSelectedIndex(0);
             }}
             placeholder="Search tools by name, tag, or function..."
-            className="w-full bg-transparent text-white placeholder-slate-500 text-sm focus:outline-none font-normal"
+            className="w-full bg-transparent text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 text-sm focus:outline-none font-normal"
             aria-label="Search developer tools"
           />
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/80 dark:hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -118,24 +118,24 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                   onMouseEnter={() => setSelectedIndex(idx)}
                   className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${
                     isSelected
-                      ? 'bg-indigo-500/10 border border-indigo-500/30'
-                      : 'hover:bg-slate-800/50 border border-transparent'
+                      ? 'bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/30'
+                      : 'hover:bg-slate-100 dark:hover:bg-slate-800/50 border border-transparent'
                   }`}
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center font-mono font-bold text-xs text-indigo-400">
+                    <div className="w-9 h-9 rounded-lg bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/20 flex items-center justify-center font-mono font-bold text-xs text-indigo-600 dark:text-indigo-400">
                       {tool.iconText}
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-100 text-sm">
+                        <span className="font-bold text-slate-900 dark:text-slate-100 text-sm">
                           {tool.name}
                         </span>
-                        <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700/50">
+                        <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700/50">
                           {tool.category}
                         </span>
                       </div>
-                      <p className="text-xs text-slate-400">
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
                         {tool.description}
                       </p>
                     </div>
@@ -147,16 +147,16 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                         e.stopPropagation();
                         onToggleFavorite(tool.id, e);
                       }}
-                      className="p-1.5 rounded-md hover:bg-slate-800 transition-colors"
+                      className="p-1.5 rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
                       aria-label={isFav ? 'Unstar' : 'Star'}
                     >
                       <Star
                         className={`w-4 h-4 ${
-                          isFav ? 'text-amber-400 fill-amber-400' : 'text-slate-600'
+                          isFav ? 'text-amber-500 dark:text-amber-400 fill-amber-500 dark:fill-amber-400' : 'text-slate-300 dark:text-slate-600'
                         }`}
                       />
                     </button>
-                    {isSelected && <ArrowRight className="w-4 h-4 text-indigo-400" />}
+                    {isSelected && <ArrowRight className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />}
                   </div>
                 </div>
               );
@@ -165,13 +165,13 @@ export const SearchModal: React.FC<SearchModalProps> = ({
         </div>
 
         {/* Footer shortcuts */}
-        <div className="px-4 py-2.5 border-t border-slate-800 bg-[#0F172A] flex items-center justify-between text-[11px] text-slate-500 font-mono">
+        <div className="px-4 py-2.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0F172A] flex items-center justify-between text-[11px] text-slate-500 font-mono">
           <div className="flex items-center gap-3">
             <span>↑↓ Navigate</span>
             <span>↵ Select</span>
             <span>ESC Close</span>
           </div>
-          <span className="text-indigo-400">DevFlow Quick Search</span>
+          <span className="text-indigo-600 dark:text-indigo-400 font-semibold">DevFlow Quick Search</span>
         </div>
       </div>
     </div>

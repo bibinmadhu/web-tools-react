@@ -112,7 +112,7 @@ export default function App() {
   const testSummary = useMemo(() => runAllUnitTests(), []);
 
   return (
-    <div className="min-h-screen bg-slate-900 dark:bg-[#0B0F1A] text-slate-100 transition-colors font-sans antialiased selection:bg-indigo-500 selection:text-white flex flex-col justify-between">
+    <div className="min-h-screen bg-slate-50 dark:bg-[#0B0F1A] text-slate-900 dark:text-slate-100 transition-colors font-sans antialiased selection:bg-indigo-500 selection:text-white flex flex-col justify-between">
       <div>
         {/* Header */}
         <Header
@@ -156,12 +156,12 @@ export default function App() {
       </div>
 
       {/* Sleek Interface Status Footer */}
-      <footer className="h-10 border-t border-slate-800/60 bg-[#0F172A]/80 backdrop-blur-md flex items-center justify-between px-6 sm:px-8 text-[10px] text-slate-500 uppercase tracking-widest font-bold font-mono">
+      <footer className="h-10 border-t border-slate-200 dark:border-slate-800/60 bg-white/80 dark:bg-[#0F172A]/80 backdrop-blur-md flex items-center justify-between px-6 sm:px-8 text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-widest font-bold font-mono">
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
           <span>SYSTEM STABLE</span>
         </div>
-        <div className="hidden sm:block text-slate-400">DEVFLOW PRO // V2.4.0</div>
+        <div className="hidden sm:block text-slate-400 dark:text-slate-500">DEVFLOW PRO // V2.4.0</div>
         <div>SCALABILITY READY</div>
       </footer>
 

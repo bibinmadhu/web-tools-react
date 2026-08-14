@@ -62,9 +62,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   const content = (
-    <div className="w-64 h-full flex flex-col bg-[#0F172A] border-r border-slate-800/60 p-4 shrink-0">
+    <div className="w-64 h-full flex flex-col bg-white dark:bg-[#0F172A] border-r border-slate-200 dark:border-slate-800/60 p-4 shrink-0 transition-colors">
       <div className="px-3 py-2 mb-1">
-        <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wider font-mono">
+        <h2 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider font-mono">
           DEVELOPMENT
         </h2>
       </div>
@@ -82,12 +82,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
               }}
               className={`w-full flex items-center justify-between px-3 py-2 rounded-md font-medium text-sm transition-colors text-left ${
                 isActive
-                  ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-semibold'
-                  : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200 border border-transparent'
+                  ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/20 font-semibold'
+                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-200 border border-transparent'
               }`}
             >
               <div className="flex items-center gap-3">
-                <span className={isActive ? 'text-indigo-400' : 'text-slate-500 opacity-80'}>
+                <span className={isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}>
                   {cat.icon}
                 </span>
                 <span>{cat.label}</span>
@@ -96,8 +96,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span
                   className={`text-[11px] px-2 py-0.5 rounded-full font-bold font-mono ${
                     isActive
-                      ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
-                      : 'bg-slate-800 text-slate-400'
+                      ? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30'
+                      : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
                   }`}
                 >
                   {cat.badge}
@@ -109,10 +109,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </nav>
 
       {/* Sleek API Status Box */}
-      <div className="pt-4 border-t border-slate-800/60">
-        <div className="bg-slate-800/40 p-3.5 rounded-xl border border-slate-700/50">
-          <div className="text-[10px] text-slate-500 mb-1 font-mono uppercase tracking-wider">API STATUS</div>
-          <div className="flex items-center gap-2 text-xs font-medium text-slate-200">
+      <div className="pt-4 border-t border-slate-200 dark:border-slate-800/60">
+        <div className="bg-slate-50 dark:bg-slate-800/40 p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/50">
+          <div className="text-[10px] text-slate-500 dark:text-slate-400 mb-1 font-mono uppercase tracking-wider">API STATUS</div>
+          <div className="flex items-center gap-2 text-xs font-medium text-slate-800 dark:text-slate-200">
             <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
             <span>Connected & Ready</span>
           </div>
