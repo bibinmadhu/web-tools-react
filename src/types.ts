@@ -8,7 +8,7 @@ export interface DevTool {
   tags: string[];
   iconText: string;
   iconBgClass?: string;
-  iconType: 'json' | 'shield' | 'code' | 'dice' | 'terminal' | 'base64' | 'regex' | 'key' | 'color' | 'hash' | 'globe' | 'markdown' | 'clock' | 'pdf';
+  iconType: 'json' | 'shield' | 'code' | 'dice' | 'terminal' | 'base64' | 'regex' | 'key' | 'color' | 'hash' | 'globe' | 'markdown' | 'clock' | 'pdf' | 'curl';
   isPopular?: boolean;
 }
 

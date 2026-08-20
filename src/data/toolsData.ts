@@ -51,6 +51,16 @@ export const TOOLS_DATA: DevTool[] = [
     isPopular: true,
   },
   {
+    id: 'curl-converter',
+    name: 'cURL to Python / TypeScript',
+    description: 'Convert cURL to production-ready Python (requests, httpx, aiohttp) & TypeScript (fetch, axios, ky) scripts',
+    category: 'converters',
+    tags: ['cURL', 'Python', 'TypeScript', 'API', 'REST', 'Converter', 'Fetch', 'Axios', 'Requests'],
+    iconText: 'cURL',
+    iconType: 'curl',
+    isPopular: true,
+  },
+  {
     id: 'converter-platform',
     name: 'Converter Platform',
     description: 'Data & units converter',

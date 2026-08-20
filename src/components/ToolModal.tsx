@@ -17,6 +17,7 @@ import { JavaObfuscatorTool } from './tools/JavaObfuscatorTool';
 import { PdfSignerTool } from './tools/PdfSignerTool';
 import { PdfConverterTool } from './tools/PdfConverterTool';
 import { JavaFormatterTool } from './tools/JavaFormatterTool';
+import { CurlConverterTool } from './tools/CurlConverterTool';
 import { GenericTool } from './tools/GenericTool';
 
 interface ToolModalProps {
@@ -68,6 +69,8 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return <PdfConverterTool />;
       case 'java-formatter':
         return <JavaFormatterTool />;
+      case 'curl-converter':
+        return <CurlConverterTool />;
       default:
         return <GenericTool tool={tool} />;
     }

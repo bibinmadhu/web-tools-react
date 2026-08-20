@@ -13,6 +13,8 @@ import { obfuscateJavaCode, deobfuscateJavaCode } from './javaObfuscator';
 import { createSamplePdf, getPdfMetadata, signPdfDocument } from './pdfSigner';
 import { convertPdfDocument, extractPdfContent } from './pdfConverter';
 import { formatJavaCode, sampleUnformattedJavaCode } from './javaFormatter';
+import { parseCurlCommand, tokenizeCurlCommand } from './curlParser';
+import { generatePythonCode, generateTypeScriptCode } from './curlToCode';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -410,6 +412,76 @@ public class OrderService {
     });
 
     assertTrue(formatted.includes('{\n'), 'Braces should be placed on separate lines in Allman style');
+  });
+
+  // --- Suite 9: cURL Converter & Multi-Target Generator ---
+  test('cURL Converter', 'Tokenizes multiline and quoted cURL strings', () => {
+    const raw = `curl -X POST "https://api.example.com/v1/users" \\\n  -H "Authorization: Bearer my_token" \\\n  -d '{"name": "DevHub"}'`;
+    const tokens = tokenizeCurlCommand(raw);
+    assertTrue(tokens.length >= 6, 'Should tokenize multiline curl command');
+    assertTrue(tokens.includes('-X'), 'Should include method flag');
+    assertTrue(tokens.includes('POST'), 'Should include POST token');
+  });
+
+  test('cURL Converter', 'Parses GET request with query params & headers', () => {
+    const raw = `curl -X GET "https://api.github.com/users/octocat/repos?sort=updated&per_page=10" -H "Accept: application/json" -H "Authorization: Bearer token123"`;
+    const parsed = parseCurlCommand(raw);
+    assertEqual(parsed.method, 'GET', 'Method should be GET');
+    assertEqual(parsed.queryParams['sort'], 'updated', 'Should parse sort query param');
+    assertEqual(parsed.queryParams['per_page'], '10', 'Should parse per_page query param');
+    assertEqual(parsed.headers['Accept'], 'application/json', 'Should parse Accept header');
+    assertEqual(parsed.auth?.type, 'bearer', 'Should detect bearer token');
+    assertEqual(parsed.auth?.token, 'token123', 'Should extract token value');
+  });
+
+  test('cURL Converter', 'Parses POST with JSON payload & Basic Auth', () => {
+    const raw = `curl -X POST "https://api.example.com/v1/items" -u "admin:secret123" -H "Content-Type: application/json" -d '{"title": "Item 1", "price": 99.5}'`;
+    const parsed = parseCurlCommand(raw);
+    assertEqual(parsed.method, 'POST', 'Method should be POST');
+    assertEqual(parsed.auth?.type, 'basic', 'Auth should be basic');
+    assertEqual(parsed.auth?.username, 'admin', 'Username should be admin');
+    assertEqual(parsed.auth?.password, 'secret123', 'Password should be secret123');
+    assertEqual(parsed.body?.type, 'json', 'Body type should be json');
+    assertEqual(parsed.body?.jsonData?.title, 'Item 1', 'JSON field title should match');
+  });
+
+  test('cURL Converter', 'Parses PUT, PATCH, DELETE, and Multipart operations', () => {
+    const patchRaw = `curl -X PATCH "https://api.example.com/v1/orders/123" -d '{"status": "shipped"}' -H "Content-Type: application/json"`;
+    const patchParsed = parseCurlCommand(patchRaw);
+    assertEqual(patchParsed.method, 'PATCH', 'Method should be PATCH');
+
+    const delRaw = `curl -X DELETE "https://api.example.com/v1/items/456"`;
+    const delParsed = parseCurlCommand(delRaw);
+    assertEqual(delParsed.method, 'DELETE', 'Method should be DELETE');
+
+    const multiRaw = `curl -X POST "https://api.example.com/upload" -F "description=My file" -F "file=@./doc.pdf;type=application/pdf"`;
+    const multiParsed = parseCurlCommand(multiRaw);
+    assertEqual(multiParsed.body?.type, 'multipart', 'Body type should be multipart');
+    assertEqual(multiParsed.body?.formData?.description, 'My file', 'Form field should match');
+  });
+
+  test('cURL Converter', 'Generates valid Python requests & httpx scripts', () => {
+    const parsed = parseCurlCommand(`curl -X POST "https://api.example.com/data" -H "Authorization: Bearer secret" -d '{"key": "val"}'`);
+    const pyRequests = generatePythonCode(parsed, 'requests');
+    assertTrue(pyRequests.includes('import requests'), 'Should import requests');
+    assertTrue(pyRequests.includes('requests.post'), 'Should call requests.post');
+    assertTrue(pyRequests.includes('payload = {'), 'Should define payload');
+
+    const pyHttpx = generatePythonCode(parsed, 'httpx_async');
+    assertTrue(pyHttpx.includes('import httpx'), 'Should import httpx');
+    assertTrue(pyHttpx.includes('async with httpx.AsyncClient('), 'Should use async client context');
+  });
+
+  test('cURL Converter', 'Generates valid TypeScript fetch & axios scripts', () => {
+    const parsed = parseCurlCommand(`curl -X PUT "https://api.example.com/resource/789?active=true" -H "Content-Type: application/json" -d '{"active": true}'`);
+    const tsFetch = generateTypeScriptCode(parsed, 'fetch');
+    assertTrue(tsFetch.includes('await fetch('), 'Should call fetch');
+    assertTrue(tsFetch.includes("method: 'PUT'"), 'Should set PUT method');
+    assertTrue(tsFetch.includes('export interface RequestPayload'), 'Should generate TypeScript interface');
+
+    const tsAxios = generateTypeScriptCode(parsed, 'axios');
+    assertTrue(tsAxios.includes("import axios, { AxiosRequestConfig"), 'Should import axios');
+    assertTrue(tsAxios.includes("method: 'put'"), 'Should set method');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
