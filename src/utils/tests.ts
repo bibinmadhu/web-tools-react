@@ -460,16 +460,31 @@ public class OrderService {
     assertEqual(multiParsed.body?.formData?.description, 'My file', 'Form field should match');
   });
 
-  test('cURL Converter', 'Generates valid Python requests & httpx scripts', () => {
-    const parsed = parseCurlCommand(`curl -X POST "https://api.example.com/data" -H "Authorization: Bearer secret" -d '{"key": "val"}'`);
+  test('cURL Converter', 'Generates valid Python requests & httpx scripts with Python booleans True/False', () => {
+    const parsed = parseCurlCommand(`curl -X POST "https://api.example.com/data" -H "Content-Type: application/json" -d '{"active": true, "disabled": false, "empty": null, "nested": {"flag": true}}'`);
     const pyRequests = generatePythonCode(parsed, 'requests');
     assertTrue(pyRequests.includes('import requests'), 'Should import requests');
     assertTrue(pyRequests.includes('requests.post'), 'Should call requests.post');
-    assertTrue(pyRequests.includes('payload = {'), 'Should define payload');
+    assertTrue(pyRequests.includes('"active": True'), 'Python requests payload should use True instead of true');
+    assertTrue(pyRequests.includes('"disabled": False'), 'Python requests payload should use False instead of false');
+    assertTrue(pyRequests.includes('"empty": None'), 'Python requests payload should use None instead of null');
+    assertTrue(!pyRequests.includes(': true'), 'Python code must not contain : true');
+    assertTrue(!pyRequests.includes(': false'), 'Python code must not contain : false');
+    assertTrue(!pyRequests.includes(': null'), 'Python code must not contain : null');
 
     const pyHttpx = generatePythonCode(parsed, 'httpx_async');
     assertTrue(pyHttpx.includes('import httpx'), 'Should import httpx');
     assertTrue(pyHttpx.includes('async with httpx.AsyncClient('), 'Should use async client context');
+    assertTrue(pyHttpx.includes('"active": True'), 'Python httpx payload should use True');
+    assertTrue(pyHttpx.includes('"disabled": False'), 'Python httpx payload should use False');
+
+    const pyAiohttp = generatePythonCode(parsed, 'aiohttp');
+    assertTrue(pyAiohttp.includes('"active": True'), 'Python aiohttp payload should use True');
+    assertTrue(pyAiohttp.includes('"disabled": False'), 'Python aiohttp payload should use False');
+
+    const pyUrllib = generatePythonCode(parsed, 'urllib');
+    assertTrue(pyUrllib.includes('"active": True'), 'Python urllib payload should use True');
+    assertTrue(pyUrllib.includes('"disabled": False'), 'Python urllib payload should use False');
   });
 
   test('cURL Converter', 'Generates valid TypeScript fetch & axios scripts', () => {

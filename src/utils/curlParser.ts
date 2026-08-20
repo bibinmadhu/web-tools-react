@@ -511,7 +511,24 @@ export function parseCurlCommand(rawCommand: string): ParsedCurlRequest {
       parsedJson = JSON.parse(combinedData);
       isJson = true;
     } catch {
-      // not direct JSON
+      // Try loose JSON parsing if single quotes were used
+      const trimmed = combinedData.trim();
+      if (
+        (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+        (trimmed.startsWith('[') && trimmed.endsWith(']'))
+      ) {
+        try {
+          const converted = trimmed
+            .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, '"$1"')
+            .replace(/:\s*True\b/g, ': true')
+            .replace(/:\s*False\b/g, ': false')
+            .replace(/:\s*None\b/g, ': null');
+          parsedJson = JSON.parse(converted);
+          isJson = true;
+        } catch {
+          // not direct JSON
+        }
+      }
     }
 
     if (isJson && parsedJson !== null) {

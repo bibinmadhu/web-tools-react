@@ -22,7 +22,68 @@ function getIndent(level: number, spaces = 2): string {
  * Helper to escape quotes in strings for Python
  */
 function pyEscape(str: string): string {
-  return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return str
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
+/**
+ * Recursively converts a JavaScript value/JSON object into valid Python syntax:
+ * - booleans: True, False
+ * - null/undefined: None
+ * - strings: "escaped_str"
+ * - numbers: 123
+ * - lists/dicts with correct indentation
+ */
+export function toPythonLiteral(val: any, indentSpaces = 4, currentLevel = 0): string {
+  if (val === null || val === undefined) {
+    return 'None';
+  }
+  if (typeof val === 'boolean') {
+    return val ? 'True' : 'False';
+  }
+  if (typeof val === 'number') {
+    return isNaN(val) ? 'float("nan")' : !isFinite(val) ? (val > 0 ? 'float("inf")' : 'float("-inf")') : String(val);
+  }
+  if (typeof val === 'string') {
+    return `"${pyEscape(val)}"`;
+  }
+  if (Array.isArray(val)) {
+    if (val.length === 0) return '[]';
+    const isShortPrimitiveArray =
+      val.every(
+        (item) =>
+          typeof item === 'number' ||
+          typeof item === 'boolean' ||
+          item === null ||
+          (typeof item === 'string' && item.length < 30)
+      ) && val.length <= 6;
+
+    if (isShortPrimitiveArray) {
+      return `[${val.map((item) => toPythonLiteral(item, indentSpaces, currentLevel)).join(', ')}]`;
+    }
+
+    const itemIndent = ' '.repeat((currentLevel + 1) * indentSpaces);
+    const closeIndent = ' '.repeat(currentLevel * indentSpaces);
+    const elements = val.map((item) => `${itemIndent}${toPythonLiteral(item, indentSpaces, currentLevel + 1)},`);
+    return `[\n${elements.join('\n')}\n${closeIndent}]`;
+  }
+  if (typeof val === 'object') {
+    const keys = Object.keys(val);
+    if (keys.length === 0) return '{}';
+
+    const itemIndent = ' '.repeat((currentLevel + 1) * indentSpaces);
+    const closeIndent = ' '.repeat(currentLevel * indentSpaces);
+    const lines = keys.map((k) => {
+      const formattedVal = toPythonLiteral(val[k], indentSpaces, currentLevel + 1);
+      return `${itemIndent}"${pyEscape(k)}": ${formattedVal},`;
+    });
+    return `{\n${lines.join('\n')}\n${closeIndent}}`;
+  }
+  return `"${pyEscape(String(val))}"`;
 }
 
 /**
@@ -139,19 +200,14 @@ export function generatePythonCode(
     let reqArgBody = '';
     if (req.body) {
       if (req.body.type === 'json' && req.body.jsonData !== undefined) {
-        lines.push(
-          `${ind(bodyIndent)}payload = ${JSON.stringify(req.body.jsonData, null, indentSize).replace(
-            /\n/g,
-            '\n' + ind(bodyIndent)
-          )}`
-        );
+        lines.push(`${ind(bodyIndent)}payload = ${toPythonLiteral(req.body.jsonData, indentSize, bodyIndent)}`);
         reqArgBody = ', json=payload';
       } else if (req.body.type === 'graphql' && req.body.graphql) {
         lines.push(`${ind(bodyIndent)}payload = {`);
         lines.push(`${ind(bodyIndent + 1)}"query": """${req.body.graphql.query}""",`);
         if (req.body.graphql.variables) {
           lines.push(
-            `${ind(bodyIndent + 1)}"variables": ${JSON.stringify(req.body.graphql.variables)},`
+            `${ind(bodyIndent + 1)}"variables": ${toPythonLiteral(req.body.graphql.variables, indentSize, bodyIndent + 1)},`
           );
         }
         lines.push(`${ind(bodyIndent)}}`);
@@ -274,12 +330,7 @@ export function generatePythonCode(
 
     let bodyArg = '';
     if (req.body?.type === 'json' && req.body.jsonData) {
-      lines.push(
-        `${ind(bodyIndent)}payload = ${JSON.stringify(req.body.jsonData, null, indentSize).replace(
-          /\n/g,
-          '\n' + ind(bodyIndent)
-        )}`
-      );
+      lines.push(`${ind(bodyIndent)}payload = ${toPythonLiteral(req.body.jsonData, indentSize, bodyIndent)}`);
       bodyArg = ', json=payload';
     } else if (req.body?.type === 'form-urlencoded' && req.body.formData) {
       lines.push(`${ind(bodyIndent)}data = {`);
@@ -385,12 +436,7 @@ export function generatePythonCode(
 
     let payloadArg = '';
     if (req.body?.type === 'json' && req.body.jsonData) {
-      lines.push(
-        `${ind(inLvl)}payload = ${JSON.stringify(req.body.jsonData, null, indentSize).replace(
-          /\n/g,
-          '\n' + ind(inLvl)
-        )}`
-      );
+      lines.push(`${ind(inLvl)}payload = ${toPythonLiteral(req.body.jsonData, indentSize, inLvl)}`);
       payloadArg = ', json=payload';
     } else if (req.body?.type === 'form-urlencoded' && req.body.formData) {
       lines.push(`${ind(inLvl)}data = {`);
@@ -464,12 +510,7 @@ export function generatePythonCode(
 
   let dataBytesInit = '';
   if (req.body?.type === 'json' && req.body.jsonData) {
-    lines.push(
-      `${ind(bodyIndent)}payload = ${JSON.stringify(req.body.jsonData, null, indentSize).replace(
-        /\n/g,
-        '\n' + ind(bodyIndent)
-      )}`
-    );
+    lines.push(`${ind(bodyIndent)}payload = ${toPythonLiteral(req.body.jsonData, indentSize, bodyIndent)}`);
     lines.push(`${ind(bodyIndent)}data_bytes = json.dumps(payload).encode("utf-8")`);
     dataBytesInit = ', data=data_bytes';
   } else if (req.body?.type === 'form-urlencoded' && req.body.formData) {
