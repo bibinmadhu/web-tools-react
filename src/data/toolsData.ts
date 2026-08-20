@@ -51,6 +51,16 @@ export const TOOLS_DATA: DevTool[] = [
     isPopular: true,
   },
   {
+    id: 'curl-flattener',
+    name: 'cURL Single-Line Formatter',
+    description: 'Remove newlines, line continuation backslashes (\\), carets (^) and comments to flatten cURL into single-line',
+    category: 'formatters',
+    tags: ['cURL', 'Formatter', 'Single Line', 'Bash', 'Flatten', 'CLI', 'Terminal'],
+    iconText: 'cURL',
+    iconType: 'curl',
+    isPopular: true,
+  },
+  {
     id: 'curl-converter',
     name: 'cURL to Python / TypeScript',
     description: 'Convert cURL to production-ready Python (requests, httpx, aiohttp) & TypeScript (fetch, axios, ky) scripts',

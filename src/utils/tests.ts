@@ -15,6 +15,7 @@ import { convertPdfDocument, extractPdfContent } from './pdfConverter';
 import { formatJavaCode, sampleUnformattedJavaCode } from './javaFormatter';
 import { parseCurlCommand, tokenizeCurlCommand } from './curlParser';
 import { generatePythonCode, generateTypeScriptCode } from './curlToCode';
+import { flattenCurlCommand, beautifyCurlCommand, normalizeSmartChars } from './curlFlattener';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -497,6 +498,77 @@ public class OrderService {
     const tsAxios = generateTypeScriptCode(parsed, 'axios');
     assertTrue(tsAxios.includes("import axios, { AxiosRequestConfig"), 'Should import axios');
     assertTrue(tsAxios.includes("method: 'put'"), 'Should set method');
+  });
+
+  // --- Suite 10: cURL Single-Line Formatter & Flattener ---
+  test('cURL Formatter', 'Removes trailing backslashes & newlines into a single line', () => {
+    const raw = `curl -X POST "https://api.example.com/v1/users" \\
+  -H "Authorization: Bearer token123" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name": "Alice"}'`;
+    const { singleLine, stats } = flattenCurlCommand(raw);
+    assertEqual(singleLine.split('\n').length, 1, 'Should output strictly 1 line');
+    assertTrue(!singleLine.includes('\\'), 'Should not contain trailing backslashes');
+    assertTrue(singleLine.includes('-H "Authorization: Bearer token123"'), 'Should preserve headers');
+    assertEqual(stats.backslashesRemoved, 3, 'Should count 3 removed backslashes');
+  });
+
+  test('cURL Formatter', 'Handles trailing spaces after backslash and CRLF newlines', () => {
+    const raw = `curl "https://api.example.com" \\   \r\n  -H "Accept: application/json" \\ \t\r\n  -d "test"`;
+    const { singleLine } = flattenCurlCommand(raw);
+    assertEqual(singleLine.split('\n').length, 1, 'Should eliminate CRLF with trailing spaces');
+    assertTrue(!singleLine.includes('\\'), 'Should remove backslashes with trailing whitespace');
+    assertTrue(singleLine.includes('-H "Accept: application/json"'), 'Should keep flags properly formatted');
+  });
+
+  test('cURL Formatter', 'Removes Windows CMD carets (^) and PowerShell backticks (`)', () => {
+    const cmdRaw = `curl.exe -X POST "https://api.example.com" ^\n  -H "Content-Type: application/json" ^\n  -d "{}"`;
+    const { singleLine: cmdOut, stats: cmdStats } = flattenCurlCommand(cmdRaw);
+    assertEqual(cmdOut.split('\n').length, 1, 'CMD output should be 1 line');
+    assertTrue(!cmdOut.includes('^'), 'Should remove CMD carets');
+    assertEqual(cmdStats.caretsRemoved, 2, 'Should count 2 removed carets');
+
+    const psRaw = `curl.exe -X POST 'https://api.example.com' \`\n  -H 'Content-Type: application/json' \`\n  -d '{}'`;
+    const { singleLine: psOut, stats: psStats } = flattenCurlCommand(psRaw);
+    assertEqual(psOut.split('\n').length, 1, 'PS output should be 1 line');
+    assertTrue(!psOut.includes('`'), 'Should remove PS backticks');
+    assertEqual(psStats.backticksRemoved, 2, 'Should count 2 removed backticks');
+  });
+
+  test('cURL Formatter', 'Strips shell comments and compacts multiline JSON payloads', () => {
+    const raw = `# First line comment
+# Setup request
+curl -X POST "https://api.example.com/data" \\
+  -H "Content-Type: application/json" \\
+  # inline comment line
+  -d '{
+    "user": "alex",
+    "role": "admin",
+    "active": true
+  }'`;
+    const { singleLine, stats } = flattenCurlCommand(raw, { minifyJsonPayloads: true, stripComments: true });
+    assertEqual(singleLine.split('\n').length, 1, 'Should output single line with no comments');
+    assertTrue(!singleLine.includes('#'), 'Should strip all comments');
+    assertTrue(singleLine.includes('{"user":"alex","role":"admin","active":true}'), 'Should minify JSON body');
+    assertTrue(stats.commentsStripped >= 3, 'Should track stripped comments count');
+  });
+
+  test('cURL Formatter', 'Normalizes smart quotes and em-dashes from documentation', () => {
+    const raw = `curl —X POST “https://api.example.com” —H ‘Accept: application/json’`;
+    const { singleLine } = flattenCurlCommand(raw, { normalizeSmartQuotes: true, normalizeSmartDashes: true });
+    assertTrue(singleLine.includes('-X POST "https://api.example.com"'), 'Should replace em-dash and curly double quotes');
+    assertTrue(singleLine.includes("-H 'Accept: application/json'"), 'Should replace em-dash and curly single quotes');
+  });
+
+  test('cURL Formatter', 'Converts to Windows CMD escaped quotes and beautifies to multiline', () => {
+    const raw = `curl -X POST "https://api.example.com" -H "Content-Type: application/json" -d '{"key": "val"}'`;
+    const { singleLine: cmdLine } = flattenCurlCommand(raw, { targetShell: 'cmd' });
+    assertTrue(cmdLine.includes('curl.exe'), 'Should ensure curl.exe prefix for CMD');
+    assertTrue(cmdLine.includes('-d "{\\"key\\": \\"val\\"}"'), 'Should escape internal double quotes for CMD');
+
+    const beautified = beautifyCurlCommand(raw, { continuationChar: '\\', indentSize: 2 });
+    assertTrue(beautified.split('\n').length >= 3, 'Beautified output should have multiple lines');
+    assertTrue(beautified.includes('\\\n'), 'Should include backslash line continuations');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
