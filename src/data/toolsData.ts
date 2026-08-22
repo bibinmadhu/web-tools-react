@@ -191,4 +191,14 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'pdf',
     isPopular: true,
   },
+  {
+    id: 'invoice-generator',
+    name: 'Invoice Generator',
+    description: 'Generate professional B2B & B2C invoices with customizable tax numbers, multi-currency, line items & PDF export',
+    category: 'documents',
+    tags: ['Invoice', 'Billing', 'PDF', 'Tax', 'VAT', 'GST', 'Document', 'Generator'],
+    iconText: 'INV',
+    iconType: 'pdf',
+    isPopular: true,
+  },
 ];

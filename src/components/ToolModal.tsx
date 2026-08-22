@@ -19,6 +19,7 @@ import { PdfConverterTool } from './tools/PdfConverterTool';
 import { JavaFormatterTool } from './tools/JavaFormatterTool';
 import { CurlConverterTool } from './tools/CurlConverterTool';
 import { CurlFlattenerTool } from './tools/CurlFlattenerTool';
+import { InvoiceGeneratorTool } from './tools/InvoiceGeneratorTool';
 import { GenericTool } from './tools/GenericTool';
 
 interface ToolModalProps {
@@ -74,10 +75,14 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return <CurlConverterTool />;
       case 'curl-flattener':
         return <CurlFlattenerTool />;
+      case 'invoice-generator':
+        return <InvoiceGeneratorTool />;
       default:
         return <GenericTool tool={tool} />;
     }
   };
+
+  const isWideModal = ['pdf-signer', 'pdf-converter', 'invoice-generator', 'curl-converter', 'java-formatter'].includes(tool.id);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6">
@@ -89,7 +94,7 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       />
 
       {/* Modal Dialog */}
-      <div className="relative z-50 w-full max-w-4xl bg-white dark:bg-[#1E293B] text-slate-900 dark:text-slate-100 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[90vh]">
+      <div className={`relative z-50 w-full ${isWideModal ? 'max-w-6xl' : 'max-w-4xl'} bg-white dark:bg-[#1E293B] text-slate-900 dark:text-slate-100 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[92vh]`}>
         {/* Header Bar */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0F172A]">
           <div className="flex items-center gap-3.5">

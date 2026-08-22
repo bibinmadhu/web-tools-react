@@ -26,6 +26,14 @@ import { formatJavaCode, sampleUnformattedJavaCode } from './javaFormatter';
 import { parseCurlCommand, tokenizeCurlCommand } from './curlParser';
 import { generatePythonCode, generateTypeScriptCode } from './curlToCode';
 import { flattenCurlCommand, beautifyCurlCommand, normalizeSmartChars } from './curlFlattener';
+import {
+  calculateInvoiceTotals,
+  formatInvoiceCurrency,
+  createDefaultInvoice,
+  generateInvoicePdf,
+  SAMPLE_INVOICES,
+  POPULAR_CURRENCIES,
+} from './invoiceGenerator';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -669,6 +677,96 @@ curl -X POST "https://api.example.com/data" \\
     const beautified = beautifyCurlCommand(raw, { continuationChar: '\\', indentSize: 2 });
     assertTrue(beautified.split('\n').length >= 3, 'Beautified output should have multiple lines');
     assertTrue(beautified.includes('\\\n'), 'Should include backslash line continuations');
+  });
+
+  // --- Suite 15: Invoice Generator Engine ---
+  test('Invoice Generator', 'Calculates subtotal, discounts, taxes and balances correctly', () => {
+    const inv = createDefaultInvoice();
+    // Set explicit numbers for predictable verification
+    inv.lineItems = [
+      { id: '1', description: 'Web Development', quantity: 10, unitPrice: 100, discountPercent: 10 }, // 1000 - 100 = 900
+      { id: '2', description: 'Cloud Setup', quantity: 2, unitPrice: 300, discountPercent: 0 },         // 600
+    ];
+    inv.globalDiscountType = 'percent';
+    inv.globalDiscountValue = 10; // 10% on 1500 = 150 -> net = 1350
+    inv.taxMode = 'exclusive';
+    inv.defaultTaxRate = 20; // 20% on 1350 = 270
+    inv.shippingFee = 50;
+    inv.extraFeeAmount = 25;
+    inv.enableWithholdingTax = true;
+    inv.withholdingTaxRate = 5; // 5% of 1350 = 67.5
+    inv.amountPaid = 500;
+
+    const totals = calculateInvoiceTotals(inv);
+    assertEqual(totals.subtotal, 1600, 'Subtotal should be 1600');
+    assertEqual(totals.totalItemDiscount, 100, 'Item discount should be 100');
+    assertEqual(totals.globalDiscountAmount, 150, 'Global discount should be 150 (10% of 1500)');
+    assertEqual(totals.netTaxableAmount, 1350, 'Net taxable should be 1350');
+    assertEqual(totals.primaryTaxAmount, 270, '20% VAT should be 270');
+    assertEqual(totals.shippingFee, 50, 'Shipping fee should be 50');
+    assertEqual(totals.extraFeeAmount, 25, 'Extra fee should be 25');
+    assertEqual(totals.grandTotal, 1695, 'Grand total = 1350 + 270 + 50 + 25 = 1695');
+    assertEqual(totals.withholdingTaxAmount, 67.5, '5% withholding tax = 67.5');
+    // Balance due = (1695 - 67.5) - 500 = 1127.5
+    assertEqual(totals.balanceDue, 1127.5, 'Balance due should be 1127.5');
+  });
+
+  test('Invoice Generator', 'Calculates tax-inclusive pricing correctly', () => {
+    const inv = createDefaultInvoice();
+    inv.lineItems = [
+      { id: '1', description: 'Product Sale', quantity: 1, unitPrice: 120, discountPercent: 0 },
+    ];
+    inv.taxMode = 'inclusive';
+    inv.defaultTaxRate = 20; // Price 120 includes 20% tax -> base = 100, tax = 20
+    inv.shippingFee = 0;
+    inv.extraFeeAmount = 0;
+    inv.globalDiscountValue = 0;
+    inv.amountPaid = 0;
+
+    const totals = calculateInvoiceTotals(inv);
+    assertEqual(totals.subtotal, 120, 'Subtotal should be 120');
+    assertEqual(totals.netTaxableAmount, 100, 'Base taxable amount should be 100 for 120 inclusive 20%');
+    assertEqual(totals.primaryTaxAmount, 20, 'Included tax should be 20');
+    assertEqual(totals.grandTotal, 120, 'Grand total should remain 120 in inclusive mode');
+  });
+
+  test('Invoice Generator', 'Supports dual taxes such as CGST + SGST or State + Federal', () => {
+    const inv = createDefaultInvoice();
+    inv.lineItems = [
+      { id: '1', description: 'Service Job', quantity: 1, unitPrice: 1000, discountPercent: 0 },
+    ];
+    inv.taxMode = 'exclusive';
+    inv.defaultTaxLabel = 'CGST';
+    inv.defaultTaxRate = 9;
+    inv.enableSecondTax = true;
+    inv.secondTaxLabel = 'SGST';
+    inv.secondTaxRate = 9;
+    inv.globalDiscountValue = 0;
+
+    const totals = calculateInvoiceTotals(inv);
+    assertEqual(totals.primaryTaxAmount, 90, 'CGST 9% of 1000 = 90');
+    assertEqual(totals.secondTaxAmount, 90, 'SGST 9% of 1000 = 90');
+    assertEqual(totals.totalTax, 180, 'Total tax should be 180');
+    assertEqual(totals.grandTotal, 1180, 'Grand total should be 1180');
+  });
+
+  test('Invoice Generator', 'Formats multi-currency amounts with prefix, suffix and decimal precision', () => {
+    const usd = POPULAR_CURRENCIES.find((c) => c.code === 'USD')!;
+    const eur = POPULAR_CURRENCIES.find((c) => c.code === 'EUR')!;
+    const jpy = POPULAR_CURRENCIES.find((c) => c.code === 'JPY')!;
+
+    assertEqual(formatInvoiceCurrency(1250.5, usd), '$1,250.50', 'USD should format with leading symbol and 2 decimals');
+    assertEqual(formatInvoiceCurrency(1250.5, eur), '1,250.50 €', 'EUR should format with trailing symbol and 2 decimals');
+    assertEqual(formatInvoiceCurrency(1250, jpy), '¥1,250', 'JPY should format with 0 decimals');
+  });
+
+  await testAsync('Invoice Generator', 'Generates valid downloadable vector PDF document', async () => {
+    const sampleInv = createDefaultInvoice();
+    const pdfBytes = await generateInvoicePdf(sampleInv);
+    assertTrue(pdfBytes.length > 500, 'Generated invoice PDF should contain valid bytes');
+    // PDF Magic bytes check (%PDF-)
+    const headerStr = String.fromCharCode(...pdfBytes.slice(0, 5));
+    assertTrue(headerStr.startsWith('%PDF'), 'PDF document should start with %PDF header');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
