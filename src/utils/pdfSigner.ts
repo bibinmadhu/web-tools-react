@@ -62,6 +62,74 @@ function hexToRgbColor(hex: string) {
 }
 
 /**
+ * Returns today's date formatted as ISO string (YYYY-MM-DD) for signature default.
+ */
+export function getDefaultSignatureDate(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export type SignatureDateFormat = 'iso' | 'long' | 'short-us' | 'short-eu' | 'datetime';
+
+/**
+ * Formats a date string or Date object into user-friendly signature date formats.
+ */
+export function formatSignatureDate(
+  dateInput: Date | string,
+  format: SignatureDateFormat = 'iso'
+): string {
+  let date: Date;
+  if (typeof dateInput === 'string') {
+    if (!dateInput.trim()) return '';
+    // If it's pure YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput.trim())) {
+      const [y, m, d] = dateInput.trim().split('-').map(Number);
+      date = new Date(y, m - 1, d);
+    } else {
+      date = new Date(dateInput);
+    }
+  } else {
+    date = dateInput;
+  }
+
+  if (isNaN(date.getTime())) {
+    return typeof dateInput === 'string' ? dateInput : '';
+  }
+
+  const year = date.getFullYear();
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  const monthShortNames = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+  const monthNum = String(date.getMonth() + 1).padStart(2, '0');
+  const dayNum = String(date.getDate()).padStart(2, '0');
+
+  switch (format) {
+    case 'iso':
+      return `${year}-${monthNum}-${dayNum}`;
+    case 'long':
+      return `${monthNames[date.getMonth()]} ${date.getDate()}, ${year}`;
+    case 'short-us':
+      return `${monthNum}/${dayNum}/${year}`;
+    case 'short-eu':
+      return `${dayNum}/${monthNum}/${year}`;
+    case 'datetime': {
+      const hours = String(date.getHours()).padStart(2, '0');
+      const minutes = String(date.getMinutes()).padStart(2, '0');
+      return `${year}-${monthNum}-${dayNum} ${hours}:${minutes}`;
+    }
+    default:
+      return `${year}-${monthNum}-${dayNum}`;
+  }
+}
+
+/**
  * Parses user input like "1, 3-5, 8" into an array of 1-indexed unique sorted page numbers.
  */
 export function parsePageRange(rangeStr: string, totalPages: number): number[] {

@@ -12,6 +12,7 @@ import {
   Layers,
   Settings,
   Calendar,
+  Clock,
   User,
   Sparkles,
   Eye,
@@ -36,6 +37,9 @@ import {
   calculateBoxPosition,
   parsePageRange,
   resolveTargetPageNumbers,
+  getDefaultSignatureDate,
+  formatSignatureDate,
+  SignatureDateFormat,
   PdfSignOptions,
   PdfMetadata,
   PageTargetMode,
@@ -90,16 +94,57 @@ export const PdfSignerTool: React.FC = () => {
   const [sigHeight, setSigHeight] = useState<number>(65);
   const [opacity, setOpacity] = useState<number>(1.0);
 
-  // Annotation Options
+  // Annotation Options & Date of Signature
   const [includePrintedName, setIncludePrintedName] = useState(true);
   const [printedNameText, setPrintedNameText] = useState('Alex Morgan');
   const [includeDate, setIncludeDate] = useState(true);
-  const [dateText, setDateText] = useState(() => new Date().toISOString().split('T')[0]);
+  const [datePickerValue, setDatePickerValue] = useState<string>(() => getDefaultSignatureDate());
+  const [dateText, setDateText] = useState<string>(() => getDefaultSignatureDate());
+  const [dateFormat, setDateFormat] = useState<SignatureDateFormat>('iso');
   const [includeReason, setIncludeReason] = useState(false);
   const [reasonText, setReasonText] = useState('Approved and Verified');
   const [showBorder, setShowBorder] = useState(true);
   const [borderColorHex, setBorderColorHex] = useState('#3B82F6');
   const [fontColorHex, setFontColorHex] = useState('#1E293B');
+
+  // Date of Signature Helper Handlers
+  const handleDatePicked = (pickedVal: string) => {
+    setDatePickerValue(pickedVal);
+    if (!pickedVal) {
+      setDateText('');
+      return;
+    }
+    const formatted = formatSignatureDate(pickedVal, dateFormat);
+    setDateText(formatted);
+  };
+
+  const handleSetTodayDate = () => {
+    const todayIso = getDefaultSignatureDate();
+    setDatePickerValue(todayIso);
+    const formatted = formatSignatureDate(todayIso, dateFormat);
+    setDateText(formatted);
+  };
+
+  const handleApplyDateFormat = (fmt: SignatureDateFormat) => {
+    setDateFormat(fmt);
+    const baseDate = datePickerValue || getDefaultSignatureDate();
+    const formatted = formatSignatureDate(baseDate, fmt);
+    setDateText(formatted);
+  };
+
+  const handleAppendCurrentTime = () => {
+    const now = new Date();
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const timeStr = `${hours}:${minutes}`;
+    if (dateText.includes(':')) {
+      // Already has time, replace or update
+      const base = dateText.split(' ')[0];
+      setDateText(`${base} ${timeStr}`);
+    } else {
+      setDateText(`${dateText || getDefaultSignatureDate()} ${timeStr}`);
+    }
+  };
 
   // --- Output State & Preview Mode ---
   const [signedPdfBytes, setSignedPdfBytes] = useState<Uint8Array | null>(null);
@@ -903,6 +948,62 @@ export const PdfSignerTool: React.FC = () => {
                   </label>
                 </div>
               )}
+
+              {/* Signer Identity & Date of Signature Quick Bar */}
+              <div className="p-3.5 rounded-xl bg-slate-800/70 border border-slate-700/70 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <User className="w-4 h-4 text-indigo-400" />
+                    <span className="text-xs font-bold text-slate-200">Signer Identity & Date</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-mono">Defaults to Today</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Signer Name
+                    </label>
+                    <input
+                      type="text"
+                      value={printedNameText}
+                      onChange={(e) => {
+                        setPrintedNameText(e.target.value);
+                        if (sigMode === 'type') setTypedName(e.target.value);
+                      }}
+                      placeholder="e.g. Alex Morgan"
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-medium text-xs focus:outline-hidden focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1">
+                        <Calendar className="w-3 h-3 text-indigo-400" />
+                        <span>Date of Signature</span>
+                      </label>
+                      <button
+                        onClick={handleSetTodayDate}
+                        type="button"
+                        className="text-[10px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-0.5 hover:underline cursor-pointer"
+                        title="Reset date to today"
+                      >
+                        <Sparkles className="w-2.5 h-2.5 text-amber-400" />
+                        <span>Today</span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="date"
+                        value={datePickerValue}
+                        onChange={(e) => handleDatePicked(e.target.value)}
+                        className="flex-1 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:outline-hidden focus:border-indigo-500 cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1197,31 +1298,128 @@ export const PdfSignerTool: React.FC = () => {
                 />
               )}
 
-              {/* Date Stamp Toggle */}
-              <div className="flex items-center justify-between p-3 rounded-lg bg-slate-800/60 border border-slate-700/60">
-                <div className="flex items-center gap-2.5">
-                  <Calendar className="w-4 h-4 text-indigo-400" />
-                  <div>
-                    <span className="text-xs font-semibold text-slate-200">Include Date Stamp</span>
-                    <p className="text-[10px] text-slate-400">Embeds signing timestamp</p>
+              {/* Date Stamp Toggle & Settings */}
+              <div className="p-3.5 rounded-xl bg-slate-800/60 border border-slate-700/60 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <Calendar className="w-4 h-4 text-indigo-400" />
+                    <div>
+                      <span className="text-xs font-bold text-slate-200">Date of Signature</span>
+                      <p className="text-[10px] text-slate-400">Embeds date stamp (default: current date)</p>
+                    </div>
                   </div>
+                  <input
+                    type="checkbox"
+                    checked={includeDate}
+                    onChange={(e) => setIncludeDate(e.target.checked)}
+                    className="w-4 h-4 accent-indigo-500 rounded cursor-pointer"
+                  />
                 </div>
-                <input
-                  type="checkbox"
-                  checked={includeDate}
-                  onChange={(e) => setIncludeDate(e.target.checked)}
-                  className="w-4 h-4 accent-indigo-500 rounded cursor-pointer"
-                />
-              </div>
 
-              {includeDate && (
-                <input
-                  type="date"
-                  value={dateText}
-                  onChange={(e) => setDateText(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white font-mono text-xs focus:outline-hidden"
-                />
-              )}
+                {includeDate && (
+                  <div className="space-y-2.5 pt-2 border-t border-slate-700/60">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                          Pick Date
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="date"
+                            value={datePickerValue}
+                            onChange={(e) => handleDatePicked(e.target.value)}
+                            className="flex-1 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:outline-hidden focus:border-indigo-500 cursor-pointer"
+                          />
+                          <button
+                            onClick={handleSetTodayDate}
+                            type="button"
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 text-xs font-semibold cursor-pointer transition-colors"
+                            title="Reset to current date"
+                          >
+                            <Sparkles className="w-3 h-3 text-amber-400" />
+                            <span>Today</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                          Signature Date Display Text
+                        </label>
+                        <input
+                          type="text"
+                          value={dateText}
+                          onChange={(e) => setDateText(e.target.value)}
+                          placeholder="e.g. 2026-08-22 or Aug 22, 2026"
+                          className="w-full px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:outline-hidden focus:border-indigo-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Quick Format Presets */}
+                    <div>
+                      <span className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                        Quick Format Presets:
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleApplyDateFormat('iso')}
+                          className={`px-2 py-1 rounded text-[11px] font-mono border transition-colors ${
+                            dateFormat === 'iso'
+                              ? 'bg-indigo-600 text-white border-indigo-500'
+                              : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200'
+                          }`}
+                        >
+                          YYYY-MM-DD
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleApplyDateFormat('long')}
+                          className={`px-2 py-1 rounded text-[11px] font-mono border transition-colors ${
+                            dateFormat === 'long'
+                              ? 'bg-indigo-600 text-white border-indigo-500'
+                              : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200'
+                          }`}
+                        >
+                          Month DD, YYYY
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleApplyDateFormat('short-us')}
+                          className={`px-2 py-1 rounded text-[11px] font-mono border transition-colors ${
+                            dateFormat === 'short-us'
+                              ? 'bg-indigo-600 text-white border-indigo-500'
+                              : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200'
+                          }`}
+                        >
+                          MM/DD/YYYY
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleApplyDateFormat('short-eu')}
+                          className={`px-2 py-1 rounded text-[11px] font-mono border transition-colors ${
+                            dateFormat === 'short-eu'
+                              ? 'bg-indigo-600 text-white border-indigo-500'
+                              : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200'
+                          }`}
+                        >
+                          DD/MM/YYYY
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleAppendCurrentTime}
+                          className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-mono border bg-slate-900 text-indigo-300 border-slate-700 hover:bg-slate-800 hover:text-indigo-200"
+                          title="Append current time"
+                        >
+                          <Clock className="w-3 h-3" />
+                          <span>+ Time</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Signing Reason Toggle */}
               <div className="flex items-center justify-between p-3 rounded-lg bg-slate-800/60 border border-slate-700/60">

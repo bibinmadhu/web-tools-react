@@ -18,6 +18,8 @@ import {
   computeSignatureBoxMetrics,
   parsePageRange,
   resolveTargetPageNumbers,
+  getDefaultSignatureDate,
+  formatSignatureDate,
 } from './pdfSigner';
 import { convertPdfDocument, extractPdfContent } from './pdfConverter';
 import { formatJavaCode, sampleUnformattedJavaCode } from './javaFormatter';
@@ -365,6 +367,30 @@ public class OrderService {
     const posCenter = calculateBoxPosition(600, 800, metrics.totalBoxWidth, metrics.totalBoxHeight, 'center');
     assertTrue(posCenter.pdfX === (600 - metrics.totalBoxWidth) / 2, 'Center X should be midpoint');
     assertTrue(posCenter.pdfY === (800 - metrics.totalBoxHeight) / 2, 'Center Y should be midpoint');
+  });
+
+  test('PDF Signer', 'Supports custom Date of Signature with default current date', () => {
+    const todayIso = getDefaultSignatureDate();
+    assertTrue(/^\d{4}-\d{2}-\d{2}$/.test(todayIso), 'Default signature date should match YYYY-MM-DD pattern');
+
+    // Test date formatters
+    const testDate = '2026-08-22';
+    assertEqual(formatSignatureDate(testDate, 'iso'), '2026-08-22', 'ISO format should match');
+    assertEqual(formatSignatureDate(testDate, 'long'), 'August 22, 2026', 'Long format should match Month DD, YYYY');
+    assertEqual(formatSignatureDate(testDate, 'short-us'), '08/22/2026', 'US format should match MM/DD/YYYY');
+    assertEqual(formatSignatureDate(testDate, 'short-eu'), '22/08/2026', 'EU format should match DD/MM/YYYY');
+
+    // Metrics with custom date of signature
+    const metricsWithCustomDate = computeSignatureBoxMetrics({
+      sigWidth: 160,
+      sigHeight: 65,
+      signDate: 'August 22, 2026',
+      showBorder: true,
+    });
+    assertTrue(
+      metricsWithCustomDate.textLines.some((l) => l.includes('Date: August 22, 2026')),
+      'Metrics should include custom Date of Signature text'
+    );
   });
 
   // --- Suite 11: PDF to Docx & Docs Converter ---
