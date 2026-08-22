@@ -10,7 +10,13 @@ import {
   parseCron,
 } from './toolFunctions';
 import { obfuscateJavaCode, deobfuscateJavaCode } from './javaObfuscator';
-import { createSamplePdf, getPdfMetadata, signPdfDocument } from './pdfSigner';
+import {
+  createSamplePdf,
+  getPdfMetadata,
+  signPdfDocument,
+  calculateBoxPosition,
+  computeSignatureBoxMetrics,
+} from './pdfSigner';
 import { convertPdfDocument, extractPdfContent } from './pdfConverter';
 import { formatJavaCode, sampleUnformattedJavaCode } from './javaFormatter';
 import { parseCurlCommand, tokenizeCurlCommand } from './curlParser';
@@ -291,6 +297,31 @@ public class OrderService {
     });
 
     assertTrue(signedBytes.length > pdfBytes.length, 'Signed PDF byte length should increase after embedding signature & metadata');
+  });
+
+  test('PDF Signer', 'Calculates accurate signature metrics & 1:1 UI-PDF coordinate mapping', () => {
+    const metrics = computeSignatureBoxMetrics({
+      sigWidth: 160,
+      sigHeight: 65,
+      printedName: 'Alex Morgan',
+      signDate: '2026-08-11',
+      showBorder: true,
+    });
+
+    assertTrue(metrics.totalBoxWidth >= 180, 'Box width should accommodate signature and padding');
+    assertTrue(metrics.textLines.length === 2, 'Should compute 2 annotation text lines');
+
+    // Bottom-right position calculation on standard 600x800 page
+    const posBR = calculateBoxPosition(600, 800, metrics.totalBoxWidth, metrics.totalBoxHeight, 'bottom-right', 0, 0, 24);
+    assertTrue(posBR.pdfX === 600 - metrics.totalBoxWidth - 24, 'PDF X should align with right margin');
+    assertTrue(posBR.pdfY === 24, 'PDF Y should align with bottom margin');
+    assertTrue(posBR.uiLeftPercent > 50, 'UI Left percentage should be on right half');
+    assertTrue(posBR.uiTopPercent > 50, 'UI Top percentage should be on lower half in top-down coordinates');
+
+    // Center position
+    const posCenter = calculateBoxPosition(600, 800, metrics.totalBoxWidth, metrics.totalBoxHeight, 'center');
+    assertTrue(posCenter.pdfX === (600 - metrics.totalBoxWidth) / 2, 'Center X should be midpoint');
+    assertTrue(posCenter.pdfY === (800 - metrics.totalBoxHeight) / 2, 'Center Y should be midpoint');
   });
 
   // --- Suite 11: PDF to Docx & Docs Converter ---

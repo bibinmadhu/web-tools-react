@@ -1,4 +1,4 @@
-import { PDFDocument, rgb, StandardFonts, degrees } from 'pdf-lib';
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 
 export interface PdfSignOptions {
   pdfBuffer: ArrayBuffer | Uint8Array;
@@ -9,7 +9,7 @@ export interface PdfSignOptions {
   customXPercent?: number; // 0 - 100
   customYPercent?: number; // 0 - 100
   sigWidth?: number; // default 160
-  sigHeight?: number; // default 60
+  sigHeight?: number; // default 65
   printedName?: string;
   signDate?: string;
   signReason?: string;
@@ -24,17 +24,159 @@ export interface PdfMetadata {
   pagesDimensions: Array<{ width: number; height: number }>;
 }
 
+export interface SignatureBoxMetrics {
+  totalBoxWidth: number;
+  totalBoxHeight: number;
+  sigWidth: number;
+  sigHeight: number;
+  sigXOffset: number;
+  sigYOffset: number;
+  textBlockHeight: number;
+  textLines: string[];
+}
+
+export interface BoxPositionResult {
+  pdfX: number; // PDF coordinates (bottom-left)
+  pdfY: number;
+  uiLeftPercent: number; // 0..100 % from left of page container
+  uiTopPercent: number; // 0..100 % from top of page container
+  uiWidthPercent: number; // 0..100 % width of page container
+  uiHeightPercent: number; // 0..100 % height of page container
+}
+
 // Convert hex color (#RRGGBB) to rgb object (0..1 scale)
 function hexToRgbColor(hex: string) {
-  const cleanHex = hex.replace('#', '');
+  const cleanHex = (hex || '#1E293B').replace('#', '');
   const r = parseInt(cleanHex.substring(0, 2) || '00', 16) / 255;
   const g = parseInt(cleanHex.substring(2, 4) || '00', 16) / 255;
   const b = parseInt(cleanHex.substring(4, 6) || '00', 16) / 255;
-  return rgb(r, g, b);
+  return rgb(
+    isNaN(r) ? 0.1 : r,
+    isNaN(g) ? 0.15 : g,
+    isNaN(b) ? 0.25 : b
+  );
 }
 
 /**
- * Creates a simple sample multi-page PDF document for instant user testing.
+ * Computes exact bounding box dimensions and sub-element offsets
+ * for consistent rendering in both the visual canvas UI and the PDF document.
+ */
+export function computeSignatureBoxMetrics(options: {
+  sigWidth?: number;
+  sigHeight?: number;
+  printedName?: string;
+  signDate?: string;
+  signReason?: string;
+  showBorder?: boolean;
+}): SignatureBoxMetrics {
+  const sigWidth = options.sigWidth || 160;
+  const sigHeight = options.sigHeight || 65;
+  const showBorder = options.showBorder ?? true;
+
+  const textLines: string[] = [];
+  if (options.printedName?.trim()) textLines.push(`Signed by: ${options.printedName.trim()}`);
+  if (options.signDate?.trim()) textLines.push(`Date: ${options.signDate.trim()}`);
+  if (options.signReason?.trim()) textLines.push(`Note: ${options.signReason.trim()}`);
+
+  const textLineHeight = 11;
+  const textBlockHeight = textLines.length > 0 ? textLines.length * textLineHeight + 4 : 0;
+
+  const minWidth = textLines.length > 0 ? 170 : 110;
+  const totalBoxWidth = Math.max(sigWidth + (showBorder ? 20 : 8), minWidth);
+  const badgeHeight = showBorder ? 14 : 0;
+  const totalBoxHeight = sigHeight + textBlockHeight + badgeHeight + (showBorder ? 12 : 4);
+
+  const sigXOffset = (totalBoxWidth - sigWidth) / 2;
+  const sigYOffset = textBlockHeight + (showBorder ? 6 : 2);
+
+  return {
+    totalBoxWidth,
+    totalBoxHeight,
+    sigWidth,
+    sigHeight,
+    sigXOffset,
+    sigYOffset,
+    textBlockHeight,
+    textLines,
+  };
+}
+
+/**
+ * Calculates exact PDF point coordinates and UI percentage coordinates
+ * to guarantee 1:1 mathematical alignment between preview and generated PDF.
+ */
+export function calculateBoxPosition(
+  pageWidth: number,
+  pageHeight: number,
+  boxWidth: number,
+  boxHeight: number,
+  position: 'bottom-right' | 'bottom-left' | 'bottom-center' | 'top-right' | 'top-left' | 'center' | 'custom',
+  customXPercent: number = 60,
+  customYPercent: number = 10,
+  margin: number = 24
+): BoxPositionResult {
+  const safePageWidth = Math.max(100, pageWidth || 600);
+  const safePageHeight = Math.max(100, pageHeight || 800);
+
+  const maxX = Math.max(0, safePageWidth - boxWidth);
+  const maxY = Math.max(0, safePageHeight - boxHeight);
+
+  let pdfX = 0;
+  let pdfY = 0;
+
+  switch (position) {
+    case 'bottom-right':
+      pdfX = safePageWidth - boxWidth - margin;
+      pdfY = margin;
+      break;
+    case 'bottom-left':
+      pdfX = margin;
+      pdfY = margin;
+      break;
+    case 'bottom-center':
+      pdfX = (safePageWidth - boxWidth) / 2;
+      pdfY = margin;
+      break;
+    case 'top-right':
+      pdfX = safePageWidth - boxWidth - margin;
+      pdfY = safePageHeight - boxHeight - margin;
+      break;
+    case 'top-left':
+      pdfX = margin;
+      pdfY = safePageHeight - boxHeight - margin;
+      break;
+    case 'center':
+      pdfX = (safePageWidth - boxWidth) / 2;
+      pdfY = (safePageHeight - boxHeight) / 2;
+      break;
+    case 'custom':
+      pdfX = (customXPercent / 100) * maxX;
+      pdfY = (customYPercent / 100) * maxY;
+      break;
+  }
+
+  // Clamp within bounds
+  pdfX = Math.max(0, Math.min(pdfX, maxX));
+  pdfY = Math.max(0, Math.min(pdfY, maxY));
+
+  // Convert to UI percentages (0..100% from top-left)
+  const uiLeftPercent = (pdfX / safePageWidth) * 100;
+  const uiTopPercent = ((safePageHeight - (pdfY + boxHeight)) / safePageHeight) * 100;
+  const uiWidthPercent = (boxWidth / safePageWidth) * 100;
+  const uiHeightPercent = (boxHeight / safePageHeight) * 100;
+
+  return {
+    pdfX,
+    pdfY,
+    uiLeftPercent,
+    uiTopPercent,
+    uiWidthPercent,
+    uiHeightPercent,
+  };
+}
+
+/**
+ * Creates a clean sample multi-page PDF document for instant user testing.
  */
 export async function createSamplePdf(): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
@@ -51,7 +193,7 @@ export async function createSamplePdf(): Promise<Uint8Array> {
     color: rgb(0.06, 0.09, 0.16),
   });
 
-  page1.drawText('Document ID: DOC-2026-8849A  |  Date: August 11, 2026', {
+  page1.drawText('Document ID: DOC-2026-8849A  |  Date: August 2026', {
     x: 50,
     y: 705,
     size: 10,
@@ -87,32 +229,34 @@ export async function createSamplePdf(): Promise<Uint8Array> {
 
   let currentY = 650;
   for (const line of bodyParagraphs) {
-    page1.drawText(line, {
-      x: 50,
-      y: currentY,
-      size: 11,
-      font: regularFont,
-      color: rgb(0.2, 0.25, 0.35),
-    });
-    currentY -= 22;
+    if (line.trim()) {
+      page1.drawText(line, {
+        x: 50,
+        y: currentY,
+        size: 10.5,
+        font: regularFont,
+        color: rgb(0.2, 0.25, 0.35),
+      });
+    }
+    currentY -= 20;
   }
 
   // Placeholder signature box guideline on Page 1
   page1.drawRectangle({
-    x: 330,
-    y: 80,
-    width: 220,
+    x: 340,
+    y: 70,
+    width: 210,
     height: 90,
-    borderColor: rgb(0.8, 0.85, 0.9),
+    borderColor: rgb(0.75, 0.8, 0.9),
     borderWidth: 1,
   });
 
   page1.drawText('AUTHORIZED SIGNATURE LOCATION', {
-    x: 350,
-    y: 155,
-    size: 8,
+    x: 355,
+    y: 145,
+    size: 7.5,
     font,
-    color: rgb(0.6, 0.65, 0.75),
+    color: rgb(0.55, 0.6, 0.7),
   });
 
   // Page 2 - Appendix
@@ -141,13 +285,29 @@ export async function createSamplePdf(): Promise<Uint8Array> {
     color: rgb(0.38, 0.4, 0.94),
   });
 
-  page2.drawText('All communications, signatures, and document checksums are verified client-side.', {
-    x: 50,
-    y: 650,
-    size: 11,
-    font: regularFont,
-    color: rgb(0.2, 0.25, 0.35),
-  });
+  const page2Lines = [
+    'Section A.1: Digital Signature Integrity',
+    'All electronic signatures, timestamps, and metadata tags are embedded directly into the',
+    'document structure according to standard PDF 1.7 specifications.',
+    '',
+    'Section A.2: Client-Side Security Assurance',
+    'Document manipulation and rendering is performed entirely within the client runtime sandbox.',
+    'No sensitive document data or cryptographic tokens are ever transmitted to external endpoints.',
+  ];
+
+  let currentY2 = 640;
+  for (const line of page2Lines) {
+    if (line.trim()) {
+      page2.drawText(line, {
+        x: 50,
+        y: currentY2,
+        size: 10.5,
+        font: line.startsWith('Section') ? font : regularFont,
+        color: line.startsWith('Section') ? rgb(0.1, 0.15, 0.25) : rgb(0.3, 0.35, 0.45),
+      });
+    }
+    currentY2 -= 22;
+  }
 
   return await pdfDoc.save();
 }
@@ -214,73 +374,39 @@ export async function signPdfDocument(options: PdfSignOptions): Promise<Uint8Arr
   const textColor = hexToRgbColor(fontColorHex);
   const borderColor = hexToRgbColor(borderColorHex);
 
+  const metrics = computeSignatureBoxMetrics({
+    sigWidth,
+    sigHeight,
+    printedName,
+    signDate,
+    signReason,
+    showBorder,
+  });
+
   for (const pageIdx of targetIndices) {
     const page = pdfDoc.getPage(pageIdx);
     const pageWidth = page.getWidth();
     const pageHeight = page.getHeight();
 
-    // Determine extra text lines
-    const textLines: string[] = [];
-    if (printedName.trim()) textLines.push(`Signed by: ${printedName.trim()}`);
-    if (signDate.trim()) textLines.push(`Date: ${signDate.trim()}`);
-    if (signReason.trim()) textLines.push(`Note: ${signReason.trim()}`);
+    const { pdfX, pdfY } = calculateBoxPosition(
+      pageWidth,
+      pageHeight,
+      metrics.totalBoxWidth,
+      metrics.totalBoxHeight,
+      position,
+      customXPercent,
+      customYPercent,
+      24
+    );
 
-    const textFontSize = 8;
-    const textLineHeight = 11;
-    const textBlockHeight = textLines.length > 0 ? textLines.length * textLineHeight + 6 : 0;
-
-    const totalBoxWidth = Math.max(sigWidth + 20, 180);
-    const totalBoxHeight = sigHeight + textBlockHeight + 16;
-
-    // Calculate position X & Y (pdf-lib coordinates start at Bottom-Left (0,0))
-    let x = 0;
-    let y = 0;
-
-    const margin = 30;
-
-    switch (position) {
-      case 'bottom-right':
-        x = pageWidth - totalBoxWidth - margin;
-        y = margin;
-        break;
-      case 'bottom-left':
-        x = margin;
-        y = margin;
-        break;
-      case 'bottom-center':
-        x = (pageWidth - totalBoxWidth) / 2;
-        y = margin;
-        break;
-      case 'top-right':
-        x = pageWidth - totalBoxWidth - margin;
-        y = pageHeight - totalBoxHeight - margin;
-        break;
-      case 'top-left':
-        x = margin;
-        y = pageHeight - totalBoxHeight - margin;
-        break;
-      case 'center':
-        x = (pageWidth - totalBoxWidth) / 2;
-        y = (pageHeight - totalBoxHeight) / 2;
-        break;
-      case 'custom':
-        x = (customXPercent / 100) * (pageWidth - totalBoxWidth);
-        y = (customYPercent / 100) * (pageHeight - totalBoxHeight);
-        break;
-    }
-
-    // Ensure bounds are non-negative
-    x = Math.max(10, Math.min(x, pageWidth - totalBoxWidth - 10));
-    y = Math.max(10, Math.min(y, pageHeight - totalBoxHeight - 10));
-
-    // Optional Bounding Box & Background
+    // Bounding Box & Background Frame
     if (showBorder) {
       // Light background fill
       page.drawRectangle({
-        x: x,
-        y: y,
-        width: totalBoxWidth,
-        height: totalBoxHeight,
+        x: pdfX,
+        y: pdfY,
+        width: metrics.totalBoxWidth,
+        height: metrics.totalBoxHeight,
         color: rgb(0.97, 0.98, 1.0),
         borderColor: borderColor,
         borderWidth: 1.5,
@@ -289,8 +415,8 @@ export async function signPdfDocument(options: PdfSignOptions): Promise<Uint8Arr
 
       // Top title bar tag inside the box
       page.drawRectangle({
-        x: x + 8,
-        y: y + totalBoxHeight - 14,
+        x: pdfX + 8,
+        y: pdfY + metrics.totalBoxHeight - 14,
         width: 85,
         height: 10,
         color: borderColor,
@@ -298,8 +424,8 @@ export async function signPdfDocument(options: PdfSignOptions): Promise<Uint8Arr
       });
 
       page.drawText('DIGITALLY SIGNED', {
-        x: x + 12,
-        y: y + totalBoxHeight - 11,
+        x: pdfX + 12,
+        y: pdfY + metrics.totalBoxHeight - 11,
         size: 6,
         font: fontBold,
         color: rgb(1, 1, 1),
@@ -307,30 +433,30 @@ export async function signPdfDocument(options: PdfSignOptions): Promise<Uint8Arr
     }
 
     // Draw Signature Image
-    const sigX = x + (totalBoxWidth - sigWidth) / 2;
-    const sigY = y + textBlockHeight + (showBorder ? 8 : 4);
+    const sigX = pdfX + metrics.sigXOffset;
+    const sigY = pdfY + metrics.sigYOffset;
 
     page.drawImage(pngImage, {
       x: sigX,
       y: sigY,
-      width: sigWidth,
-      height: sigHeight,
+      width: metrics.sigWidth,
+      height: metrics.sigHeight,
       opacity: opacity,
     });
 
     // Draw Text Metadata Below Signature
-    if (textLines.length > 0) {
-      let currentTextY = y + textBlockHeight - 2;
-      for (const line of textLines) {
+    if (metrics.textLines.length > 0) {
+      let currentTextY = pdfY + metrics.textBlockHeight - 1;
+      for (const line of metrics.textLines) {
         page.drawText(line, {
-          x: x + 10,
+          x: pdfX + (showBorder ? 8 : 4),
           y: currentTextY,
-          size: textFontSize,
+          size: 8,
           font: line.startsWith('Signed by:') ? fontBold : fontRegular,
           color: textColor,
           opacity: opacity,
         });
-        currentTextY -= textLineHeight;
+        currentTextY -= 11;
       }
     }
   }
