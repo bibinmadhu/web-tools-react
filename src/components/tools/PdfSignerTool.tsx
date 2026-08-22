@@ -19,10 +19,14 @@ import {
   FileCheck,
   ChevronLeft,
   ChevronRight,
-  ZoomIn,
-  ZoomOut,
-  Maximize2,
   CheckCircle2,
+  CheckSquare,
+  Square,
+  Plus,
+  Minus,
+  ListFilter,
+  FileSpreadsheet,
+  Trash2,
 } from 'lucide-react';
 import {
   createSamplePdf,
@@ -30,14 +34,16 @@ import {
   signPdfDocument,
   computeSignatureBoxMetrics,
   calculateBoxPosition,
+  parsePageRange,
+  resolveTargetPageNumbers,
   PdfSignOptions,
   PdfMetadata,
+  PageTargetMode,
 } from '../../utils/pdfSigner';
 import { renderPdfPageToCanvas } from '../../utils/pdfRenderer';
 
 type SignatureMode = 'draw' | 'type' | 'upload';
 type PositionPreset = 'bottom-right' | 'bottom-left' | 'bottom-center' | 'top-right' | 'top-left' | 'center' | 'custom';
-type PageTarget = 'first' | 'last' | 'all' | 'custom';
 
 export const PdfSignerTool: React.FC = () => {
   // --- PDF File State ---
@@ -70,9 +76,13 @@ export const PdfSignerTool: React.FC = () => {
   // Active Signature Data URL
   const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
 
-  // --- Configurable Placement & Styling State ---
-  const [pagesToSign, setPagesToSign] = useState<PageTarget>('first');
+  // --- Configurable Page Target State ---
+  const [pagesToSign, setPagesToSign] = useState<PageTargetMode>('first');
   const [customPageNum, setCustomPageNum] = useState<number>(1);
+  const [selectedPages, setSelectedPages] = useState<number[]>([1]);
+  const [pageRangeStr, setPageRangeStr] = useState<string>('1');
+
+  // --- Placement & Styling State ---
   const [position, setPosition] = useState<PositionPreset>('bottom-right');
   const [customXPercent, setCustomXPercent] = useState<number>(60);
   const [customYPercent, setCustomYPercent] = useState<number>(10);
@@ -121,9 +131,10 @@ export const PdfSignerTool: React.FC = () => {
       const meta = await getPdfMetadata(sample);
       setMetadata(meta);
       setSelectedPageNum(1);
+      setSelectedPages([1]);
       setSignedPdfBytes(null);
       setPreviewDocType('original');
-      setStatusMessage('Loaded sample document.');
+      setStatusMessage(`Loaded sample document (${meta.pageCount} pages).`);
     } catch (err: any) {
       console.error(err);
       setStatusMessage('Error generating sample PDF: ' + err.message);
@@ -152,6 +163,9 @@ export const PdfSignerTool: React.FC = () => {
       const meta = await getPdfMetadata(uintArray);
       setMetadata(meta);
       setSelectedPageNum(1);
+      setSelectedPages([1]);
+      setCustomPageNum(1);
+      setPageRangeStr(`1-${meta.pageCount}`);
       setSignedPdfBytes(null);
       setPreviewDocType('original');
       setStatusMessage(`Successfully loaded ${file.name} (${meta.pageCount} pages).`);
@@ -386,15 +400,64 @@ export const PdfSignerTool: React.FC = () => {
     24
   );
 
+  // Calculate the targeted pages array
+  const totalPages = metadata?.pageCount || 1;
+  const activeTargetPages = resolveTargetPageNumbers(
+    pagesToSign,
+    totalPages,
+    customPageNum,
+    selectedPages,
+    pageRangeStr
+  );
+
   // Check if the currently viewed page is targeted for signing
-  const isCurrentPageSigned = (() => {
-    if (!metadata) return true;
-    if (pagesToSign === 'all') return true;
-    if (pagesToSign === 'first' && selectedPageNum === 1) return true;
-    if (pagesToSign === 'last' && selectedPageNum === metadata.pageCount) return true;
-    if (pagesToSign === 'custom' && selectedPageNum === customPageNum) return true;
-    return false;
-  })();
+  const isCurrentPageSigned = activeTargetPages.includes(selectedPageNum);
+
+  // Quick toggle function for signing the current page in the preview
+  const handleToggleCurrentPageSigning = () => {
+    if (pagesToSign === 'all') {
+      // Switching from all to selected with current excluded
+      const remaining = Array.from({ length: totalPages }, (_, i) => i + 1).filter(
+        (p) => p !== selectedPageNum
+      );
+      setPagesToSign('selected');
+      setSelectedPages(remaining);
+      return;
+    }
+
+    if (isCurrentPageSigned) {
+      // Remove current page
+      const next = activeTargetPages.filter((p) => p !== selectedPageNum);
+      setPagesToSign('selected');
+      setSelectedPages(next.length > 0 ? next : [selectedPageNum === 1 ? 2 : 1]);
+    } else {
+      // Add current page
+      const next = [...activeTargetPages, selectedPageNum].sort((a, b) => a - b);
+      setPagesToSign('selected');
+      setSelectedPages(next);
+    }
+  };
+
+  const handleTogglePageCheckbox = (pageNum: number) => {
+    setPagesToSign('selected');
+    if (selectedPages.includes(pageNum)) {
+      const next = selectedPages.filter((p) => p !== pageNum);
+      setSelectedPages(next.length > 0 ? next : [pageNum]);
+    } else {
+      setSelectedPages([...selectedPages, pageNum].sort((a, b) => a - b));
+    }
+  };
+
+  const handleSelectAllPages = () => {
+    setPagesToSign('all');
+    setSelectedPages(Array.from({ length: totalPages }, (_, i) => i + 1));
+  };
+
+  const handleSelectOnlyCurrentPage = () => {
+    setPagesToSign('custom');
+    setCustomPageNum(selectedPageNum);
+    setSelectedPages([selectedPageNum]);
+  };
 
   // --- Interactive Drag & Click Handlers ---
   const handlePreviewClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -505,7 +568,7 @@ export const PdfSignerTool: React.FC = () => {
     }
 
     setIsProcessing(true);
-    setStatusMessage('Applying digital signature and embedding metadata...');
+    setStatusMessage(`Applying digital signature to ${activeTargetPages.length} ${activeTargetPages.length === 1 ? 'page' : 'pages'}...`);
 
     try {
       const signOpts: PdfSignOptions = {
@@ -513,6 +576,8 @@ export const PdfSignerTool: React.FC = () => {
         signatureDataUrl: signatureDataUrl,
         pagesToSign: pagesToSign,
         customPageNum: customPageNum,
+        selectedPages: selectedPages,
+        pageRangeStr: pageRangeStr,
         position: position,
         customXPercent: customXPercent,
         customYPercent: customYPercent,
@@ -530,7 +595,7 @@ export const PdfSignerTool: React.FC = () => {
       const resultBytes = await signPdfDocument(signOpts);
       setSignedPdfBytes(resultBytes);
       setPreviewDocType('signed');
-      setStatusMessage('Document signed successfully! Ready for download.');
+      setStatusMessage(`Document successfully signed on ${activeTargetPages.length} ${activeTargetPages.length === 1 ? 'page' : 'pages'} (Pages: ${activeTargetPages.join(', ')}). Ready for download!`);
     } catch (err: any) {
       console.error(err);
       setStatusMessage('Failed to sign PDF: ' + err.message);
@@ -582,7 +647,7 @@ export const PdfSignerTool: React.FC = () => {
               )}
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Client-side PDF signature tool with full PDF visual rendering & pixel-perfect placement.
+              Client-side PDF signature tool with full PDF visual rendering & multi-page placement support.
             </p>
           </div>
         </div>
@@ -637,7 +702,7 @@ export const PdfSignerTool: React.FC = () => {
               }`}
             >
               <Move className="w-4 h-4" />
-              <span>2. Placement & Scale</span>
+              <span>2. Pages & Placement</span>
             </button>
 
             <button
@@ -841,64 +906,160 @@ export const PdfSignerTool: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 2: PLACEMENT & SCALE */}
+          {/* TAB 2: PAGES & PLACEMENT */}
           {activeTab === 'placement' && (
-            <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800 space-y-4">
-              {/* Target Pages */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                  Target Pages to Sign
-                </label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800 space-y-5">
+              {/* Target Pages Selector */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                    <FileSpreadsheet className="w-4 h-4 text-indigo-400" />
+                    <span>Target Pages to Sign</span>
+                  </label>
+                  <span className="text-[11px] font-mono text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                    Signing: {activeTargetPages.length} of {totalPages} {totalPages === 1 ? 'page' : 'pages'}
+                  </span>
+                </div>
+
+                {/* Primary Mode Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {[
-                    { id: 'first', label: 'First Page' },
-                    { id: 'last', label: 'Last Page' },
-                    { id: 'all', label: 'All Pages' },
-                    { id: 'custom', label: 'Custom Page' },
+                    { id: 'all', label: 'All Pages', desc: `Every page (1-${totalPages})` },
+                    { id: 'first', label: 'First Page', desc: 'Page 1 only' },
+                    { id: 'last', label: 'Last Page', desc: `Page ${totalPages} only` },
+                    { id: 'custom', label: 'Single Page', desc: 'Pick any one page' },
+                    { id: 'selected', label: 'Select Specific', desc: 'Check individual pages' },
+                    { id: 'range', label: 'Custom Range', desc: 'e.g. 1-3, 5' },
                   ].map((target) => (
                     <button
                       key={target.id}
                       onClick={() => {
-                        setPagesToSign(target.id as PageTarget);
-                        if (target.id === 'first') setSelectedPageNum(1);
-                        if (target.id === 'last' && metadata) setSelectedPageNum(metadata.pageCount);
+                        const mode = target.id as PageTargetMode;
+                        setPagesToSign(mode);
+                        if (mode === 'first') setSelectedPageNum(1);
+                        if (mode === 'last' && metadata) setSelectedPageNum(metadata.pageCount);
+                        if (mode === 'custom') setCustomPageNum(selectedPageNum);
+                        if (mode === 'selected' && selectedPages.length === 0) {
+                          setSelectedPages([selectedPageNum]);
+                        }
                       }}
-                      className={`px-3 py-2 rounded-lg font-semibold text-xs border transition-colors ${
+                      className={`p-2.5 rounded-xl text-left border transition-all ${
                         pagesToSign === target.id
-                          ? 'bg-indigo-600 text-white border-indigo-500'
-                          : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                          ? 'bg-indigo-600/90 text-white border-indigo-500 shadow-md ring-1 ring-indigo-400/50'
+                          : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-800 hover:border-slate-600'
                       }`}
                     >
-                      {target.label}
+                      <div className="font-bold text-xs">{target.label}</div>
+                      <div className="text-[10px] opacity-80 truncate mt-0.5">{target.desc}</div>
                     </button>
                   ))}
                 </div>
 
-                {pagesToSign === 'custom' && metadata && (
-                  <div className="mt-2.5 flex items-center gap-3">
-                    <span className="text-xs font-semibold text-slate-400">Page Number:</span>
-                    <input
-                      type="number"
-                      min="1"
-                      max={metadata.pageCount}
-                      value={customPageNum}
-                      onChange={(e) => {
-                        const val = Math.max(1, Math.min(Number(e.target.value), metadata.pageCount));
-                        setCustomPageNum(val);
-                        setSelectedPageNum(val);
+                {/* Sub-controls based on selection mode */}
+                {pagesToSign === 'custom' && (
+                  <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-300">Target Page:</span>
+                      <select
+                        value={customPageNum}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setCustomPageNum(val);
+                          setSelectedPageNum(val);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs font-semibold focus:outline-hidden"
+                      >
+                        {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+                          <option key={p} value={p}>
+                            Page {p} of {totalPages}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        setCustomPageNum(selectedPageNum);
                       }}
-                      className="w-20 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white font-mono text-xs text-center"
-                    />
-                    <span className="text-xs text-slate-500 font-mono">/ {metadata.pageCount}</span>
+                      className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold px-2.5 py-1 rounded bg-indigo-500/10 border border-indigo-500/20"
+                    >
+                      Set to Currently Viewed Page ({selectedPageNum})
+                    </button>
+                  </div>
+                )}
+
+                {pagesToSign === 'selected' && (
+                  <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60 space-y-2.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-slate-300">Select Individual Pages:</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleSelectAllPages}
+                          className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold hover:underline"
+                        >
+                          Select All
+                        </button>
+                        <span className="text-slate-600">|</span>
+                        <button
+                          onClick={() => setSelectedPages([1])}
+                          className="text-[11px] text-slate-400 hover:text-slate-200 font-semibold hover:underline"
+                        >
+                          Reset to Page 1
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-1 bg-slate-900/60 rounded-lg border border-slate-800">
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => {
+                        const isChecked = selectedPages.includes(p);
+                        return (
+                          <button
+                            key={p}
+                            onClick={() => {
+                              handleTogglePageCheckbox(p);
+                              setSelectedPageNum(p);
+                            }}
+                            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-mono font-medium border transition-colors ${
+                              isChecked
+                                ? 'bg-indigo-600 text-white border-indigo-500'
+                                : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-slate-200'
+                            }`}
+                          >
+                            {isChecked ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3 opacity-40" />}
+                            <span>Page {p}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {pagesToSign === 'range' && (
+                  <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60 space-y-2">
+                    <label className="block text-xs font-semibold text-slate-300">
+                      Enter Page Range Expression:
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={pageRangeStr}
+                        onChange={(e) => setPageRangeStr(e.target.value)}
+                        placeholder={`e.g. 1, 3-${Math.min(totalPages, 5)} or all`}
+                        className="flex-1 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:outline-hidden focus:border-indigo-500"
+                      />
+                      <span className="text-xs text-slate-400 font-mono">
+                        ({activeTargetPages.length} pages: {activeTargetPages.join(', ') || 'none'})
+                      </span>
+                    </div>
                   </div>
                 )}
               </div>
 
               {/* Placement Presets Grid */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
+              <div className="space-y-2 pt-2 border-t border-slate-800">
+                <div className="flex items-center justify-between">
                   <label className="text-xs font-semibold text-slate-300">
-                    Position Preset
+                    Position Preset on Target Pages
                   </label>
                   <span className="text-[11px] text-indigo-400 font-medium">
                     (or drag directly on document)
@@ -1144,11 +1305,13 @@ export const PdfSignerTool: React.FC = () => {
               className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               {isProcessing ? (
-                <span>Embedding Signature & Metadata...</span>
+                <span>Embedding Signature Across {activeTargetPages.length} {activeTargetPages.length === 1 ? 'Page' : 'Pages'}...</span>
               ) : (
                 <>
                   <Check className="w-5 h-5" />
-                  <span>Generate Signed PDF Document</span>
+                  <span>
+                    Generate Signed PDF ({activeTargetPages.length} {activeTargetPages.length === 1 ? 'Page' : 'Pages'})
+                  </span>
                 </>
               )}
             </button>
@@ -1210,8 +1373,8 @@ export const PdfSignerTool: React.FC = () => {
                   <ChevronLeft className="w-3.5 h-3.5" />
                 </button>
 
-                <span className="font-mono text-slate-200 text-[11px] px-1">
-                  {selectedPageNum} / {metadata.pageCount}
+                <span className="font-mono text-slate-200 text-[11px] px-1 font-semibold">
+                  Page {selectedPageNum} / {metadata.pageCount}
                 </span>
 
                 <button
@@ -1225,6 +1388,54 @@ export const PdfSignerTool: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* Quick Page Signing Status & Toggle Bar */}
+          {metadata && metadata.pageCount > 1 && (
+            <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-xs">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-2.5 h-2.5 rounded-full ${
+                    isCurrentPageSigned ? 'bg-emerald-400 ring-2 ring-emerald-400/30' : 'bg-slate-600'
+                  }`}
+                />
+                <span className="font-semibold text-slate-200">
+                  {isCurrentPageSigned ? `Signing Page ${selectedPageNum}` : `Page ${selectedPageNum} not targeted`}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleToggleCurrentPageSigning}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                    isCurrentPageSigned
+                      ? 'bg-rose-500/10 text-rose-300 border border-rose-500/20 hover:bg-rose-500/20'
+                      : 'bg-indigo-600 text-white hover:bg-indigo-500'
+                  }`}
+                >
+                  {isCurrentPageSigned ? (
+                    <>
+                      <Minus className="w-3 h-3" />
+                      <span>Remove this page</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-3 h-3" />
+                      <span>Sign this page</span>
+                    </>
+                  )}
+                </button>
+
+                {pagesToSign !== 'all' && (
+                  <button
+                    onClick={handleSelectAllPages}
+                    className="px-2 py-1 rounded-md text-[11px] font-semibold bg-slate-800 text-slate-300 hover:text-white border border-slate-700"
+                  >
+                    Sign All
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Page Visual Canvas Container */}
           <div
@@ -1339,18 +1550,39 @@ export const PdfSignerTool: React.FC = () => {
                     </div>
                   </div>
                 ) : (
-                  <div className="absolute top-3 left-3 right-3 p-2 rounded-lg bg-amber-500/90 text-amber-950 font-semibold text-xs flex items-center gap-2 shadow-lg backdrop-blur-xs">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>
-                      Signature placement is configured for {pagesToSign === 'first' ? 'Page 1' : pagesToSign === 'last' ? `Page ${metadata?.pageCount}` : `Page ${customPageNum}`}.
-                    </span>
+                  <div className="absolute inset-0 bg-slate-900/30 backdrop-blur-[1px] flex flex-col items-center justify-center p-6 text-center">
+                    <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-700 shadow-2xl text-slate-200 max-w-xs space-y-3">
+                      <div className="w-8 h-8 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto">
+                        <FileCheck className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-xs text-white">Signature Not on Page {selectedPageNum}</h4>
+                        <p className="text-[11px] text-slate-400 mt-1">
+                          Signature is currently configured to stamp {activeTargetPages.length} {activeTargetPages.length === 1 ? 'page' : 'pages'} (Pages {activeTargetPages.join(', ')}).
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 justify-center pt-1">
+                        <button
+                          onClick={handleToggleCurrentPageSigning}
+                          className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition-colors"
+                        >
+                          + Sign Page {selectedPageNum}
+                        </button>
+                        <button
+                          onClick={handleSelectAllPages}
+                          className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs border border-slate-700"
+                        >
+                          Sign All Pages
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 )}
               </>
             )}
 
             {/* Click-to-place helper banner */}
-            {previewDocType === 'original' && (
+            {previewDocType === 'original' && isCurrentPageSigned && (
               <div className="absolute bottom-2 left-0 right-0 text-center pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
                 <span className="text-[10px] font-semibold bg-slate-900/80 text-slate-200 px-3 py-1 rounded-full backdrop-blur-xs border border-slate-700 shadow-md">
                   💡 Click or drag signature to reposition anywhere on the page
@@ -1358,6 +1590,34 @@ export const PdfSignerTool: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* Multi-page Thumbnail Pill Strip */}
+          {metadata && metadata.pageCount > 1 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto py-1 px-0.5">
+              {Array.from({ length: metadata.pageCount }, (_, i) => i + 1).map((p) => {
+                const isSelected = selectedPageNum === p;
+                const isSigned = activeTargetPages.includes(p);
+                return (
+                  <button
+                    key={p}
+                    onClick={() => setSelectedPageNum(p)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shrink-0 border transition-all ${
+                      isSelected
+                        ? 'bg-indigo-600 text-white border-indigo-400 ring-2 ring-indigo-500/30'
+                        : isSigned
+                        ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700'
+                        : 'bg-slate-900 text-slate-500 border-slate-800 hover:bg-slate-800'
+                    }`}
+                  >
+                    <span>Page {p}</span>
+                    {isSigned && (
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" title="Signed" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Download Signed File Card */}
           {signedPdfBytes && (
@@ -1372,7 +1632,7 @@ export const PdfSignerTool: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-300">
-                The digital signature and metadata have been embedded into the PDF bytes.
+                The digital signature and metadata have been embedded across {activeTargetPages.length} {activeTargetPages.length === 1 ? 'page' : 'pages'} (Pages {activeTargetPages.join(', ')}).
               </p>
 
               <div className="flex items-center gap-2">

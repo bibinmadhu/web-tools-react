@@ -1,10 +1,14 @@
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 
+export type PageTargetMode = 'all' | 'first' | 'last' | 'custom' | 'selected' | 'range';
+
 export interface PdfSignOptions {
   pdfBuffer: ArrayBuffer | Uint8Array;
   signatureDataUrl: string; // PNG base64 data URL
-  pagesToSign: 'first' | 'last' | 'all' | 'custom';
-  customPageNum?: number; // 1-indexed
+  pagesToSign: PageTargetMode;
+  customPageNum?: number; // 1-indexed for single page
+  selectedPages?: number[]; // 1-indexed list of pages e.g. [1, 3, 5]
+  pageRangeStr?: string; // e.g. "1, 3-5, 8"
   position: 'bottom-right' | 'bottom-left' | 'bottom-center' | 'top-right' | 'top-left' | 'center' | 'custom';
   customXPercent?: number; // 0 - 100
   customYPercent?: number; // 0 - 100
@@ -55,6 +59,82 @@ function hexToRgbColor(hex: string) {
     isNaN(g) ? 0.15 : g,
     isNaN(b) ? 0.25 : b
   );
+}
+
+/**
+ * Parses user input like "1, 3-5, 8" into an array of 1-indexed unique sorted page numbers.
+ */
+export function parsePageRange(rangeStr: string, totalPages: number): number[] {
+  if (!rangeStr || !rangeStr.trim()) return [];
+  const clean = rangeStr.trim().toLowerCase();
+  if (clean === 'all') {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+
+  const pagesSet = new Set<number>();
+  const parts = clean.split(/[,;\s]+/);
+
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.includes('-')) {
+      const [startStr, endStr] = part.split('-');
+      const start = parseInt(startStr, 10);
+      const end = parseInt(endStr, 10);
+      if (!isNaN(start) && !isNaN(end)) {
+        const min = Math.max(1, Math.min(start, end));
+        const max = Math.min(totalPages, Math.max(start, end));
+        for (let i = min; i <= max; i++) {
+          pagesSet.add(i);
+        }
+      }
+    } else {
+      const page = parseInt(part, 10);
+      if (!isNaN(page) && page >= 1 && page <= totalPages) {
+        pagesSet.add(page);
+      }
+    }
+  }
+
+  return Array.from(pagesSet).sort((a, b) => a - b);
+}
+
+/**
+ * Resolves which 1-indexed page numbers should be signed based on options and total page count.
+ */
+export function resolveTargetPageNumbers(
+  pagesToSign: PageTargetMode,
+  totalPages: number,
+  customPageNum?: number,
+  selectedPages?: number[],
+  pageRangeStr?: string
+): number[] {
+  if (totalPages <= 0) return [1];
+
+  switch (pagesToSign) {
+    case 'all':
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    case 'first':
+      return [1];
+    case 'last':
+      return [totalPages];
+    case 'custom': {
+      const p = customPageNum ? Math.max(1, Math.min(customPageNum, totalPages)) : 1;
+      return [p];
+    }
+    case 'selected': {
+      if (selectedPages && selectedPages.length > 0) {
+        const filtered = selectedPages.filter((p) => p >= 1 && p <= totalPages);
+        return filtered.length > 0 ? Array.from(new Set(filtered)).sort((a, b) => a - b) : [1];
+      }
+      return [1];
+    }
+    case 'range': {
+      const parsed = parsePageRange(pageRangeStr || '', totalPages);
+      return parsed.length > 0 ? parsed : [1];
+    }
+    default:
+      return [1];
+  }
 }
 
 /**
@@ -293,6 +373,9 @@ export async function createSamplePdf(): Promise<Uint8Array> {
     'Section A.2: Client-Side Security Assurance',
     'Document manipulation and rendering is performed entirely within the client runtime sandbox.',
     'No sensitive document data or cryptographic tokens are ever transmitted to external endpoints.',
+    '',
+    'Section A.3: Multi-Page Endorsement & Notarization',
+    'Signatures may be affixed across all pages or designated individual pages per compliance standards.',
   ];
 
   let currentY2 = 640;
@@ -307,6 +390,54 @@ export async function createSamplePdf(): Promise<Uint8Array> {
       });
     }
     currentY2 -= 22;
+  }
+
+  // Page 3 - Sign-off Confirmation
+  const page3 = pdfDoc.addPage([600, 800]);
+  page3.drawText('FINAL SIGN-OFF & ATTESTATION', {
+    x: 50,
+    y: 730,
+    size: 18,
+    font,
+    color: rgb(0.06, 0.09, 0.16),
+  });
+
+  page3.drawText('Page 3 of 3 - Execution Copy', {
+    x: 50,
+    y: 705,
+    size: 10,
+    font: regularFont,
+    color: rgb(0.4, 0.45, 0.55),
+  });
+
+  page3.drawRectangle({
+    x: 50,
+    y: 690,
+    width: 500,
+    height: 2,
+    color: rgb(0.38, 0.4, 0.94),
+  });
+
+  const page3Lines = [
+    'Attestation Statement:',
+    'The signatories hereby confirm that they possess the necessary legal authority to execute',
+    'this document and bind their respective organizations to its obligations.',
+    '',
+    'Verification hash and digital integrity checksum will be generated at the time of export.',
+  ];
+
+  let currentY3 = 640;
+  for (const line of page3Lines) {
+    if (line.trim()) {
+      page3.drawText(line, {
+        x: 50,
+        y: currentY3,
+        size: 10.5,
+        font: line.startsWith('Attestation') ? font : regularFont,
+        color: line.startsWith('Attestation') ? rgb(0.1, 0.15, 0.25) : rgb(0.3, 0.35, 0.45),
+      });
+    }
+    currentY3 -= 22;
   }
 
   return await pdfDoc.save();
@@ -326,7 +457,7 @@ export async function getPdfMetadata(pdfBuffer: ArrayBuffer | Uint8Array): Promi
 }
 
 /**
- * Embeds signature, printed name, date, and bounding box onto the PDF document.
+ * Embeds signature, printed name, date, and bounding box onto the PDF document across all targeted pages.
  */
 export async function signPdfDocument(options: PdfSignOptions): Promise<Uint8Array> {
   const {
@@ -334,6 +465,8 @@ export async function signPdfDocument(options: PdfSignOptions): Promise<Uint8Arr
     signatureDataUrl,
     pagesToSign,
     customPageNum = 1,
+    selectedPages = [1],
+    pageRangeStr = '',
     position,
     customXPercent = 60,
     customYPercent = 10,
@@ -358,18 +491,19 @@ export async function signPdfDocument(options: PdfSignOptions): Promise<Uint8Arr
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-  // Identify target page indices (0-indexed)
-  let targetIndices: number[] = [];
-  if (pagesToSign === 'first') {
-    targetIndices = [0];
-  } else if (pagesToSign === 'last') {
-    targetIndices = [totalPages - 1];
-  } else if (pagesToSign === 'all') {
-    targetIndices = Array.from({ length: totalPages }, (_, i) => i);
-  } else if (pagesToSign === 'custom') {
-    const validPage = Math.max(1, Math.min(customPageNum, totalPages));
-    targetIndices = [validPage - 1];
-  }
+  // Identify target page numbers (1-indexed)
+  const targetPageNumbers = resolveTargetPageNumbers(
+    pagesToSign,
+    totalPages,
+    customPageNum,
+    selectedPages,
+    pageRangeStr
+  );
+
+  // Convert 1-indexed to 0-indexed indices
+  const targetIndices = targetPageNumbers
+    .map((p) => p - 1)
+    .filter((idx) => idx >= 0 && idx < totalPages);
 
   const textColor = hexToRgbColor(fontColorHex);
   const borderColor = hexToRgbColor(borderColorHex);

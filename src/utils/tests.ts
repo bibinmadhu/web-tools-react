@@ -16,6 +16,8 @@ import {
   signPdfDocument,
   calculateBoxPosition,
   computeSignatureBoxMetrics,
+  parsePageRange,
+  resolveTargetPageNumbers,
 } from './pdfSigner';
 import { convertPdfDocument, extractPdfContent } from './pdfConverter';
 import { formatJavaCode, sampleUnformattedJavaCode } from './javaFormatter';
@@ -274,18 +276,19 @@ public class OrderService {
     assertTrue(pdfBytes.length > 100, 'Sample PDF should generate valid bytes');
 
     const meta = await getPdfMetadata(pdfBytes);
-    assertEqual(meta.pageCount, 2, 'Sample PDF should have 2 pages');
+    assertEqual(meta.pageCount, 3, 'Sample PDF should have 3 pages');
     assertTrue(meta.pagesDimensions[0].width > 0, 'Page width should be positive');
   });
 
-  await testAsync('PDF Signer', 'Embeds signature image and metadata onto PDF', async () => {
+  await testAsync('PDF Signer', 'Embeds signature image and metadata across all pages or selected pages', async () => {
     const pdfBytes = await createSamplePdf();
 
     // 1x1 transparent PNG data url
     const dummyPng =
       'data:image/png;base64,iVBORw0KGgoAAAANSU5ErkJggg==';
 
-    const signedBytes = await signPdfDocument({
+    // Test signing first page
+    const signedFirstPage = await signPdfDocument({
       pdfBuffer: pdfBytes,
       signatureDataUrl: dummyPng,
       pagesToSign: 'first',
@@ -295,8 +298,48 @@ public class OrderService {
       signReason: 'Approved',
       showBorder: true,
     });
+    assertTrue(signedFirstPage.length > pdfBytes.length, 'Signed first page PDF should have increased byte size');
 
-    assertTrue(signedBytes.length > pdfBytes.length, 'Signed PDF byte length should increase after embedding signature & metadata');
+    // Test signing all pages
+    const signedAllPages = await signPdfDocument({
+      pdfBuffer: pdfBytes,
+      signatureDataUrl: dummyPng,
+      pagesToSign: 'all',
+      position: 'bottom-center',
+      printedName: 'Alex Morgan',
+      showBorder: true,
+    });
+    assertTrue(signedAllPages.length > signedFirstPage.length, 'All-pages signed PDF should embed signature across all 3 pages');
+
+    // Test signing selected pages [1, 3]
+    const signedSelected = await signPdfDocument({
+      pdfBuffer: pdfBytes,
+      signatureDataUrl: dummyPng,
+      pagesToSign: 'selected',
+      selectedPages: [1, 3],
+      position: 'center',
+    });
+    assertTrue(signedSelected.length > pdfBytes.length, 'Selected pages signed PDF should generate valid bytes');
+  });
+
+  test('PDF Signer', 'Parses page ranges and resolves target page numbers correctly', () => {
+    const parsedRange = parsePageRange('1-2, 4, 6-7', 10);
+    assertEqual(parsedRange.join(','), '1,2,4,6,7', 'Should correctly parse discrete and hyphenated ranges');
+
+    const parsedAll = parsePageRange('all', 5);
+    assertEqual(parsedAll.length, 5, 'Should resolve all 5 pages');
+
+    const resolvedAll = resolveTargetPageNumbers('all', 4);
+    assertEqual(resolvedAll.join(','), '1,2,3,4', 'resolveTargetPageNumbers all should return all page numbers');
+
+    const resolvedLast = resolveTargetPageNumbers('last', 4);
+    assertEqual(resolvedLast.join(','), '4', 'resolveTargetPageNumbers last should return page 4');
+
+    const resolvedCustom = resolveTargetPageNumbers('custom', 4, 3);
+    assertEqual(resolvedCustom.join(','), '3', 'resolveTargetPageNumbers custom should return specified page');
+
+    const resolvedSelected = resolveTargetPageNumbers('selected', 5, undefined, [2, 4, 5]);
+    assertEqual(resolvedSelected.join(','), '2,4,5', 'resolveTargetPageNumbers selected should return sorted unique list');
   });
 
   test('PDF Signer', 'Calculates accurate signature metrics & 1:1 UI-PDF coordinate mapping', () => {
@@ -328,7 +371,7 @@ public class OrderService {
   await testAsync('PDF Converter', 'Extracts text content and pages from PDF', async () => {
     const pdfBytes = await createSamplePdf();
     const content = await extractPdfContent(pdfBytes);
-    assertEqual(content.pageCount, 2, 'Should extract 2 pages');
+    assertEqual(content.pageCount, 3, 'Should extract 3 pages');
     assertTrue(content.fullText.length > 50, 'Full text should contain extracted lines');
   });
 
