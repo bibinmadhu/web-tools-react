@@ -306,6 +306,34 @@ export function formatInvoiceCurrency(amount: number, currency: InvoiceCurrency)
 }
 
 /**
+ * Format currency safely for Standard PDF PostScript Fonts (Helvetica WinAnsi)
+ */
+export function formatInvoiceCurrencyForPdf(amount: number, currency: InvoiceCurrency): string {
+  const decimals = currency.decimals !== undefined ? currency.decimals : 2;
+  const absVal = Math.abs(amount || 0);
+  
+  const formattedNumber = absVal.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+
+  const sign = amount < 0 ? '-' : '';
+
+  // Safe mapping for Helvetica standard font WinAnsi compatibility
+  let safeSymbol = currency.symbol;
+  if (safeSymbol === '₹') {
+    safeSymbol = 'Rs. ';
+  } else if (safeSymbol === 'zł') {
+    safeSymbol = 'PLN ';
+  }
+
+  if (currency.position === 'after') {
+    return `${sign}${formattedNumber} ${safeSymbol.trim()}`;
+  }
+  return `${sign}${safeSymbol}${formattedNumber}`;
+}
+
+/**
  * Generate a clean, modern default invoice template
  */
 export function createDefaultInvoice(): InvoiceData {
@@ -1032,7 +1060,7 @@ export async function generateInvoicePdf(invoice: InvoiceData): Promise<Uint8Arr
     });
 
     // Unit Price
-    const priceStr = formatInvoiceCurrency(item.unitPrice || 0, invoice.currency);
+    const priceStr = formatInvoiceCurrencyForPdf(item.unitPrice || 0, invoice.currency);
     page.drawText(priceStr, {
       x: tableX + 340,
       y: currentY - 14,
@@ -1042,7 +1070,7 @@ export async function generateInvoicePdf(invoice: InvoiceData): Promise<Uint8Arr
     });
 
     // Line Amount
-    const totalStr = formatInvoiceCurrency(netTotal, invoice.currency);
+    const totalStr = formatInvoiceCurrencyForPdf(netTotal, invoice.currency);
     const totalW = fontBold.widthOfTextAtSize(totalStr, 8.5);
     page.drawText(totalStr, {
       x: tableX + tableWidth - 10 - totalW,
@@ -1157,40 +1185,40 @@ export async function generateInvoicePdf(invoice: InvoiceData): Promise<Uint8Arr
     totalsY -= 13;
   };
 
-  drawTotalRow('Subtotal:', formatInvoiceCurrency(totals.subtotal, invoice.currency));
+  drawTotalRow('Subtotal:', formatInvoiceCurrencyForPdf(totals.subtotal, invoice.currency));
   
   if (totals.totalItemDiscount > 0) {
-    drawTotalRow('Item Discounts:', `-${formatInvoiceCurrency(totals.totalItemDiscount, invoice.currency)}`);
+    drawTotalRow('Item Discounts:', `-${formatInvoiceCurrencyForPdf(totals.totalItemDiscount, invoice.currency)}`);
   }
 
   if (totals.globalDiscountAmount > 0) {
-    drawTotalRow('Global Discount:', `-${formatInvoiceCurrency(totals.globalDiscountAmount, invoice.currency)}`);
+    drawTotalRow('Global Discount:', `-${formatInvoiceCurrencyForPdf(totals.globalDiscountAmount, invoice.currency)}`);
   }
 
   if (invoice.taxMode === 'exclusive' && totals.totalTax > 0) {
     drawTotalRow(
       `${invoice.defaultTaxLabel || 'Tax'} (${invoice.defaultTaxRate}%):`,
-      formatInvoiceCurrency(totals.primaryTaxAmount, invoice.currency)
+      formatInvoiceCurrencyForPdf(totals.primaryTaxAmount, invoice.currency)
     );
     if (invoice.enableSecondTax && totals.secondTaxAmount > 0) {
       drawTotalRow(
         `${invoice.secondTaxLabel || 'Tax 2'} (${invoice.secondTaxRate}%):`,
-        formatInvoiceCurrency(totals.secondTaxAmount, invoice.currency)
+        formatInvoiceCurrencyForPdf(totals.secondTaxAmount, invoice.currency)
       );
     }
   } else if (invoice.taxMode === 'inclusive' && totals.totalTax > 0) {
     drawTotalRow(
       `Includes ${invoice.defaultTaxLabel || 'Tax'}:`,
-      formatInvoiceCurrency(totals.totalTax, invoice.currency)
+      formatInvoiceCurrencyForPdf(totals.totalTax, invoice.currency)
     );
   }
 
   if (totals.shippingFee > 0) {
-    drawTotalRow('Shipping / Delivery:', formatInvoiceCurrency(totals.shippingFee, invoice.currency));
+    drawTotalRow('Shipping / Delivery:', formatInvoiceCurrencyForPdf(totals.shippingFee, invoice.currency));
   }
 
   if (totals.extraFeeAmount > 0) {
-    drawTotalRow(invoice.extraFeeLabel || 'Extra Fee:', formatInvoiceCurrency(totals.extraFeeAmount, invoice.currency));
+    drawTotalRow(invoice.extraFeeLabel || 'Extra Fee:', formatInvoiceCurrencyForPdf(totals.extraFeeAmount, invoice.currency));
   }
 
   // Divider above Total
@@ -1202,17 +1230,17 @@ export async function generateInvoicePdf(invoice: InvoiceData): Promise<Uint8Arr
   });
   totalsY -= 4;
 
-  drawTotalRow('Grand Total:', formatInvoiceCurrency(totals.grandTotal, invoice.currency), true, true);
+  drawTotalRow('Grand Total:', formatInvoiceCurrencyForPdf(totals.grandTotal, invoice.currency), true, true);
 
   if (totals.withholdingTaxAmount > 0) {
     drawTotalRow(
       `Less ${invoice.withholdingTaxLabel || 'TDS'}:`,
-      `-${formatInvoiceCurrency(totals.withholdingTaxAmount, invoice.currency)}`
+      `-${formatInvoiceCurrencyForPdf(totals.withholdingTaxAmount, invoice.currency)}`
     );
   }
 
   if (totals.amountPaid > 0) {
-    drawTotalRow('Amount Paid:', formatInvoiceCurrency(totals.amountPaid, invoice.currency));
+    drawTotalRow('Amount Paid:', formatInvoiceCurrencyForPdf(totals.amountPaid, invoice.currency));
   }
 
   if (totals.amountPaid > 0 || totals.withholdingTaxAmount > 0) {
@@ -1226,7 +1254,7 @@ export async function generateInvoicePdf(invoice: InvoiceData): Promise<Uint8Arr
       borderColor: primaryRgb,
       borderWidth: 1,
     });
-    const balStr = formatInvoiceCurrency(totals.balanceDue, invoice.currency);
+    const balStr = formatInvoiceCurrencyForPdf(totals.balanceDue, invoice.currency);
     const balW = fontBold.widthOfTextAtSize(balStr, 9.5);
     page.drawText('BALANCE DUE:', {
       x: totalsBoxX,

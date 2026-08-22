@@ -760,6 +760,24 @@ curl -X POST "https://api.example.com/data" \\
     assertEqual(formatInvoiceCurrency(1250, jpy), '¥1,250', 'JPY should format with 0 decimals');
   });
 
+  test('Invoice Generator', 'Supports custom general currency settings with 3 decimals and suffix symbol', () => {
+    const customKwd = {
+      code: 'KWD',
+      symbol: 'KD',
+      name: 'Kuwaiti Dinar',
+      position: 'after' as const,
+      decimals: 3,
+    };
+    assertEqual(formatInvoiceCurrency(45.123, customKwd), '45.123 KD', 'Custom currency with 3 decimals and suffix');
+    
+    const inv = createDefaultInvoice();
+    inv.currency = customKwd;
+    inv.lineItems = [{ id: '1', description: 'Consulting', quantity: 2, unitPrice: 22.5, discountPercent: 0 }];
+    const totals = calculateInvoiceTotals(inv);
+    assertEqual(totals.subtotal, 45, 'Subtotal should be 45');
+    assertEqual(formatInvoiceCurrency(totals.subtotal, inv.currency), '45.000 KD', 'Subtotal should format with 3 decimals');
+  });
+
   await testAsync('Invoice Generator', 'Generates valid downloadable vector PDF document', async () => {
     const sampleInv = createDefaultInvoice();
     const pdfBytes = await generateInvoicePdf(sampleInv);
