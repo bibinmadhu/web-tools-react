@@ -150,6 +150,8 @@ export interface InvoiceData {
 
   amountPaid: number;
 
+  paymentInfo?: InvoicePaymentInfo;
+
   notes: string;
   termsAndConditions: string;
 
@@ -333,6 +335,156 @@ export function formatInvoiceCurrencyForPdf(amount: number, currency: InvoiceCur
   return `${sign}${safeSymbol}${formattedNumber}`;
 }
 
+export interface InvoiceTemplateFile {
+  format: 'devhub-invoice-template';
+  version: string;
+  templateName: string;
+  templateDescription?: string;
+  exportedAt: string;
+  currency: InvoiceCurrency;
+  invoiceData: InvoiceData;
+}
+
+/**
+ * Create a structured invoice template package from current settings
+ */
+export function createInvoiceTemplateFile(
+  invoice: InvoiceData,
+  templateName = 'Custom Invoice Template',
+  templateDescription = 'Customized invoice generator settings & layout'
+): InvoiceTemplateFile {
+  return {
+    format: 'devhub-invoice-template',
+    version: '1.0',
+    templateName,
+    templateDescription,
+    exportedAt: new Date().toISOString(),
+    currency: { ...invoice.currency },
+    invoiceData: JSON.parse(JSON.stringify(invoice)),
+  };
+}
+
+/**
+ * Export invoice template as formatted JSON string
+ */
+export function exportInvoiceTemplateJson(
+  invoice: InvoiceData,
+  templateName?: string,
+  templateDescription?: string
+): string {
+  const tpl = createInvoiceTemplateFile(invoice, templateName, templateDescription);
+  return JSON.stringify(tpl, null, 2);
+}
+
+/**
+ * Robust parser for invoice template files and invoice data JSON
+ */
+export function parseInvoiceTemplate(jsonContent: string | object): {
+  success: boolean;
+  invoice?: InvoiceData;
+  templateName?: string;
+  templateDescription?: string;
+  error?: string;
+} {
+  try {
+    const parsed: any = typeof jsonContent === 'string' ? JSON.parse(jsonContent) : jsonContent;
+    if (!parsed || typeof parsed !== 'object') {
+      return { success: false, error: 'Invalid JSON content provided.' };
+    }
+
+    let invoicePayload: any = null;
+    let templateName = 'Custom Template';
+    let templateDescription = '';
+
+    if (parsed.format === 'devhub-invoice-template' && parsed.invoiceData) {
+      invoicePayload = parsed.invoiceData;
+      templateName = parsed.templateName || templateName;
+      templateDescription = parsed.templateDescription || '';
+    } else if (parsed.invoiceData && typeof parsed.invoiceData === 'object') {
+      invoicePayload = parsed.invoiceData;
+      templateName = parsed.templateName || templateName;
+    } else if (parsed.sender || parsed.lineItems || parsed.currency) {
+      invoicePayload = parsed;
+      templateName = parsed.invoiceTitle || 'Custom Invoice';
+    } else {
+      return {
+        success: false,
+        error: 'Unrecognized invoice template format. Expected an invoice template or invoice JSON.',
+      };
+    }
+
+    // Merge with default invoice to guarantee all fields are present and typed correctly
+    const defaultInv = createDefaultInvoice();
+
+    const merged: InvoiceData = {
+      ...defaultInv,
+      ...invoicePayload,
+      currency: invoicePayload.currency
+        ? {
+            code: invoicePayload.currency.code || defaultInv.currency.code,
+            symbol: invoicePayload.currency.symbol || defaultInv.currency.symbol,
+            name: invoicePayload.currency.name || defaultInv.currency.name,
+            position: invoicePayload.currency.position === 'after' ? 'after' : 'before',
+            decimals: typeof invoicePayload.currency.decimals === 'number' ? invoicePayload.currency.decimals : 2,
+          }
+        : defaultInv.currency,
+      sender: {
+        ...defaultInv.sender,
+        ...(invoicePayload.sender || {}),
+        customFields: Array.isArray(invoicePayload.sender?.customFields)
+          ? invoicePayload.sender.customFields
+          : defaultInv.sender.customFields,
+      },
+      recipient: {
+        ...defaultInv.recipient,
+        ...(invoicePayload.recipient || {}),
+        customFields: Array.isArray(invoicePayload.recipient?.customFields)
+          ? invoicePayload.recipient.customFields
+          : defaultInv.recipient.customFields,
+      },
+      shippingAddress: invoicePayload.shippingAddress
+        ? {
+            ...defaultInv.shippingAddress,
+            ...invoicePayload.shippingAddress,
+          }
+        : defaultInv.shippingAddress,
+      paymentInfo: {
+        ...defaultInv.paymentInfo,
+        ...(invoicePayload.paymentInfo || {}),
+      },
+      theme: {
+        ...defaultInv.theme,
+        ...(invoicePayload.theme || {}),
+      },
+      lineItems:
+        Array.isArray(invoicePayload.lineItems) && invoicePayload.lineItems.length > 0
+          ? invoicePayload.lineItems.map((item: any, idx: number) => ({
+              id: item.id || `item-${Date.now()}-${idx}`,
+              description: item.description || `Item #${idx + 1}`,
+              notes: item.notes || '',
+              quantity: Number(item.quantity) || 1,
+              unit: item.unit || 'pcs',
+              unitPrice: Number(item.unitPrice) || 0,
+              discountPercent: Number(item.discountPercent) || 0,
+              taxPercent: typeof item.taxPercent === 'number' ? item.taxPercent : defaultInv.defaultTaxRate,
+            }))
+          : defaultInv.lineItems,
+    };
+
+    return {
+      success: true,
+      invoice: merged,
+      templateName,
+      templateDescription,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Failed to parse template JSON: ${err?.message || 'Invalid JSON syntax'}`,
+    };
+  }
+}
+
 /**
  * Generate a clean, modern default invoice template
  */
@@ -453,6 +605,16 @@ export function createDefaultInvoice(): InvoiceData {
     withholdingTaxRate: 0,
 
     amountPaid: 0,
+
+    paymentInfo: {
+      bankName: 'Silicon Valley Commercial Bank',
+      accountHolder: 'Apex Cloud Solutions Inc.',
+      accountNumberOrIban: 'US89 3704 0044 0532 0130 00',
+      swiftBic: 'SVBKUS6S',
+      routingOrSortCode: '121000358',
+      paypalEmail: 'billing@apexcloud.io',
+      customPaymentNotes: 'ACH, Wire Transfer, or PayPal accepted. Include Invoice # on payment advice.',
+    },
 
     notes: 'Thank you for your business! Payment is requested within 30 days of invoice date. Please reference invoice number on wire transfers.',
     termsAndConditions: 'All services provided in accordance with the Master Service Agreement dated 15 Jan 2026. Late payments are subject to a 1.5% monthly finance charge.',

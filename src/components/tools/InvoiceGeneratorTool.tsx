@@ -28,6 +28,13 @@ import {
   ShieldCheck,
   Send,
   HelpCircle,
+  FileDown,
+  FileUp,
+  Bookmark,
+  Save,
+  Check,
+  FileJson,
+  FolderOpen,
 } from 'lucide-react';
 import {
   InvoiceData,
@@ -40,7 +47,20 @@ import {
   formatInvoiceCurrency,
   generateInvoicePdf,
   InvoiceTemplateTheme,
+  exportInvoiceTemplateJson,
+  parseInvoiceTemplate,
+  createInvoiceTemplateFile,
+  InvoiceTemplateFile,
 } from '../../utils/invoiceGenerator';
+
+export interface SavedTemplateEntry {
+  id: string;
+  name: string;
+  description: string;
+  savedAt: string;
+  currencyCode: string;
+  data: InvoiceData;
+}
 
 export const InvoiceGeneratorTool: React.FC = () => {
   const [invoice, setInvoice] = useState<InvoiceData>(() => {
@@ -61,6 +81,38 @@ export const InvoiceGeneratorTool: React.FC = () => {
   const [pdfSuccessMessage, setPdfSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Template Manager state
+  const [templateNameInput, setTemplateNameInput] = useState('');
+  const [templateDescInput, setTemplateDescInput] = useState('');
+  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [savedTemplates, setSavedTemplates] = useState<SavedTemplateEntry[]>(() => {
+    try {
+      const stored = localStorage.getItem('devflow_invoice_templates_list');
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (e) {
+      // ignore
+    }
+    return [];
+  });
+
+  // Keep template name in sync with company name if user hasn't typed a custom one
+  useEffect(() => {
+    if (!templateNameInput) {
+      setTemplateNameInput(`${invoice.sender.companyName || 'My Business'} Template`);
+    }
+  }, [invoice.sender.companyName]);
+
+  // Persist custom saved templates
+  useEffect(() => {
+    try {
+      localStorage.setItem('devflow_invoice_templates_list', JSON.stringify(savedTemplates));
+    } catch (e) {
+      // ignore
+    }
+  }, [savedTemplates]);
+
   // Auto-save draft
   useEffect(() => {
     try {
@@ -71,6 +123,110 @@ export const InvoiceGeneratorTool: React.FC = () => {
   }, [invoice]);
 
   const totals = calculateInvoiceTotals(invoice);
+
+  // Download settings as template (.json)
+  const handleDownloadTemplate = (customName?: string, customDesc?: string) => {
+    const tplName = (customName || templateNameInput || `${invoice.sender.companyName || 'Custom'} Template`).trim();
+    const tplDesc = (customDesc || templateDescInput || `Settings for ${invoice.currency.code} (${invoice.currency.symbol}) with ${invoice.defaultTaxRate}% tax`).trim();
+    
+    try {
+      const jsonStr = exportInvoiceTemplateJson(invoice, tplName, tplDesc);
+      const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const filenameSlug = tplName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'invoice-template';
+      a.href = url;
+      a.download = `invoice-template-${filenameSlug}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      // Save a copy to local saved templates as well
+      const newEntry: SavedTemplateEntry = {
+        id: `tpl-${Date.now()}`,
+        name: tplName,
+        description: tplDesc,
+        savedAt: new Date().toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }),
+        currencyCode: invoice.currency.code,
+        data: JSON.parse(JSON.stringify(invoice)),
+      };
+
+      setSavedTemplates((prev) => [newEntry, ...prev.filter((t) => t.name !== tplName)].slice(0, 10));
+      setPdfSuccessMessage(`Template "${tplName}" exported and saved successfully!`);
+      setTimeout(() => setPdfSuccessMessage(null), 4000);
+      setIsTemplateModalOpen(false);
+    } catch (err: any) {
+      setErrorMessage(`Failed to export template: ${err?.message || 'Unknown error'}`);
+      setTimeout(() => setErrorMessage(null), 4000);
+    }
+  };
+
+  // Upload previously downloaded template (.json)
+  const handleUploadTemplateFile = (file: File) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const raw = event.target?.result as string;
+        const result = parseInvoiceTemplate(raw);
+
+        if (result.success && result.invoice) {
+          setInvoice(result.invoice);
+
+          // Save to local templates if it had a template name
+          if (result.templateName) {
+            const newEntry: SavedTemplateEntry = {
+              id: `tpl-${Date.now()}`,
+              name: result.templateName,
+              description: result.templateDescription || `Imported template (${result.invoice.currency.code})`,
+              savedAt: new Date().toLocaleDateString(undefined, {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric',
+              }),
+              currencyCode: result.invoice.currency.code,
+              data: JSON.parse(JSON.stringify(result.invoice)),
+            };
+            setSavedTemplates((prev) => [newEntry, ...prev.filter((t) => t.name !== result.templateName)].slice(0, 10));
+          }
+
+          setPdfSuccessMessage(`Template "${result.templateName || file.name}" loaded successfully!`);
+          setTimeout(() => setPdfSuccessMessage(null), 4000);
+        } else {
+          setErrorMessage(result.error || 'Failed to parse invoice template.');
+          setTimeout(() => setErrorMessage(null), 4500);
+        }
+      } catch (err: any) {
+        setErrorMessage(`Failed to read template file: ${err?.message || 'Invalid JSON syntax'}`);
+        setTimeout(() => setErrorMessage(null), 4500);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleTemplateFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      handleUploadTemplateFile(file);
+    }
+    e.target.value = '';
+  };
+
+  const handleApplySavedTemplate = (entry: SavedTemplateEntry) => {
+    setInvoice(JSON.parse(JSON.stringify(entry.data)));
+    setPdfSuccessMessage(`Applied saved template "${entry.name}"`);
+    setTimeout(() => setPdfSuccessMessage(null), 3000);
+  };
+
+  const handleDeleteSavedTemplate = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSavedTemplates((prev) => prev.filter((t) => t.id !== id));
+  };
 
   // Handle Load Sample
   const handleLoadSample = (sampleIdx: number) => {
@@ -292,46 +448,84 @@ export const InvoiceGeneratorTool: React.FC = () => {
           {/* Sample Preset Dropdown */}
           <div className="relative inline-block">
             <select
-              onChange={(e) => handleLoadSample(Number(e.target.value))}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val.startsWith('saved-')) {
+                  const savedId = val.replace('saved-', '');
+                  const found = savedTemplates.find((t) => t.id === savedId);
+                  if (found) handleApplySavedTemplate(found);
+                } else if (val !== '') {
+                  handleLoadSample(Number(val));
+                }
+              }}
               value=""
               className="text-xs bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 px-3 py-2 rounded-lg font-medium cursor-pointer focus:outline-hidden focus:border-indigo-500"
             >
               <option value="" disabled>
-                ⚡ Load Sample Preset...
+                ⚡ Presets & Templates...
               </option>
-              {SAMPLE_INVOICES.map((sample, idx) => (
-                <option key={idx} value={idx}>
-                  {sample.name}
-                </option>
-              ))}
+              {savedTemplates.length > 0 && (
+                <optgroup label="⭐ Your Saved Templates">
+                  {savedTemplates.map((tpl) => (
+                    <option key={tpl.id} value={`saved-${tpl.id}`}>
+                      {tpl.name} ({tpl.currencyCode})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              <optgroup label="📋 Built-in Standard Presets">
+                {SAMPLE_INVOICES.map((sample, idx) => (
+                  <option key={idx} value={idx}>
+                    {sample.name}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </div>
         </div>
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* JSON Export/Import */}
-          <button
-            onClick={handleExportJson}
-            type="button"
-            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
-            title="Export invoice data as JSON"
-          >
-            <span>JSON</span>
-          </button>
-          <label
-            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
-            title="Import invoice JSON file"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            <span>Import</span>
-            <input
-              type="file"
-              accept=".json,application/json"
-              onChange={handleImportJson}
-              className="hidden"
-            />
-          </label>
+          {/* Template Download & Upload Actions */}
+          <div className="flex items-center gap-1.5 p-1 rounded-lg bg-slate-800/90 border border-slate-700">
+            <button
+              onClick={() => handleDownloadTemplate()}
+              type="button"
+              className="px-2.5 py-1 rounded-md bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Download your customized invoice settings as a reusable template JSON"
+            >
+              <FileDown className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">Download Template</span>
+              <span className="sm:hidden">Save Tpl</span>
+            </button>
+
+            <label
+              className="px-2.5 py-1 rounded-md bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Upload a previously downloaded template (.json) to restore all invoice settings"
+            >
+              <FileUp className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="hidden sm:inline">Upload Template</span>
+              <span className="sm:hidden">Load Tpl</span>
+              <input
+                type="file"
+                accept=".json,application/json"
+                onChange={handleTemplateFileInputChange}
+                className="hidden"
+              />
+            </label>
+          </div>
+
+          {/* Raw JSON Export/Import */}
+          <div className="hidden xl:flex items-center gap-1">
+            <button
+              onClick={handleExportJson}
+              type="button"
+              className="px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 hover:text-slate-200 text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
+              title="Export full invoice state as JSON"
+            >
+              <span>Raw JSON</span>
+            </button>
+          </div>
 
           {/* Reset */}
           <button
@@ -704,6 +898,157 @@ export const InvoiceGeneratorTool: React.FC = () => {
                       )}
                     </div>
                   </div>
+                </div>
+
+                {/* INVOICE GENERATOR TEMPLATE MANAGER */}
+                <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-4 pt-4 mt-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        <Bookmark className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                          <span>Invoice Generator Templates & Settings</span>
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-mono">
+                            .json
+                          </span>
+                        </h4>
+                        <p className="text-[11px] text-slate-400">
+                          Save all customized settings, currency, taxes, company info & styling into a reusable template file
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Template Meta Inputs */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-400 mb-1">
+                        Template Name
+                      </label>
+                      <input
+                        type="text"
+                        value={templateNameInput}
+                        onChange={(e) => setTemplateNameInput(e.target.value)}
+                        placeholder="e.g. My Agency EU Template"
+                        className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-white text-xs focus:outline-hidden focus:border-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-400 mb-1">
+                        Template Description / Notes
+                      </label>
+                      <input
+                        type="text"
+                        value={templateDescInput}
+                        onChange={(e) => setTemplateDescInput(e.target.value)}
+                        placeholder={`e.g. Default ${invoice.currency.code} billing with ${invoice.defaultTaxRate}% VAT`}
+                        className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-white text-xs focus:outline-hidden focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Action Buttons: Download and Upload */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadTemplate()}
+                      className="w-full py-2.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
+                    >
+                      <FileDown className="w-4 h-4" />
+                      <span>Download Settings as Template (.json)</span>
+                    </button>
+
+                    <label className="w-full py-2.5 px-3 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-200 hover:text-white text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer text-center">
+                      <FileUp className="w-4 h-4 text-indigo-400" />
+                      <span>Upload Template (.json)</span>
+                      <input
+                        type="file"
+                        accept=".json,application/json"
+                        onChange={handleTemplateFileInputChange}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+
+                  {/* Summary of What's Included in Template */}
+                  <div className="p-3 rounded-lg bg-slate-900/80 border border-slate-800/80 text-[11px] text-slate-300 space-y-1.5 font-mono">
+                    <div className="text-[10px] font-sans font-bold uppercase tracking-wider text-slate-400 mb-1">
+                      Template Snapshot Includes:
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px]">
+                      <div>
+                        <span className="text-slate-500 block">Currency:</span>
+                        <span className="text-indigo-300 font-semibold">{invoice.currency.code} ({invoice.currency.symbol})</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block">Default Tax:</span>
+                        <span className="text-indigo-300 font-semibold">{invoice.defaultTaxRate}% ({invoice.taxMode})</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block">Company:</span>
+                        <span className="text-indigo-300 font-semibold truncate block">{invoice.sender.companyName || 'None'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block">Items Count:</span>
+                        <span className="text-indigo-300 font-semibold">{invoice.lineItems.length} default line items</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Saved Templates in Browser List */}
+                  {savedTemplates.length > 0 && (
+                    <div className="pt-2 border-t border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-300">
+                        <span className="flex items-center gap-1.5">
+                          <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Saved Templates in Browser ({savedTemplates.length})</span>
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {savedTemplates.map((tpl) => (
+                          <div
+                            key={tpl.id}
+                            className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 flex items-center justify-between gap-2 group transition-all"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-bold text-slate-200 truncate">{tpl.name}</p>
+                              <p className="text-[10px] text-slate-400 truncate">
+                                {tpl.currencyCode} • {tpl.savedAt}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleApplySavedTemplate(tpl)}
+                                className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold cursor-pointer transition-colors"
+                                title="Apply this template"
+                              >
+                                Apply
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadTemplate(tpl.name, tpl.description)}
+                                className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white cursor-pointer"
+                                title="Download JSON"
+                              >
+                                <FileDown className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => handleDeleteSavedTemplate(tpl.id, e)}
+                                className="p-1 rounded bg-slate-800 hover:bg-rose-900/40 text-slate-400 hover:text-rose-400 cursor-pointer"
+                                title="Delete from saved"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

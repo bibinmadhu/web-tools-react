@@ -33,6 +33,9 @@ import {
   generateInvoicePdf,
   SAMPLE_INVOICES,
   POPULAR_CURRENCIES,
+  exportInvoiceTemplateJson,
+  parseInvoiceTemplate,
+  createInvoiceTemplateFile,
 } from './invoiceGenerator';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
@@ -776,6 +779,42 @@ curl -X POST "https://api.example.com/data" \\
     const totals = calculateInvoiceTotals(inv);
     assertEqual(totals.subtotal, 45, 'Subtotal should be 45');
     assertEqual(formatInvoiceCurrency(totals.subtotal, inv.currency), '45.000 KD', 'Subtotal should format with 3 decimals');
+  });
+
+  test('Invoice Generator', 'Exports customized invoice settings into a structured template JSON and parses uploaded template', () => {
+    const customInv = createDefaultInvoice();
+    customInv.sender.companyName = 'Acme Consulting Global';
+    customInv.currency = {
+      code: 'EUR',
+      symbol: '€',
+      name: 'Euro',
+      position: 'after',
+      decimals: 2,
+    };
+    customInv.defaultTaxRate = 19;
+    customInv.defaultTaxLabel = 'MwSt / VAT';
+    customInv.theme.primaryColor = '#059669';
+
+    // 1. Export template JSON string
+    const jsonOutput = exportInvoiceTemplateJson(customInv, 'Acme German Template', '19% VAT standard invoicing');
+    assertTrue(jsonOutput.includes('"devhub-invoice-template"'), 'Template JSON should contain template format identifier');
+    assertTrue(jsonOutput.includes('"Acme Consulting Global"'), 'Template JSON should contain customized company name');
+    assertTrue(jsonOutput.includes('"MwSt / VAT"'), 'Template JSON should contain custom tax label');
+
+    // 2. Parse the exported template back
+    const parseResult = parseInvoiceTemplate(jsonOutput);
+    assertTrue(parseResult.success, 'Parsing exported template JSON should succeed');
+    assertEqual(parseResult.templateName, 'Acme German Template', 'Parsed template name should match');
+    assertEqual(parseResult.invoice?.sender.companyName, 'Acme Consulting Global', 'Parsed company name should match');
+    assertEqual(parseResult.invoice?.currency.code, 'EUR', 'Parsed currency should match');
+    assertEqual(parseResult.invoice?.defaultTaxRate, 19, 'Parsed tax rate should match');
+    assertEqual(parseResult.invoice?.theme.primaryColor, '#059669', 'Parsed primary theme color should match');
+
+    // 3. Robust parsing of raw invoice JSON or partial template
+    const rawInvJson = JSON.stringify(customInv);
+    const rawResult = parseInvoiceTemplate(rawInvJson);
+    assertTrue(rawResult.success, 'Parsing raw invoice data JSON should also succeed gracefully');
+    assertEqual(rawResult.invoice?.sender.companyName, 'Acme Consulting Global', 'Parsed raw invoice data should preserve company name');
   });
 
   await testAsync('Invoice Generator', 'Generates valid downloadable vector PDF document', async () => {
