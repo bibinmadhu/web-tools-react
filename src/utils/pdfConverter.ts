@@ -1,3 +1,4 @@
+import './polyfills';
 import { PDFDocument } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -61,8 +62,12 @@ export async function extractPdfContent(pdfBuffer: ArrayBuffer | Uint8Array): Pr
   
   try {
     const loadingTask = pdfjsLib.getDocument({
-      data,
+      data: data.slice(0),
       useSystemFonts: true,
+      disableStream: true,
+      disableRange: true,
+      disableAutoFetch: true,
+      isEvalSupported: false,
     } as any);
     const pdfDoc = await loadingTask.promise;
     const pageCount = pdfDoc.numPages;

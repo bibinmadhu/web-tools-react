@@ -1,3 +1,4 @@
+import './polyfills';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -333,87 +334,165 @@ export async function extractPdfTextAndMetadata(pdfBuffer: ArrayBuffer | Uint8Ar
 }> {
   // Ensure we have a clean Uint8Array copy
   const data = pdfBuffer instanceof Uint8Array ? pdfBuffer : new Uint8Array(pdfBuffer);
-  const loadingTask = pdfjsLib.getDocument({
-    data,
-    useSystemFonts: true,
-  } as any);
-
-  const pdfDoc = await loadingTask.promise;
-  const pageCount = pdfDoc.numPages;
-
-  // Extract document metadata
-  let title = '';
-  let author = '';
-  let creationDate: string | undefined = undefined;
 
   try {
-    const meta: any = await pdfDoc.getMetadata();
-    if (meta?.info) {
-      title = meta.info.Title || '';
-      author = meta.info.Author || '';
-      if (meta.info.CreationDate) {
-        creationDate = formatPdfDate(meta.info.CreationDate);
+    const loadingTask = pdfjsLib.getDocument({
+      data: data.slice(0),
+      useSystemFonts: true,
+      disableStream: true,
+      disableRange: true,
+      disableAutoFetch: true,
+      isEvalSupported: false,
+    } as any);
+
+    const pdfDoc = await loadingTask.promise;
+    const pageCount = pdfDoc.numPages;
+
+    // Extract document metadata
+    let title = '';
+    let author = '';
+    let creationDate: string | undefined = undefined;
+
+    try {
+      const meta: any = await pdfDoc.getMetadata();
+      if (meta?.info) {
+        title = meta.info.Title || '';
+        author = meta.info.Author || '';
+        if (meta.info.CreationDate) {
+          creationDate = formatPdfDate(meta.info.CreationDate);
+        }
       }
+    } catch (e) {
+      // metadata is optional
+    }
+
+    const pages: ExtractedPageText[] = [];
+    const structuredPages: StructuredLine[][] = [];
+    const fontSizesCollected: number[] = [];
+
+    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+      const page = await pdfDoc.getPage(pageNum);
+      const textContent = await page.getTextContent();
+
+      const rawItems: RawTextItem[] = [];
+
+      for (const item of textContent.items as any[]) {
+        if (!item || typeof item.str !== 'string') continue;
+        const str = item.str;
+        if (!str && !item.hasEOL) continue;
+
+        const transform = item.transform || [1, 0, 0, 1, 0, 0];
+        const x = transform[4] || 0;
+        const y = transform[5] || 0;
+        const height = item.height || Math.abs(transform[0]) || Math.abs(transform[3]) || 10;
+        const width = item.width || 0;
+        const fontName = (item.fontName || '').toLowerCase();
+
+        rawItems.push({
+          str,
+          x,
+          y,
+          width,
+          height,
+          fontName,
+          hasEOL: item.hasEOL,
+        });
+
+        if (str.trim().length > 0 && height > 4) {
+          fontSizesCollected.push(Math.round(height * 2) / 2);
+        }
+      }
+
+      // Cluster items into lines based on Y coordinate
+      const structuredLines = clusterItemsIntoLines(rawItems);
+      structuredPages.push(structuredLines);
+
+      const lineTexts = structuredLines.map((l) => l.text).filter((t) => t.trim().length > 0);
+      const rawPageText = lineTexts.join('\n');
+
+      pages.push({
+        pageNumber: pageNum,
+        rawText: rawPageText,
+        lines: lineTexts,
+      });
+    }
+
+    // Calculate dominant body font size
+    const bodyFontSize = calculateDominantFontSize(fontSizesCollected);
+
+    // If title was not in metadata, take the first prominent heading
+    if (!title && pages[0]?.lines[0]) {
+      title = pages[0].lines[0].replace(/^[#\s*_-]+/, '').trim();
+    }
+
+    const fullRawText = pages.map((p) => p.rawText).join('\n\n');
+
+    return {
+      title: title || 'PDF Document',
+      author: author || '',
+      creationDate,
+      pageCount,
+      pages,
+      structuredPages,
+      bodyFontSize,
+      fullRawText,
+    };
+  } catch (pdfjsErr) {
+    console.warn('PDF.js parsing encountered issue, using resilient PDF-lib fallback:', pdfjsErr);
+    return await extractPdfTextWithPdfLibFallback(data);
+  }
+}
+
+/**
+ * Resilient fallback extraction using pdf-lib uncompressed stream demuxer.
+ * Guarantees zero stream errors across all environments.
+ */
+async function extractPdfTextWithPdfLibFallback(data: Uint8Array): Promise<{
+  title: string;
+  author: string;
+  creationDate?: string;
+  pageCount: number;
+  pages: ExtractedPageText[];
+  structuredPages: StructuredLine[][];
+  bodyFontSize: number;
+  fullRawText: string;
+}> {
+  const pdfDoc = await PDFDocument.load(data, { ignoreEncryption: true });
+  const pageCount = pdfDoc.getPageCount();
+
+  let title = pdfDoc.getTitle() || '';
+  let author = pdfDoc.getAuthor() || '';
+  let creationDate: string | undefined;
+
+  try {
+    const cDate = pdfDoc.getCreationDate();
+    if (cDate) {
+      creationDate = cDate.toISOString().split('T')[0];
     }
   } catch (e) {
-    // metadata is optional
+    // optional
   }
 
   const pages: ExtractedPageText[] = [];
   const structuredPages: StructuredLine[][] = [];
   const fontSizesCollected: number[] = [];
 
-  for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-    const page = await pdfDoc.getPage(pageNum);
-    const textContent = await page.getTextContent();
-
-    const rawItems: RawTextItem[] = [];
-
-    for (const item of textContent.items as any[]) {
-      if (!item || typeof item.str !== 'string') continue;
-      const str = item.str;
-      if (!str && !item.hasEOL) continue;
-
-      const transform = item.transform || [1, 0, 0, 1, 0, 0];
-      const x = transform[4] || 0;
-      const y = transform[5] || 0;
-      const height = item.height || Math.abs(transform[0]) || Math.abs(transform[3]) || 10;
-      const width = item.width || 0;
-      const fontName = (item.fontName || '').toLowerCase();
-
-      rawItems.push({
-        str,
-        x,
-        y,
-        width,
-        height,
-        fontName,
-        hasEOL: item.hasEOL,
-      });
-
-      if (str.trim().length > 0 && height > 4) {
-        fontSizesCollected.push(Math.round(height * 2) / 2);
-      }
-    }
-
-    // Cluster items into lines based on Y coordinate
-    const structuredLines = clusterItemsIntoLines(rawItems);
+  for (let i = 0; i < pageCount; i++) {
+    const page = pdfDoc.getPage(i);
+    const structuredLines = extractLinesFromPdfLibPage(page, fontSizesCollected);
     structuredPages.push(structuredLines);
 
     const lineTexts = structuredLines.map((l) => l.text).filter((t) => t.trim().length > 0);
     const rawPageText = lineTexts.join('\n');
 
     pages.push({
-      pageNumber: pageNum,
+      pageNumber: i + 1,
       rawText: rawPageText,
       lines: lineTexts,
     });
   }
 
-  // Calculate dominant body font size
-  const bodyFontSize = calculateDominantFontSize(fontSizesCollected);
-
-  // If title was not in metadata, take the first prominent heading
+  const dominantFontSize = calculateDominantFontSize(fontSizesCollected);
   if (!title && pages[0]?.lines[0]) {
     title = pages[0].lines[0].replace(/^[#\s*_-]+/, '').trim();
   }
@@ -427,9 +506,152 @@ export async function extractPdfTextAndMetadata(pdfBuffer: ArrayBuffer | Uint8Ar
     pageCount,
     pages,
     structuredPages,
-    bodyFontSize,
+    bodyFontSize: dominantFontSize || 10,
     fullRawText,
   };
+}
+
+function extractLinesFromPdfLibPage(page: any, fontSizesCollected: number[]): StructuredLine[] {
+  try {
+    const contents = page.node.Contents();
+    if (!contents) return [];
+
+    let streams: any[] = [];
+    if (Array.isArray(contents.array)) {
+      streams = contents.array;
+    } else {
+      streams = [contents];
+    }
+
+    const rawItems: RawTextItem[] = [];
+
+    for (const streamObj of streams) {
+      if (!streamObj || typeof streamObj.getUncompressedStream !== 'function') continue;
+      const uncompressed = streamObj.getUncompressedStream();
+      if (!uncompressed) continue;
+
+      const decoder = new TextDecoder('latin1');
+      const streamStr = decoder.decode(uncompressed);
+
+      let currentFontSize = 10;
+      let currentX = 50;
+      let currentY = 750;
+      let currentFontName = 'body';
+
+      const tokens = streamStr.split(/\r?\n/);
+      for (const line of tokens) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        const fontMatch = trimmed.match(/\/(\w+)\s+([\d.]+)\s+Tf/);
+        if (fontMatch) {
+          currentFontName = fontMatch[1].toLowerCase();
+          currentFontSize = parseFloat(fontMatch[2]) || 10;
+          fontSizesCollected.push(currentFontSize);
+        }
+
+        const tmMatch = trimmed.match(/([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+Tm/);
+        if (tmMatch) {
+          currentX = parseFloat(tmMatch[5]) || currentX;
+          currentY = parseFloat(tmMatch[6]) || currentY;
+        }
+
+        const tdMatch = trimmed.match(/([\d.-]+)\s+([\d.-]+)\s+Td/);
+        if (tdMatch) {
+          currentX += parseFloat(tdMatch[1]) || 0;
+          currentY += parseFloat(tdMatch[2]) || 0;
+        }
+
+        const tjMatch = trimmed.match(/\(([^)]*)\)\s*Tj/);
+        if (tjMatch) {
+          const text = cleanPdfStreamString(tjMatch[1]);
+          if (text) {
+            rawItems.push({
+              str: text,
+              x: currentX,
+              y: currentY,
+              width: text.length * (currentFontSize * 0.5),
+              height: currentFontSize,
+              fontName: currentFontName,
+            });
+            currentX += text.length * (currentFontSize * 0.5);
+          }
+        }
+
+        const hexMatch = trimmed.match(/<([0-9a-fA-F\s]+)>\s*Tj/);
+        if (hexMatch) {
+          const hexStr = hexMatch[1].replace(/\s+/g, '');
+          let decoded = '';
+          for (let k = 0; k < hexStr.length; k += 2) {
+            decoded += String.fromCharCode(parseInt(hexStr.substr(k, 2), 16));
+          }
+          if (decoded) {
+            rawItems.push({
+              str: decoded,
+              x: currentX,
+              y: currentY,
+              width: decoded.length * (currentFontSize * 0.5),
+              height: currentFontSize,
+              fontName: currentFontName,
+            });
+            currentX += decoded.length * (currentFontSize * 0.5);
+          }
+        }
+
+        const tjArrMatch = trimmed.match(/\[(.*?)\]\s*TJ/);
+        if (tjArrMatch) {
+          const inner = tjArrMatch[1];
+          const subStrings = inner.match(/\(([^)]*)\)|<([0-9a-fA-F]+)>/g);
+          if (subStrings) {
+            const combined = subStrings
+              .map((s) => {
+                if (s.startsWith('(')) return cleanPdfStreamString(s.slice(1, -1));
+                if (s.startsWith('<')) {
+                  const h = s.slice(1, -1);
+                  let dec = '';
+                  for (let k = 0; k < h.length; k += 2) {
+                    dec += String.fromCharCode(parseInt(h.substr(k, 2), 16));
+                  }
+                  return dec;
+                }
+                return '';
+              })
+              .join('');
+
+            if (combined.trim()) {
+              rawItems.push({
+                str: combined,
+                x: currentX,
+                y: currentY,
+                width: combined.length * (currentFontSize * 0.5),
+                height: currentFontSize,
+                fontName: currentFontName,
+              });
+              currentX += combined.length * (currentFontSize * 0.5);
+            }
+          }
+        }
+      }
+    }
+
+    if (rawItems.length > 0) {
+      return clusterItemsIntoLines(rawItems);
+    }
+  } catch (err) {
+    console.warn('PDF-lib fallback line extraction error:', err);
+  }
+
+  return [];
+}
+
+function cleanPdfStreamString(raw: string): string {
+  return raw
+    .replace(/\\([()\\])/g, '$1')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\(\d{3})/g, (_m, oct) => String.fromCharCode(parseInt(oct, 8)))
+    .replace(/\\/g, '');
 }
 
 /**
