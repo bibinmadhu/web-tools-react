@@ -50,6 +50,8 @@ import {
   generateAgreementDocx,
   generateAgreementHtml,
   interpolatePlaceholders,
+  cleanPdfText,
+  wrapText,
 } from './agreementGenerator';
 import { getAgreementPresets } from './agreementPresets';
 import { TestSuiteSummary, UnitTestResult } from '../types';
@@ -967,6 +969,32 @@ curl -X POST "https://api.example.com/data" \\
     assertTrue(html.includes('(Authorized Signature Line)'), 'HTML output should render blank authorized signature line');
     assertTrue(html.includes(config.party1.representativeName), 'HTML should retain Party 1 representative name');
     assertTrue(html.includes(config.party2.representativeName), 'HTML should retain Party 2 representative name');
+  });
+
+  await testAsync('Agreement Generator', 'PDF Text Sanitization & Dynamic Text Wrapping (No Mangling)', async () => {
+    // Test cleanPdfText
+    const dirtyText = `“Smart Quotes” and ‘Apostrophes’ — Em-Dash & En-Dash – Ellipsis… Bullet • NBSP\u00A0 **Bold** *Italic* \`Code\``;
+    const sanitized = cleanPdfText(dirtyText);
+    assertTrue(!sanitized.includes('“'), 'Should remove left double curly quote');
+    assertTrue(!sanitized.includes('”'), 'Should remove right double curly quote');
+    assertTrue(!sanitized.includes('—'), 'Should replace em-dash with hyphen');
+    assertTrue(!sanitized.includes('…'), 'Should replace ellipsis character with 3 periods');
+    assertTrue(sanitized.includes('"Smart Quotes"'), 'Should contain straight ASCII quotes');
+    assertTrue(sanitized.includes("'Apostrophes'"), 'Should contain straight ASCII apostrophes');
+
+    // Test PDF generation with complex long text and special characters
+    const complexConfig = getDefaultContractorAgreement();
+    complexConfig.title = 'MASTER SERVICES AGREEMENT (“MSA”) – 2026 EDITION';
+    complexConfig.subtitle = 'Enterprise Software Development & AI Integration Services — Statement of Work (SOW-09)';
+    complexConfig.clauses[0].subClauses[0].content = `The Contractor shall design, build, test, and deploy “next-generation” enterprise modules with high availability (99.99%). This includes:
+• Complete REST & GraphQL endpoints with robust error handling.
+• Real-time synchronization pipelines — zero data loss guarantee.
+• Cross-platform compatibility testing across macOS, Linux, and Windows 11.
+Each deliverable must adhere strictly to Client’s security standards, GDPR compliance, and SOC 2 Type II controls.`;
+
+    const pdfBytes = await generateAgreementPdf(complexConfig);
+    assertTrue(pdfBytes instanceof Uint8Array, 'PDF output should be valid Uint8Array');
+    assertTrue(pdfBytes.length > 1000, 'PDF output with multi-clause sanitized text should be valid and substantive');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

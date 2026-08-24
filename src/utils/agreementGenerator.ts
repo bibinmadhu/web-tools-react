@@ -495,7 +495,8 @@ export function interpolatePlaceholders(text: string, config: AgreementConfig): 
   const symbol = config.paymentTerms.currency.symbol;
   const totalStr = `${symbol}${config.paymentTerms.totalAmount.toLocaleString()}`;
 
-  return text
+  let result = text
+    .replace(/\$\{\{TOTAL_AMOUNT\}\}/g, totalStr)
     .replace(/\{\{TOTAL_AMOUNT\}\}/g, totalStr)
     .replace(/\{\{CURRENCY_CODE\}\}/g, config.paymentTerms.currency.code)
     .replace(/\{\{NET_DAYS\}\}/g, `${config.paymentTerms.netDays}`)
@@ -505,6 +506,10 @@ export function interpolatePlaceholders(text: string, config: AgreementConfig): 
     .replace(/\{\{EFFECTIVE_DATE\}\}/g, config.effectiveDate)
     .replace(/\{\{CLIENT_NAME\}\}/g, config.party1.name)
     .replace(/\{\{CONTRACTOR_NAME\}\}/g, config.party2.name);
+
+  // Clean up any unintended double currency symbols
+  result = result.replace(/\$\$+/g, '$');
+  return result;
 }
 
 /**
@@ -632,13 +637,120 @@ export function generateAgreementMarkdown(config: AgreementConfig): string {
 }
 
 /**
- * Generates a high-quality multi-page PDF document using pdf-lib.
+ * Sanitizes text to remove unencodable unicode glyphs, smart quotes,
+ * em-dashes, and unsupported symbols for PDF-lib standard WinAnsi fonts.
+ */
+export function cleanPdfText(text: string): string {
+  if (!text) return '';
+  return text
+    // Replace smart quotes and apostrophes
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u02BC\u02B9]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u00AB\u00BB]/g, '"')
+    // Replace dashes and hyphens
+    .replace(/[\u2013\u2014\u2015\u2212]/g, '-')
+    // Replace ellipsis
+    .replace(/\u2026/g, '...')
+    // Replace bullet points and dots
+    .replace(/[\u2022\u25E6\u25AA\u25AB\u25CF\u2219]/g, '-')
+    // Replace non-breaking spaces and zero-width spaces
+    .replace(/[\u00A0\u202F\u2007\u200B\uFEFF]/g, ' ')
+    // Replace copyright/trademark/registered symbols
+    .replace(/\u00A9/g, '(c)')
+    .replace(/\u00AE/g, '(R)')
+    .replace(/\u2122/g, '(TM)')
+    // Strip markdown formatting symbols like **bold**, *italic*, ###
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    // Clean consecutive spaces
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Accurately calculates text wrapping lines using exact font metrics from pdf-lib.
+ */
+export function wrapText(text: string, font: any, fontSize: number, maxWidth: number): string[] {
+  const clean = cleanPdfText(text);
+  if (!clean) return [];
+
+  const rawParagraphs = clean.split(/\r?\n/);
+  const lines: string[] = [];
+
+  for (const para of rawParagraphs) {
+    const trimmedPara = para.trim();
+    if (!trimmedPara) {
+      lines.push('');
+      continue;
+    }
+
+    const words = trimmedPara.split(/\s+/);
+    let currentLine = '';
+
+    for (const word of words) {
+      const candidate = currentLine ? `${currentLine} ${word}` : word;
+      let width = 0;
+      try {
+        width = font.widthOfTextAtSize(candidate, fontSize);
+      } catch {
+        width = candidate.length * fontSize * 0.55;
+      }
+
+      if (width > maxWidth && currentLine) {
+        lines.push(currentLine);
+
+        // Handle exceptionally long words that exceed maxWidth
+        let wordWidth = 0;
+        try {
+          wordWidth = font.widthOfTextAtSize(word, fontSize);
+        } catch {
+          wordWidth = word.length * fontSize * 0.55;
+        }
+
+        if (wordWidth > maxWidth) {
+          let partial = '';
+          for (let c = 0; c < word.length; c++) {
+            const testPartial = partial + word[c];
+            let testWidth = 0;
+            try {
+              testWidth = font.widthOfTextAtSize(testPartial, fontSize);
+            } catch {
+              testWidth = testPartial.length * fontSize * 0.55;
+            }
+            if (testWidth > maxWidth && partial) {
+              lines.push(partial);
+              partial = word[c];
+            } else {
+              partial = testPartial;
+            }
+          }
+          currentLine = partial;
+        } else {
+          currentLine = word;
+        }
+      } else {
+        currentLine = candidate;
+      }
+    }
+
+    if (currentLine) {
+      lines.push(currentLine);
+    }
+  }
+
+  return lines;
+}
+
+/**
+ * Generates a clean, perfectly aligned multi-page PDF document without mangled or overlapping text.
  */
 export async function generateAgreementPdf(config: AgreementConfig): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
-  pdfDoc.setTitle(`${config.title} - ${config.contractId}`);
-  pdfDoc.setAuthor(config.party1.name || 'DevHub Agreement Generator');
-  pdfDoc.setSubject(config.subtitle);
+  pdfDoc.setTitle(cleanPdfText(`${config.title} - ${config.contractId}`));
+  pdfDoc.setAuthor(cleanPdfText(config.party1.name || 'DevHub Agreement Generator'));
+  pdfDoc.setSubject(cleanPdfText(config.subtitle));
 
   const fontTitle = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const fontBody = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -650,281 +762,380 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
   const pageHeight = 841.89;
   const marginX = 45;
   const contentWidth = pageWidth - marginX * 2;
+  const bottomMargin = 50;
 
+  const pages: any[] = [];
   let currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
-  let y = pageHeight - 50;
-  let pageNumber = 1;
+  pages.push(currentPage);
+  let y = pageHeight - 45;
 
-  const drawHeaderFooter = (page: any, pNum: number) => {
-    // Footer
-    page.drawLine({
-      start: { x: marginX, y: 40 },
-      end: { x: pageWidth - marginX, y: 40 },
-      thickness: 0.75,
-      color: rgb(0.8, 0.82, 0.88),
-    });
-    page.drawText(`${config.classification} • CONTRACT ID: ${config.contractId}`, {
-      x: marginX,
-      y: 28,
-      size: 7.5,
-      font: fontMono,
-      color: rgb(0.5, 0.55, 0.65),
-    });
-    page.drawText(`Page ${pNum}`, {
-      x: pageWidth - marginX - 35,
-      y: 28,
-      size: 8,
-      font: fontMono,
-      color: rgb(0.5, 0.55, 0.65),
-    });
-  };
-
-  const checkPageBreak = (neededHeight: number) => {
-    if (y - neededHeight < 55) {
-      drawHeaderFooter(currentPage, pageNumber);
-      pageNumber++;
+  const ensureSpace = (neededHeight: number) => {
+    if (y - neededHeight < bottomMargin) {
       currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
-      y = pageHeight - 50;
+      pages.push(currentPage);
+      y = pageHeight - 45;
     }
   };
 
-  // Top Banner
+  const writeWrappedText = (
+    text: string,
+    font: any,
+    fontSize: number,
+    color: any,
+    lineHeight: number,
+    indentX = 0,
+    customMaxWidth?: number
+  ) => {
+    const maxWidth = customMaxWidth || contentWidth - indentX;
+    const lines = wrapText(text, font, fontSize, maxWidth);
+
+    for (const line of lines) {
+      if (!line) {
+        ensureSpace(lineHeight * 0.6);
+        y -= lineHeight * 0.6;
+        continue;
+      }
+      ensureSpace(lineHeight);
+      currentPage.drawText(line, {
+        x: marginX + indentX,
+        y,
+        size: fontSize,
+        font,
+        color,
+      });
+      y -= lineHeight;
+    }
+  };
+
+  // 1. Top Banner (Page 1)
   currentPage.drawRectangle({
     x: marginX,
-    y: y - 8,
+    y: y - 36,
     width: contentWidth,
-    height: 42,
-    color: rgb(0.1, 0.14, 0.25),
+    height: 40,
+    color: rgb(0.09, 0.13, 0.22),
   });
-  currentPage.drawText(config.title, {
-    x: marginX + 15,
-    y: y + 15,
-    size: 13,
+  currentPage.drawText(cleanPdfText(config.title), {
+    x: marginX + 14,
+    y: y - 16,
+    size: 11.5,
     font: fontTitle,
     color: rgb(1, 1, 1),
   });
-  currentPage.drawText(config.subtitle, {
-    x: marginX + 15,
-    y: y + 2,
-    size: 8.5,
+  currentPage.drawText(cleanPdfText(config.subtitle), {
+    x: marginX + 14,
+    y: y - 28,
+    size: 8,
     font: fontBody,
-    color: rgb(0.7, 0.8, 0.95),
+    color: rgb(0.72, 0.82, 0.96),
   });
-  currentPage.drawText(`ID: ${config.contractId}`, {
-    x: pageWidth - marginX - 110,
-    y: y + 10,
+  currentPage.drawText(`ID: ${cleanPdfText(config.contractId)}`, {
+    x: pageWidth - marginX - 115,
+    y: y - 22,
     size: 8,
     font: fontMono,
-    color: rgb(0.6, 0.75, 0.95),
+    color: rgb(0.65, 0.78, 0.95),
   });
 
-  y -= 58;
+  y -= 48;
 
-  // Metadata Grid Box
+  // 2. Metadata Grid Box (Page 1)
+  const metaBoxHeight = 54;
   currentPage.drawRectangle({
     x: marginX,
-    y: y - 50,
+    y: y - metaBoxHeight,
     width: contentWidth,
-    height: 56,
+    height: metaBoxHeight,
     color: rgb(0.96, 0.97, 0.99),
     borderColor: rgb(0.85, 0.88, 0.94),
     borderWidth: 1,
   });
 
-  currentPage.drawText(`Effective Date: ${config.effectiveDate}`, {
+  currentPage.drawText(`Effective Date: ${cleanPdfText(config.effectiveDate)}`, {
     x: marginX + 12,
-    y: y - 10,
-    size: 8.5,
+    y: y - 14,
+    size: 8,
     font: fontTitle,
     color: rgb(0.2, 0.25, 0.35),
   });
-  currentPage.drawText(`Contract ID: ${config.contractId}`, {
+  currentPage.drawText(`Contract ID: ${cleanPdfText(config.contractId)}`, {
     x: marginX + 270,
-    y: y - 10,
-    size: 8.5,
+    y: y - 14,
+    size: 8,
     font: fontMono,
     color: rgb(0.2, 0.25, 0.35),
   });
 
-  currentPage.drawText(`${config.party1Role}: ${config.party1.name} (${config.party1.entityType})`, {
+  const p1Str = `${config.party1Role}: ${config.party1.name} (${config.party1.entityType || 'Entity'})`;
+  const p2Str = `${config.party2Role}: ${config.party2.name} (${config.party2.entityType || 'Entity'})`;
+  currentPage.drawText(cleanPdfText(p1Str.length > 48 ? p1Str.substring(0, 46) + '...' : p1Str), {
     x: marginX + 12,
-    y: y - 24,
-    size: 8,
+    y: y - 28,
+    size: 7.5,
     font: fontBody,
     color: rgb(0.3, 0.35, 0.45),
   });
-  currentPage.drawText(`${config.party2Role}: ${config.party2.name} (${config.party2.entityType})`, {
+  currentPage.drawText(cleanPdfText(p2Str.length > 48 ? p2Str.substring(0, 46) + '...' : p2Str), {
     x: marginX + 270,
-    y: y - 24,
-    size: 8,
+    y: y - 28,
+    size: 7.5,
     font: fontBody,
     color: rgb(0.3, 0.35, 0.45),
   });
 
-  currentPage.drawText(`Signatory: ${config.party1.representativeName} (${config.party1.representativeTitle})`, {
+  const p1RepStr = `Signatory: ${config.party1.representativeName || config.party1.name} (${config.party1.representativeTitle || 'Rep'})`;
+  const p2TaxStr = `Tax/Reg ID: ${config.party2.taxId || 'N/A'}`;
+  currentPage.drawText(cleanPdfText(p1RepStr.length > 48 ? p1RepStr.substring(0, 46) + '...' : p1RepStr), {
     x: marginX + 12,
-    y: y - 38,
-    size: 8,
+    y: y - 42,
+    size: 7.5,
     font: fontBody,
     color: rgb(0.4, 0.45, 0.55),
   });
-  currentPage.drawText(`Tax/Reg ID: ${config.party2.taxId || 'N/A'}`, {
+  currentPage.drawText(cleanPdfText(p2TaxStr), {
     x: marginX + 270,
-    y: y - 38,
-    size: 8,
+    y: y - 42,
+    size: 7.5,
     font: fontBody,
     color: rgb(0.4, 0.45, 0.55),
   });
 
-  y -= 65;
+  y -= metaBoxHeight + 14;
 
-  // Preamble Paragraph
+  // 3. Preamble Paragraph
   const p1Address = [config.party1.addressStreet, config.party1.addressCity, config.party1.addressState].filter(Boolean).join(', ');
   const p2Address = [config.party2.addressStreet, config.party2.addressCity, config.party2.addressState].filter(Boolean).join(', ');
-  const preamble = `This ${config.title} (the "Agreement") is made effective as of ${config.effectiveDate}, by and between ${config.party1.name} ("${config.party1Role}"), located at ${p1Address}, and ${config.party2.name} ("${config.party2Role}"), located at ${p2Address}. Parties may collectively be referred to as "Parties" or individually as "Party."`;
+  const preamble = `This ${config.title} (the "Agreement") is made effective as of ${config.effectiveDate}, by and between ${config.party1.name} ("${config.party1Role}"), located at ${p1Address || '[Address 1]'}, and ${config.party2.name} ("${config.party2Role}"), located at ${p2Address || '[Address 2]'}. The ${config.party1Role} and ${config.party2Role} may collectively be referred to as "Parties" or individually as "Party."`;
 
-  drawWrappedParagraph(currentPage, preamble, marginX, y, contentWidth, 8.5, fontBody, rgb(0.25, 0.3, 0.4), 11);
-  y -= 32;
+  writeWrappedText(preamble, fontBody, 8, rgb(0.25, 0.3, 0.4), 10.5);
+  y -= 8;
 
-  // Render Clauses
+  // 4. Render Active Clauses
   const activeClauses = config.clauses.filter((c) => c.enabled);
 
   for (const clause of activeClauses) {
-    checkPageBreak(35);
+    ensureSpace(28);
 
     // Section Heading
-    currentPage.drawText(`${clause.sectionNumber}. ${clause.title}`, {
+    currentPage.drawText(`${clause.sectionNumber}. ${cleanPdfText(clause.title)}`, {
       x: marginX,
       y,
-      size: 10,
+      size: 9.5,
       font: fontTitle,
       color: rgb(0.12, 0.18, 0.32),
     });
-    y -= 15;
+    y -= 13;
 
     for (const sub of clause.subClauses) {
-      const text = interpolatePlaceholders(sub.content, config);
+      const rawText = interpolatePlaceholders(sub.content, config);
+      const cleanContent = cleanPdfText(rawText);
 
+      // Callout box styling
       if (sub.isCallout) {
-        checkPageBreak(40);
+        const calloutLines = wrapText(cleanContent, fontItalic, 7.5, contentWidth - 20);
+        const boxH = 16 + calloutLines.length * 9.5 + 8;
+        ensureSpace(boxH + 6);
+
         currentPage.drawRectangle({
           x: marginX,
-          y: y - 28,
+          y: y - boxH,
           width: contentWidth,
-          height: 32,
+          height: boxH,
           color: rgb(0.95, 0.97, 1),
-          borderColor: rgb(0.3, 0.5, 0.85),
+          borderColor: rgb(0.35, 0.55, 0.85),
           borderWidth: 1,
         });
-        currentPage.drawText(sub.calloutTitle || 'COMPLIANCE MANDATE', {
+
+        currentPage.drawText(cleanPdfText(sub.calloutTitle || 'COMPLIANCE MANDATE'), {
           x: marginX + 10,
-          y: y - 8,
+          y: y - 11,
           size: 7.5,
           font: fontTitle,
           color: rgb(0.15, 0.35, 0.7),
         });
-        drawWrappedParagraph(currentPage, text, marginX + 10, y - 18, contentWidth - 20, 7.5, fontItalic, rgb(0.25, 0.3, 0.4), 9.5);
-        y -= 40;
+
+        let lineY = y - 22;
+        for (const cLine of calloutLines) {
+          currentPage.drawText(cLine, {
+            x: marginX + 10,
+            y: lineY,
+            size: 7.5,
+            font: fontItalic,
+            color: rgb(0.25, 0.3, 0.4),
+          });
+          lineY -= 9.5;
+        }
+
+        y -= boxH + 8;
         continue;
       }
 
+      // Regular Subclause
       if (sub.subNumber && sub.title) {
-        const fullSub = `${sub.subNumber} ${sub.title}: ${text}`;
-        const linesCount = estimateTextLines(fullSub, contentWidth, 8);
-        checkPageBreak(linesCount * 10 + 10);
-        drawWrappedParagraph(currentPage, fullSub, marginX + 8, y, contentWidth - 8, 8, fontBody, rgb(0.25, 0.3, 0.4), 10.5);
-        y -= linesCount * 10.5 + 6;
+        const fullSub = `${sub.subNumber} ${sub.title}: ${cleanContent}`;
+        writeWrappedText(fullSub, fontBody, 8, rgb(0.25, 0.3, 0.4), 10.5, 6);
+        y -= 4;
       } else {
-        const linesCount = estimateTextLines(text, contentWidth, 8);
-        checkPageBreak(linesCount * 10 + 8);
-        drawWrappedParagraph(currentPage, text, marginX + 8, y, contentWidth - 8, 8, fontBody, rgb(0.25, 0.3, 0.4), 10.5);
-        y -= linesCount * 10.5 + 6;
+        writeWrappedText(cleanContent, fontBody, 8, rgb(0.25, 0.3, 0.4), 10.5, 6);
+        y -= 4;
       }
 
-      // If Milestone table section
+      // Milestone Payment Table if Section 2.2 and milestones exist
       if (clause.sectionNumber === '2' && sub.subNumber === '2.2' && config.milestones.length > 0) {
-        const tableHeight = 20 + config.milestones.length * 18;
-        checkPageBreak(tableHeight + 10);
+        ensureSpace(24 + config.milestones.length * 16 + 10);
 
         // Header
         currentPage.drawRectangle({
           x: marginX,
           y: y - 14,
           width: contentWidth,
-          height: 16,
+          height: 15,
           color: rgb(0.9, 0.93, 0.97),
         });
-        currentPage.drawText('Milestone Deliverables / Acceptance Criteria', { x: marginX + 8, y: y - 10, size: 7.5, font: fontTitle, color: rgb(0.15, 0.2, 0.35) });
-        currentPage.drawText('Payout (% / $)', { x: marginX + 330, y: y - 10, size: 7.5, font: fontTitle, color: rgb(0.15, 0.2, 0.35) });
-        currentPage.drawText('Target Date', { x: marginX + 430, y: y - 10, size: 7.5, font: fontTitle, color: rgb(0.15, 0.2, 0.35) });
-        y -= 16;
+        currentPage.drawText('Milestone Deliverables / Acceptance Criteria', {
+          x: marginX + 8,
+          y: y - 10,
+          size: 7.5,
+          font: fontTitle,
+          color: rgb(0.15, 0.2, 0.35),
+        });
+        currentPage.drawText('Payout (% / $)', {
+          x: marginX + 320,
+          y: y - 10,
+          size: 7.5,
+          font: fontTitle,
+          color: rgb(0.15, 0.2, 0.35),
+        });
+        currentPage.drawText('Target Date', {
+          x: marginX + 430,
+          y: y - 10,
+          size: 7.5,
+          font: fontTitle,
+          color: rgb(0.15, 0.2, 0.35),
+        });
+        y -= 15;
 
-        const sym = config.paymentTerms.currency.symbol;
+        const sym = config.paymentTerms.currency.symbol || '$';
         for (let mIdx = 0; mIdx < config.milestones.length; mIdx++) {
           const m = config.milestones[mIdx];
           if (mIdx % 2 === 1) {
-            currentPage.drawRectangle({ x: marginX, y: y - 14, width: contentWidth, height: 16, color: rgb(0.97, 0.98, 1) });
+            currentPage.drawRectangle({
+              x: marginX,
+              y: y - 14,
+              width: contentWidth,
+              height: 15,
+              color: rgb(0.97, 0.98, 1),
+            });
           }
-          const shortDeliv = m.deliverables.length > 60 ? m.deliverables.substring(0, 58) + '...' : m.deliverables;
-          currentPage.drawText(`${m.name}: ${shortDeliv}`, { x: marginX + 8, y: y - 10, size: 7, font: fontBody, color: rgb(0.2, 0.25, 0.35) });
-          currentPage.drawText(`${m.percentage}% (${sym}${m.amount.toLocaleString()})`, { x: marginX + 330, y: y - 10, size: 7, font: fontMono, color: rgb(0.15, 0.3, 0.6) });
-          currentPage.drawText(m.targetDate || 'N/A', { x: marginX + 430, y: y - 10, size: 7, font: fontMono, color: rgb(0.4, 0.45, 0.55) });
-          y -= 16;
+          const shortDeliv = cleanPdfText(m.deliverables.length > 58 ? m.deliverables.substring(0, 56) + '...' : m.deliverables);
+          currentPage.drawText(`${cleanPdfText(m.name)}: ${shortDeliv}`, {
+            x: marginX + 8,
+            y: y - 10,
+            size: 7,
+            font: fontBody,
+            color: rgb(0.2, 0.25, 0.35),
+          });
+          currentPage.drawText(`${m.percentage}% (${sym}${m.amount.toLocaleString()})`, {
+            x: marginX + 320,
+            y: y - 10,
+            size: 7,
+            font: fontMono,
+            color: rgb(0.15, 0.3, 0.6),
+          });
+          currentPage.drawText(cleanPdfText(m.targetDate || 'N/A'), {
+            x: marginX + 430,
+            y: y - 10,
+            size: 7,
+            font: fontMono,
+            color: rgb(0.4, 0.45, 0.55),
+          });
+          y -= 15;
         }
         y -= 8;
       }
     }
-    y -= 6;
+    y -= 4;
   }
 
-  // Signatures Section
-  checkPageBreak(130);
-  y -= 8;
+  // 5. Signatures & Execution Section
+  ensureSpace(120);
+  y -= 4;
   currentPage.drawText('IN WITNESS WHEREOF, the Parties hereto have executed this Agreement.', {
     x: marginX,
     y,
-    size: 8.5,
+    size: 8,
     font: fontItalic,
     color: rgb(0.2, 0.25, 0.35),
   });
-  y -= 20;
+  y -= 16;
 
-  const boxW = (contentWidth - 20) / 2;
+  const boxW = (contentWidth - 16) / 2;
+  const boxHeight = 88;
 
   // Party 1 Box
   currentPage.drawRectangle({
     x: marginX,
-    y: y - 90,
+    y: y - boxHeight,
     width: boxW,
-    height: 90,
+    height: boxHeight,
     color: rgb(0.98, 0.98, 1),
     borderColor: rgb(0.85, 0.88, 0.95),
     borderWidth: 1,
   });
-  currentPage.drawText(`FOR ${config.party1Role.toUpperCase()}: ${config.party1.name}`, {
+  const p1Header = `FOR ${config.party1Role.toUpperCase()}: ${config.party1.name}`;
+  currentPage.drawText(cleanPdfText(p1Header.length > 40 ? p1Header.substring(0, 38) + '...' : p1Header), {
     x: marginX + 10,
-    y: y - 15,
+    y: y - 14,
     size: 7.5,
     font: fontTitle,
     color: rgb(0.1, 0.15, 0.3),
   });
 
-  const hasP1Sig =
+  const p1HasSig =
     config.party1.signature.type !== 'blank' &&
     (config.party1.signature.typedName || config.party1.signature.dataUrl);
 
-  if (hasP1Sig) {
-    currentPage.drawText(`Signed: ${config.party1.signature.typedName || config.party1.representativeName}`, {
+  if (p1HasSig && config.party1.signature.type === 'typed') {
+    currentPage.drawText(`Signed: ${cleanPdfText(config.party1.signature.typedName || config.party1.representativeName)}`, {
       x: marginX + 10,
-      y: y - 36,
-      size: 10,
+      y: y - 32,
+      size: 9.5,
       font: fontSig,
       color: rgb(0.1, 0.25, 0.6),
     });
+  } else if (p1HasSig && config.party1.signature.dataUrl) {
+    try {
+      const dataUrl = config.party1.signature.dataUrl;
+      const base64Data = dataUrl.split(',')[1] || dataUrl;
+      const imgBytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
+      let img;
+      if (dataUrl.includes('image/png') || dataUrl.startsWith('data:image/png')) {
+        img = await pdfDoc.embedPng(imgBytes);
+      } else {
+        img = await pdfDoc.embedJpg(imgBytes);
+      }
+      if (img) {
+        const dims = img.scaleToFit(boxW - 30, 20);
+        currentPage.drawImage(img, {
+          x: marginX + 10,
+          y: y - 36,
+          width: dims.width,
+          height: dims.height,
+        });
+      }
+    } catch {
+      currentPage.drawText(`Authorized Signature:`, {
+        x: marginX + 10,
+        y: y - 32,
+        size: 7,
+        font: fontItalic,
+        color: rgb(0.45, 0.5, 0.6),
+      });
+    }
   } else {
     currentPage.drawText(`Authorized Signature:`, {
       x: marginX + 10,
-      y: y - 35,
+      y: y - 32,
       size: 7,
       font: fontItalic,
       color: rgb(0.45, 0.5, 0.6),
@@ -932,50 +1143,104 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
   }
 
   currentPage.drawLine({
-    start: { x: marginX + 10, y: y - 40 },
-    end: { x: marginX + boxW - 10, y: y - 40 },
+    start: { x: marginX + 10, y: y - 38 },
+    end: { x: marginX + boxW - 10, y: y - 38 },
     thickness: 0.5,
     color: rgb(0.7, 0.75, 0.85),
   });
-  currentPage.drawText(`Printed Name: ${config.party1.representativeName || config.party1.name}`, { x: marginX + 10, y: y - 54, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
-  currentPage.drawText(`Title: ${config.party1.representativeTitle || 'Authorized Signatory'}`, { x: marginX + 10, y: y - 66, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
-  currentPage.drawText(`Date: ${config.party1.signature.date || '___________________'}`, { x: marginX + 10, y: y - 78, size: 7.5, font: fontMono, color: rgb(0.4, 0.45, 0.55) });
+
+  const p1Print = `Printed Name: ${config.party1.representativeName || config.party1.name}`;
+  const p1Title = `Title: ${config.party1.representativeTitle || 'Authorized Signatory'}`;
+  const p1Date = `Date: ${config.party1.signature.date || '___________________'}`;
+
+  currentPage.drawText(cleanPdfText(p1Print.length > 40 ? p1Print.substring(0, 38) + '...' : p1Print), {
+    x: marginX + 10,
+    y: y - 50,
+    size: 7.5,
+    font: fontBody,
+    color: rgb(0.3, 0.35, 0.45),
+  });
+  currentPage.drawText(cleanPdfText(p1Title.length > 40 ? p1Title.substring(0, 38) + '...' : p1Title), {
+    x: marginX + 10,
+    y: y - 62,
+    size: 7.5,
+    font: fontBody,
+    color: rgb(0.3, 0.35, 0.45),
+  });
+  currentPage.drawText(cleanPdfText(p1Date), {
+    x: marginX + 10,
+    y: y - 74,
+    size: 7.5,
+    font: fontMono,
+    color: rgb(0.4, 0.45, 0.55),
+  });
 
   // Party 2 Box
-  const p2X = marginX + boxW + 20;
+  const p2X = marginX + boxW + 16;
   currentPage.drawRectangle({
     x: p2X,
-    y: y - 90,
+    y: y - boxHeight,
     width: boxW,
-    height: 90,
+    height: boxHeight,
     color: rgb(0.98, 0.98, 1),
     borderColor: rgb(0.85, 0.88, 0.95),
     borderWidth: 1,
   });
-  currentPage.drawText(`FOR ${config.party2Role.toUpperCase()}: ${config.party2.name}`, {
+
+  const p2Header = `FOR ${config.party2Role.toUpperCase()}: ${config.party2.name}`;
+  currentPage.drawText(cleanPdfText(p2Header.length > 40 ? p2Header.substring(0, 38) + '...' : p2Header), {
     x: p2X + 10,
-    y: y - 15,
+    y: y - 14,
     size: 7.5,
     font: fontTitle,
     color: rgb(0.1, 0.15, 0.3),
   });
 
-  const hasP2Sig =
+  const p2HasSig =
     config.party2.signature.type !== 'blank' &&
     (config.party2.signature.typedName || config.party2.signature.dataUrl);
 
-  if (hasP2Sig) {
-    currentPage.drawText(`Signed: ${config.party2.signature.typedName || config.party2.representativeName}`, {
+  if (p2HasSig && config.party2.signature.type === 'typed') {
+    currentPage.drawText(`Signed: ${cleanPdfText(config.party2.signature.typedName || config.party2.representativeName)}`, {
       x: p2X + 10,
-      y: y - 36,
-      size: 10,
+      y: y - 32,
+      size: 9.5,
       font: fontSig,
       color: rgb(0.1, 0.25, 0.6),
     });
+  } else if (p2HasSig && config.party2.signature.dataUrl) {
+    try {
+      const dataUrl = config.party2.signature.dataUrl;
+      const base64Data = dataUrl.split(',')[1] || dataUrl;
+      const imgBytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
+      let img;
+      if (dataUrl.includes('image/png') || dataUrl.startsWith('data:image/png')) {
+        img = await pdfDoc.embedPng(imgBytes);
+      } else {
+        img = await pdfDoc.embedJpg(imgBytes);
+      }
+      if (img) {
+        const dims = img.scaleToFit(boxW - 30, 20);
+        currentPage.drawImage(img, {
+          x: p2X + 10,
+          y: y - 36,
+          width: dims.width,
+          height: dims.height,
+        });
+      }
+    } catch {
+      currentPage.drawText(`Authorized Signature:`, {
+        x: p2X + 10,
+        y: y - 32,
+        size: 7,
+        font: fontItalic,
+        color: rgb(0.45, 0.5, 0.6),
+      });
+    }
   } else {
     currentPage.drawText(`Authorized Signature:`, {
       x: p2X + 10,
-      y: y - 35,
+      y: y - 32,
       size: 7,
       font: fontItalic,
       color: rgb(0.45, 0.5, 0.6),
@@ -983,71 +1248,142 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
   }
 
   currentPage.drawLine({
-    start: { x: p2X + 10, y: y - 40 },
-    end: { x: p2X + boxW - 10, y: y - 40 },
+    start: { x: p2X + 10, y: y - 38 },
+    end: { x: p2X + boxW - 10, y: y - 38 },
     thickness: 0.5,
     color: rgb(0.7, 0.75, 0.85),
   });
-  currentPage.drawText(`Printed Name: ${config.party2.representativeName || config.party2.name}`, { x: p2X + 10, y: y - 54, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
-  currentPage.drawText(`Title: ${config.party2.representativeTitle || 'Authorized Signatory'}`, { x: p2X + 10, y: y - 66, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
-  currentPage.drawText(`Date: ${config.party2.signature.date || '___________________'}`, { x: p2X + 10, y: y - 78, size: 7.5, font: fontMono, color: rgb(0.4, 0.45, 0.55) });
 
-  y -= 105;
+  const p2Print = `Printed Name: ${config.party2.representativeName || config.party2.name}`;
+  const p2Title = `Title: ${config.party2.representativeTitle || 'Authorized Signatory'}`;
+  const p2Date = `Date: ${config.party2.signature.date || '___________________'}`;
 
-  drawHeaderFooter(currentPage, pageNumber);
+  currentPage.drawText(cleanPdfText(p2Print.length > 40 ? p2Print.substring(0, 38) + '...' : p2Print), {
+    x: p2X + 10,
+    y: y - 50,
+    size: 7.5,
+    font: fontBody,
+    color: rgb(0.3, 0.35, 0.45),
+  });
+  currentPage.drawText(cleanPdfText(p2Title.length > 40 ? p2Title.substring(0, 38) + '...' : p2Title), {
+    x: p2X + 10,
+    y: y - 62,
+    size: 7.5,
+    font: fontBody,
+    color: rgb(0.3, 0.35, 0.45),
+  });
+  currentPage.drawText(cleanPdfText(p2Date), {
+    x: p2X + 10,
+    y: y - 74,
+    size: 7.5,
+    font: fontMono,
+    color: rgb(0.4, 0.45, 0.55),
+  });
+
+  y -= boxHeight + 14;
+
+  // 6. Witness Block if enabled
+  if (config.includeWitnessBlock) {
+    ensureSpace(60);
+    currentPage.drawText('WITNESS / NOTARIZATION ATTESTATION', {
+      x: marginX,
+      y,
+      size: 8.5,
+      font: fontTitle,
+      color: rgb(0.15, 0.2, 0.35),
+    });
+    y -= 14;
+    currentPage.drawText(`Witness Name: ${cleanPdfText(config.witnessName || '_______________________')}     Date: ${cleanPdfText(config.witnessDate || '_______________________')}`, {
+      x: marginX,
+      y,
+      size: 7.5,
+      font: fontBody,
+      color: rgb(0.3, 0.35, 0.45),
+    });
+    y -= 14;
+    currentPage.drawText('Witness Signature: _______________________', {
+      x: marginX,
+      y,
+      size: 7.5,
+      font: fontBody,
+      color: rgb(0.3, 0.35, 0.45),
+    });
+    y -= 16;
+  }
+
+  // 7. Schedule A if enabled
+  if (config.includeScheduleA && config.scheduleAContent) {
+    ensureSpace(70);
+    currentPage.drawLine({
+      start: { x: marginX, y },
+      end: { x: pageWidth - marginX, y },
+      thickness: 0.5,
+      color: rgb(0.8, 0.85, 0.92),
+    });
+    y -= 14;
+
+    currentPage.drawText(cleanPdfText(config.scheduleATitle || 'Schedule A: Scope of Work'), {
+      x: marginX,
+      y,
+      size: 9.5,
+      font: fontTitle,
+      color: rgb(0.12, 0.18, 0.32),
+    });
+    y -= 14;
+
+    writeWrappedText(cleanPdfText(config.scheduleAContent), fontBody, 8, rgb(0.25, 0.3, 0.4), 10.5);
+  }
+
+  // 8. Final Header & Footer Pass on all generated pages
+  const totalPages = pages.length;
+  for (let idx = 0; idx < totalPages; idx++) {
+    const page = pages[idx];
+    const pageNumber = idx + 1;
+
+    // Continuation Header on Pages 2..N
+    if (pageNumber > 1) {
+      page.drawText(`${cleanPdfText(config.title)} | Contract ID: ${cleanPdfText(config.contractId)}`, {
+        x: marginX,
+        y: pageHeight - 25,
+        size: 7,
+        font: fontMono,
+        color: rgb(0.5, 0.55, 0.65),
+      });
+      page.drawLine({
+        start: { x: marginX, y: pageHeight - 30 },
+        end: { x: pageWidth - marginX, y: pageHeight - 30 },
+        thickness: 0.5,
+        color: rgb(0.85, 0.88, 0.94),
+      });
+    }
+
+    // Standardized Clean Footer on all pages
+    page.drawLine({
+      start: { x: marginX, y: 36 },
+      end: { x: pageWidth - marginX, y: 36 },
+      thickness: 0.75,
+      color: rgb(0.82, 0.85, 0.9),
+    });
+
+    const classificationText = `${cleanPdfText(config.classification || 'CONFIDENTIAL')} - CONTRACT ID: ${cleanPdfText(config.contractId)}`;
+    page.drawText(classificationText, {
+      x: marginX,
+      y: 24,
+      size: 7,
+      font: fontMono,
+      color: rgb(0.5, 0.55, 0.65),
+    });
+
+    page.drawText(`Page ${pageNumber} of ${totalPages}`, {
+      x: pageWidth - marginX - 60,
+      y: 24,
+      size: 7.5,
+      font: fontMono,
+      color: rgb(0.5, 0.55, 0.65),
+    });
+  }
 
   return await pdfDoc.save();
-}
-
-function drawWrappedParagraph(
-  page: any,
-  text: string,
-  x: number,
-  y: number,
-  maxWidth: number,
-  fontSize: number,
-  font: any,
-  color: any,
-  lineHeight: number
-) {
-  const words = text.split(/\s+/);
-  let currentLine = '';
-  let curY = y;
-
-  for (let i = 0; i < words.length; i++) {
-    const testLine = currentLine ? `${currentLine} ${words[i]}` : words[i];
-    const width = testLine.length * (fontSize * 0.52);
-
-    if (width > maxWidth && currentLine) {
-      page.drawText(currentLine, { x, y: curY, size: fontSize, font, color });
-      curY -= lineHeight;
-      currentLine = words[i];
-    } else {
-      currentLine = testLine;
-    }
-  }
-
-  if (currentLine) {
-    page.drawText(currentLine, { x, y: curY, size: fontSize, font, color });
-  }
-}
-
-function estimateTextLines(text: string, maxWidth: number, fontSize: number): number {
-  const charWidth = fontSize * 0.52;
-  const maxCharsPerLine = Math.floor(maxWidth / charWidth);
-  const words = text.split(/\s+/);
-  let lines = 1;
-  let curLen = 0;
-
-  for (const w of words) {
-    if (curLen + w.length + 1 > maxCharsPerLine) {
-      lines++;
-      curLen = w.length;
-    } else {
-      curLen += w.length + 1;
-    }
-  }
-  return lines;
 }
 
 /**
