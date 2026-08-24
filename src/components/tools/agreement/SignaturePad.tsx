@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { PenTool, RotateCcw, Check, Type, Upload } from 'lucide-react';
+import { PenTool, RotateCcw, Check, Type, Upload, FileSignature, Sparkles } from 'lucide-react';
 import { AgreementParty } from '../../../utils/agreementGenerator';
 
 interface SignaturePadProps {
@@ -13,17 +13,29 @@ export const SignaturePad: React.FC<SignaturePadProps> = ({
   party,
   onChange,
 }) => {
-  const [activeTab, setActiveTab] = useState<'typed' | 'drawn' | 'uploaded'>('typed');
-  const [typedText, setTypedText] = useState(party.signature.typedName || party.representativeName || party.name || '');
+  const [activeTab, setActiveTab] = useState<'blank' | 'typed' | 'drawn' | 'uploaded'>(
+    party.signature.type || 'typed'
+  );
+  const [typedText, setTypedText] = useState(
+    party.signature.typedName || party.representativeName || party.name || ''
+  );
   const [fontStyle, setFontStyle] = useState<'calligraphy' | 'handwriting' | 'serif' | 'formal'>(
     party.signature.fontStyle || 'calligraphy'
   );
   const [date, setDate] = useState(party.signature.date || new Date().toISOString().split('T')[0]);
-  const [location, setLocation] = useState(party.signature.location || `${party.addressCity || ''}, ${party.addressState || ''}`.replace(/^,\s*|,\s*$/g, ''));
+  const [location, setLocation] = useState(
+    party.signature.location || `${party.addressCity || ''}, ${party.addressState || ''}`.replace(/^,\s*|,\s*$/g, '')
+  );
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [hasDrawn, setHasDrawn] = useState(false);
+
+  useEffect(() => {
+    if (party.signature.type) {
+      setActiveTab(party.signature.type);
+    }
+  }, [party.signature.type]);
 
   useEffect(() => {
     if (!party.signature.typedName && party.representativeName) {
@@ -104,7 +116,18 @@ export const SignaturePad: React.FC<SignaturePadProps> = ({
     });
   };
 
+  const handleSelectBlank = () => {
+    setActiveTab('blank');
+    onChange({
+      type: 'blank',
+      typedName: '',
+      date,
+      location,
+    });
+  };
+
   const handleApplyTyped = (name: string, style: typeof fontStyle) => {
+    setActiveTab('typed');
     setTypedText(name);
     setFontStyle(style);
     onChange({
@@ -122,6 +145,7 @@ export const SignaturePad: React.FC<SignaturePadProps> = ({
       const reader = new FileReader();
       reader.onload = (loadEvt) => {
         const dataUrl = loadEvt.target?.result as string;
+        setActiveTab('uploaded');
         onChange({
           type: 'uploaded',
           dataUrl,
@@ -150,15 +174,35 @@ export const SignaturePad: React.FC<SignaturePadProps> = ({
   return (
     <div className="p-4 bg-slate-50 dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
-          Digital Signature • {partyRole}
-        </h4>
+        <div>
+          <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+            Signature • {partyRole}
+          </h4>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            Signatures are optional. Signing party details will always be included on the document.
+          </p>
+        </div>
+
+        {/* Tab Selection */}
         <div className="flex items-center gap-1 bg-slate-200 dark:bg-slate-800 p-0.5 rounded-lg text-xs">
+          <button
+            type="button"
+            onClick={handleSelectBlank}
+            title="Leave signature line blank to send for manual or external signature"
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors ${
+              activeTab === 'blank'
+                ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 font-semibold shadow-xs'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+            }`}
+          >
+            <FileSignature className="w-3.5 h-3.5" />
+            <span>Blank (Sign Later)</span>
+          </button>
           <button
             type="button"
             onClick={() => {
               setActiveTab('typed');
-              handleApplyTyped(typedText, fontStyle);
+              handleApplyTyped(typedText || party.representativeName || '', fontStyle);
             }}
             className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors ${
               activeTab === 'typed'
@@ -195,6 +239,18 @@ export const SignaturePad: React.FC<SignaturePadProps> = ({
           </button>
         </div>
       </div>
+
+      {activeTab === 'blank' && (
+        <div className="p-3.5 bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 rounded-xl space-y-1.5 text-xs text-indigo-900 dark:text-indigo-200">
+          <div className="flex items-center gap-1.5 font-semibold text-indigo-700 dark:text-indigo-300">
+            <Check className="w-4 h-4 text-emerald-500" />
+            <span>Signature line will be left blank for signing after export</span>
+          </div>
+          <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+            The exported PDF, Markdown, and Word files will include a clean signature line ready for wet-ink signing or electronic signature tools (DocuSign, Adobe Sign, etc.). The signing party details below (<strong>{party.representativeName || party.name || 'Signatory'}</strong>, {party.representativeTitle || 'Title'}) will be preserved in the signature block.
+          </p>
+        </div>
+      )}
 
       {activeTab === 'typed' && (
         <div className="space-y-3">
@@ -321,3 +377,4 @@ export const SignaturePad: React.FC<SignaturePadProps> = ({
     </div>
   );
 };
+

@@ -242,23 +242,32 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                     FOR {config.party1Role.toUpperCase()}: {config.party1.name}
                   </span>
 
-                  <div className="h-16 flex items-center justify-center border-b border-dashed border-slate-300 dark:border-slate-700 py-1">
+                  <div className="h-16 flex flex-col items-center justify-center border-b border-dashed border-slate-300 dark:border-slate-700 py-1">
                     {config.party1.signature.type === 'drawn' && config.party1.signature.dataUrl ? (
                       <img src={config.party1.signature.dataUrl} alt="Signature" className="max-h-12 max-w-full" />
-                    ) : (
+                    ) : config.party1.signature.type === 'uploaded' && config.party1.signature.dataUrl ? (
+                      <img src={config.party1.signature.dataUrl} alt="Uploaded Signature" className="max-h-12 max-w-full" />
+                    ) : config.party1.signature.type === 'typed' && config.party1.signature.typedName ? (
                       <span
                         className="text-2xl text-indigo-700 dark:text-indigo-400 px-2"
                         style={{ fontFamily: getSigFontFamily(config.party1.signature.fontStyle) }}
                       >
-                        {config.party1.signature.typedName || config.party1.representativeName || 'Authorized Signatory'}
+                        {config.party1.signature.typedName}
                       </span>
+                    ) : (
+                      <div className="w-full flex flex-col items-center justify-center">
+                        <div className="w-4/5 border-b-2 border-slate-400 dark:border-slate-500 mb-1"></div>
+                        <span className="text-[11px] text-slate-400 dark:text-slate-500 italic">
+                          (Authorized Signature Line • Sign upon export)
+                        </span>
+                      </div>
                     )}
                   </div>
 
                   <div className="text-xs space-y-0.5 text-slate-600 dark:text-slate-400">
-                    <p>Printed Name: <strong className="text-slate-900 dark:text-slate-200">{config.party1.representativeName}</strong></p>
-                    <p>Title: {config.party1.representativeTitle}</p>
-                    <p>Date: {config.party1.signature.date || config.effectiveDate}</p>
+                    <p>Printed Name: <strong className="text-slate-900 dark:text-slate-200">{config.party1.representativeName || config.party1.name}</strong></p>
+                    <p>Title: {config.party1.representativeTitle || 'Authorized Signatory'}</p>
+                    <p>Date: {config.party1.signature.date || config.effectiveDate || '_______________________'}</p>
                   </div>
                 </div>
 
@@ -268,23 +277,32 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                     FOR {config.party2Role.toUpperCase()}: {config.party2.name}
                   </span>
 
-                  <div className="h-16 flex items-center justify-center border-b border-dashed border-slate-300 dark:border-slate-700 py-1">
+                  <div className="h-16 flex flex-col items-center justify-center border-b border-dashed border-slate-300 dark:border-slate-700 py-1">
                     {config.party2.signature.type === 'drawn' && config.party2.signature.dataUrl ? (
                       <img src={config.party2.signature.dataUrl} alt="Signature" className="max-h-12 max-w-full" />
-                    ) : (
+                    ) : config.party2.signature.type === 'uploaded' && config.party2.signature.dataUrl ? (
+                      <img src={config.party2.signature.dataUrl} alt="Uploaded Signature" className="max-h-12 max-w-full" />
+                    ) : config.party2.signature.type === 'typed' && config.party2.signature.typedName ? (
                       <span
                         className="text-2xl text-indigo-700 dark:text-indigo-400 px-2"
                         style={{ fontFamily: getSigFontFamily(config.party2.signature.fontStyle) }}
                       >
-                        {config.party2.signature.typedName || config.party2.representativeName || 'Authorized Signatory'}
+                        {config.party2.signature.typedName}
                       </span>
+                    ) : (
+                      <div className="w-full flex flex-col items-center justify-center">
+                        <div className="w-4/5 border-b-2 border-slate-400 dark:border-slate-500 mb-1"></div>
+                        <span className="text-[11px] text-slate-400 dark:text-slate-500 italic">
+                          (Authorized Signature Line • Sign upon export)
+                        </span>
+                      </div>
                     )}
                   </div>
 
                   <div className="text-xs space-y-0.5 text-slate-600 dark:text-slate-400">
-                    <p>Printed Name: <strong className="text-slate-900 dark:text-slate-200">{config.party2.representativeName}</strong></p>
-                    <p>Title: {config.party2.representativeTitle}</p>
-                    <p>Date: {config.party2.signature.date || config.effectiveDate}</p>
+                    <p>Printed Name: <strong className="text-slate-900 dark:text-slate-200">{config.party2.representativeName || config.party2.name}</strong></p>
+                    <p>Title: {config.party2.representativeTitle || 'Authorized Signatory'}</p>
+                    <p>Date: {config.party2.signature.date || config.effectiveDate || '_______________________'}</p>
                   </div>
                 </div>
               </div>

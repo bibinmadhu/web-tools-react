@@ -937,6 +937,38 @@ curl -X POST "https://api.example.com/data" \\
     assertTrue(html.includes('INDEPENDENT CONTRACTOR AGREEMENT'), 'HTML output should include title');
   });
 
+  await testAsync('Agreement Generator', 'Optional & Blank Signatures with Party Details Preserved', async () => {
+    const config = getDefaultContractorAgreement();
+    // Configure party 1 and party 2 with blank/optional signatures
+    config.party1.signature = {
+      type: 'blank',
+      date: '2026-03-01',
+      location: 'San Francisco, CA',
+    };
+    config.party2.signature = {
+      type: 'blank',
+      date: '',
+    };
+
+    // 1. Check Markdown export
+    const markdown = generateAgreementMarkdown(config);
+    assertTrue(markdown.includes('Authorized Signature: _______________________'), 'Markdown should have blank line when signature is optional/blank');
+    assertTrue(markdown.includes(config.party1.representativeName), 'Party 1 representative name should be preserved in Markdown signature table');
+    assertTrue(markdown.includes(config.party2.representativeName), 'Party 2 representative name should be preserved in Markdown signature table');
+    assertTrue(markdown.includes(config.party1.representativeTitle), 'Party 1 representative title should be preserved in Markdown signature table');
+
+    // 2. Check PDF export
+    const pdfBytes = await generateAgreementPdf(config);
+    assertTrue(pdfBytes instanceof Uint8Array, 'PDF output with blank signatures should be valid Uint8Array');
+    assertTrue(pdfBytes.length > 500, 'PDF output should have valid size');
+
+    // 3. Check HTML export
+    const html = generateAgreementHtml(config);
+    assertTrue(html.includes('(Authorized Signature Line)'), 'HTML output should render blank authorized signature line');
+    assertTrue(html.includes(config.party1.representativeName), 'HTML should retain Party 1 representative name');
+    assertTrue(html.includes(config.party2.representativeName), 'HTML should retain Party 2 representative name');
+  });
+
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
   const passed = results.filter((r) => r.status === 'passed').length;
   const failed = results.filter((r) => r.status === 'failed').length;

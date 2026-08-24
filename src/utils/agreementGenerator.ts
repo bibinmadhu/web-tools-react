@@ -592,10 +592,19 @@ export function generateAgreementMarkdown(config: AgreementConfig): string {
   }
 
   // 6. Signatures & Execution Table
+  const p1Sig =
+    config.party1.signature.type !== 'blank' && config.party1.signature.typedName
+      ? config.party1.signature.typedName
+      : '_______________________';
+  const p2Sig =
+    config.party2.signature.type !== 'blank' && config.party2.signature.typedName
+      ? config.party2.signature.typedName
+      : '_______________________';
+
   const sigTable = [
     `| FOR ${config.party1Role.toUpperCase()}: ${config.party1.name} | FOR ${config.party2Role.toUpperCase()}: ${config.party2.name} |`,
     `| --- | --- |`,
-    `| Authorized Signature: ${config.party1.signature.typedName || '_______________________'} | Authorized Signature: ${config.party2.signature.typedName || '_______________________'} |`,
+    `| Authorized Signature: ${p1Sig} | Authorized Signature: ${p2Sig} |`,
     `| Printed Name: ${config.party1.representativeName || '[Signatory Name]'} | Printed Name: ${config.party2.representativeName || '[Signatory Name]'} |`,
     `| Title: ${config.party1.representativeTitle || '[Title]'} | Title: ${config.party2.representativeTitle || '[Title]'} |`,
     `| Date: ${config.party1.signature.date || '_______________________'} | Date: ${config.party2.signature.date || '_______________________'} |`,
@@ -899,22 +908,38 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
     font: fontTitle,
     color: rgb(0.1, 0.15, 0.3),
   });
-  currentPage.drawText(`Signed: ${config.party1.signature.typedName || config.party1.representativeName}`, {
-    x: marginX + 10,
-    y: y - 36,
-    size: 10,
-    font: fontSig,
-    color: rgb(0.1, 0.25, 0.6),
-  });
+
+  const hasP1Sig =
+    config.party1.signature.type !== 'blank' &&
+    (config.party1.signature.typedName || config.party1.signature.dataUrl);
+
+  if (hasP1Sig) {
+    currentPage.drawText(`Signed: ${config.party1.signature.typedName || config.party1.representativeName}`, {
+      x: marginX + 10,
+      y: y - 36,
+      size: 10,
+      font: fontSig,
+      color: rgb(0.1, 0.25, 0.6),
+    });
+  } else {
+    currentPage.drawText(`Authorized Signature:`, {
+      x: marginX + 10,
+      y: y - 35,
+      size: 7,
+      font: fontItalic,
+      color: rgb(0.45, 0.5, 0.6),
+    });
+  }
+
   currentPage.drawLine({
     start: { x: marginX + 10, y: y - 40 },
     end: { x: marginX + boxW - 10, y: y - 40 },
     thickness: 0.5,
     color: rgb(0.7, 0.75, 0.85),
   });
-  currentPage.drawText(`Name: ${config.party1.representativeName}`, { x: marginX + 10, y: y - 54, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
-  currentPage.drawText(`Title: ${config.party1.representativeTitle}`, { x: marginX + 10, y: y - 66, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
-  currentPage.drawText(`Date: ${config.party1.signature.date || config.effectiveDate}`, { x: marginX + 10, y: y - 78, size: 7.5, font: fontMono, color: rgb(0.4, 0.45, 0.55) });
+  currentPage.drawText(`Printed Name: ${config.party1.representativeName || config.party1.name}`, { x: marginX + 10, y: y - 54, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
+  currentPage.drawText(`Title: ${config.party1.representativeTitle || 'Authorized Signatory'}`, { x: marginX + 10, y: y - 66, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
+  currentPage.drawText(`Date: ${config.party1.signature.date || '___________________'}`, { x: marginX + 10, y: y - 78, size: 7.5, font: fontMono, color: rgb(0.4, 0.45, 0.55) });
 
   // Party 2 Box
   const p2X = marginX + boxW + 20;
@@ -934,22 +959,38 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
     font: fontTitle,
     color: rgb(0.1, 0.15, 0.3),
   });
-  currentPage.drawText(`Signed: ${config.party2.signature.typedName || config.party2.representativeName}`, {
-    x: p2X + 10,
-    y: y - 36,
-    size: 10,
-    font: fontSig,
-    color: rgb(0.1, 0.25, 0.6),
-  });
+
+  const hasP2Sig =
+    config.party2.signature.type !== 'blank' &&
+    (config.party2.signature.typedName || config.party2.signature.dataUrl);
+
+  if (hasP2Sig) {
+    currentPage.drawText(`Signed: ${config.party2.signature.typedName || config.party2.representativeName}`, {
+      x: p2X + 10,
+      y: y - 36,
+      size: 10,
+      font: fontSig,
+      color: rgb(0.1, 0.25, 0.6),
+    });
+  } else {
+    currentPage.drawText(`Authorized Signature:`, {
+      x: p2X + 10,
+      y: y - 35,
+      size: 7,
+      font: fontItalic,
+      color: rgb(0.45, 0.5, 0.6),
+    });
+  }
+
   currentPage.drawLine({
     start: { x: p2X + 10, y: y - 40 },
     end: { x: p2X + boxW - 10, y: y - 40 },
     thickness: 0.5,
     color: rgb(0.7, 0.75, 0.85),
   });
-  currentPage.drawText(`Name: ${config.party2.representativeName}`, { x: p2X + 10, y: y - 54, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
-  currentPage.drawText(`Title: ${config.party2.representativeTitle}`, { x: p2X + 10, y: y - 66, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
-  currentPage.drawText(`Date: ${config.party2.signature.date || config.effectiveDate}`, { x: p2X + 10, y: y - 78, size: 7.5, font: fontMono, color: rgb(0.4, 0.45, 0.55) });
+  currentPage.drawText(`Printed Name: ${config.party2.representativeName || config.party2.name}`, { x: p2X + 10, y: y - 54, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
+  currentPage.drawText(`Title: ${config.party2.representativeTitle || 'Authorized Signatory'}`, { x: p2X + 10, y: y - 66, size: 7.5, font: fontBody, color: rgb(0.3, 0.35, 0.45) });
+  currentPage.drawText(`Date: ${config.party2.signature.date || '___________________'}`, { x: p2X + 10, y: y - 78, size: 7.5, font: fontMono, color: rgb(0.4, 0.45, 0.55) });
 
   y -= 105;
 
@@ -1088,6 +1129,33 @@ export async function generateAgreementDocx(config: AgreementConfig): Promise<Bl
     })
   );
 
+  const p1SigText =
+    config.party1.signature.type !== 'blank' && config.party1.signature.typedName
+      ? config.party1.signature.typedName
+      : '_______________________';
+  const p2SigText =
+    config.party2.signature.type !== 'blank' && config.party2.signature.typedName
+      ? config.party2.signature.typedName
+      : '_______________________';
+
+  docParagraphs.push(
+    new Paragraph({
+      children: [
+        new TextRun({ text: `FOR ${config.party1Role.toUpperCase()}: ${config.party1.name}\n`, bold: true, size: 21 }),
+        new TextRun({ text: `Authorized Signature: ${p1SigText}\n`, size: 21 }),
+        new TextRun({ text: `Printed Name: ${config.party1.representativeName || config.party1.name}\n`, size: 21 }),
+        new TextRun({ text: `Title: ${config.party1.representativeTitle || 'Authorized Signatory'}\n`, size: 21 }),
+        new TextRun({ text: `Date: ${config.party1.signature.date || '_______________________'}\n\n`, size: 21 }),
+        new TextRun({ text: `FOR ${config.party2Role.toUpperCase()}: ${config.party2.name}\n`, bold: true, size: 21 }),
+        new TextRun({ text: `Authorized Signature: ${p2SigText}\n`, size: 21 }),
+        new TextRun({ text: `Printed Name: ${config.party2.representativeName || config.party2.name}\n`, size: 21 }),
+        new TextRun({ text: `Title: ${config.party2.representativeTitle || 'Authorized Signatory'}\n`, size: 21 }),
+        new TextRun({ text: `Date: ${config.party2.signature.date || '_______________________'}`, size: 21 }),
+      ],
+      spacing: { after: 200 },
+    })
+  );
+
   const doc = new Document({
     sections: [
       {
@@ -1153,17 +1221,25 @@ export function generateAgreementHtml(config: AgreementConfig): string {
   <div class="sig-grid">
     <div class="sig-box">
       <strong>FOR ${config.party1Role.toUpperCase()}: ${config.party1.name}</strong><br/>
-      <div class="font-sig">${config.party1.signature.typedName || config.party1.representativeName}</div>
-      <p style="margin: 4px 0; font-size: 13px;">Name: ${config.party1.representativeName}</p>
-      <p style="margin: 4px 0; font-size: 13px;">Title: ${config.party1.representativeTitle}</p>
-      <p style="margin: 4px 0; font-size: 13px;">Date: ${config.party1.signature.date}</p>
+      ${
+        config.party1.signature.type !== 'blank' && config.party1.signature.typedName
+          ? `<div class="font-sig">${config.party1.signature.typedName}</div>`
+          : `<div style="border-bottom: 1.5px solid #94a3b8; height: 32px; margin: 12px 0 6px 0;"></div><span style="font-size: 11px; color: #64748b;">(Authorized Signature Line)</span>`
+      }
+      <p style="margin: 4px 0; font-size: 13px;"><strong>Printed Name:</strong> ${config.party1.representativeName || config.party1.name}</p>
+      <p style="margin: 4px 0; font-size: 13px;"><strong>Title:</strong> ${config.party1.representativeTitle || 'Authorized Signatory'}</p>
+      <p style="margin: 4px 0; font-size: 13px;"><strong>Date:</strong> ${config.party1.signature.date || '_______________________'}</p>
     </div>
     <div class="sig-box">
       <strong>FOR ${config.party2Role.toUpperCase()}: ${config.party2.name}</strong><br/>
-      <div class="font-sig">${config.party2.signature.typedName || config.party2.representativeName}</div>
-      <p style="margin: 4px 0; font-size: 13px;">Name: ${config.party2.representativeName}</p>
-      <p style="margin: 4px 0; font-size: 13px;">Title: ${config.party2.representativeTitle}</p>
-      <p style="margin: 4px 0; font-size: 13px;">Date: ${config.party2.signature.date}</p>
+      ${
+        config.party2.signature.type !== 'blank' && config.party2.signature.typedName
+          ? `<div class="font-sig">${config.party2.signature.typedName}</div>`
+          : `<div style="border-bottom: 1.5px solid #94a3b8; height: 32px; margin: 12px 0 6px 0;"></div><span style="font-size: 11px; color: #64748b;">(Authorized Signature Line)</span>`
+      }
+      <p style="margin: 4px 0; font-size: 13px;"><strong>Printed Name:</strong> ${config.party2.representativeName || config.party2.name}</p>
+      <p style="margin: 4px 0; font-size: 13px;"><strong>Title:</strong> ${config.party2.representativeTitle || 'Authorized Signatory'}</p>
+      <p style="margin: 4px 0; font-size: 13px;"><strong>Date:</strong> ${config.party2.signature.date || '_______________________'}</p>
     </div>
   </div>
 </body>
