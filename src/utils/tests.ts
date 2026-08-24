@@ -997,6 +997,43 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     assertTrue(pdfBytes.length > 1000, 'PDF output with multi-clause sanitized text should be valid and substantive');
   });
 
+  await testAsync('Agreement Generator', 'Unsigned is Default Option for Document & Presets', async () => {
+    // 1. Check default contractor agreement defaults
+    const defaultConfig = getDefaultContractorAgreement();
+    assertEqual(defaultConfig.party1.signature.type, 'blank', 'Default party1 signature must be blank (unsigned)');
+    assertEqual(defaultConfig.party2.signature.type, 'blank', 'Default party2 signature must be blank (unsigned)');
+    assertEqual(defaultConfig.party1.signature.typedName, '', 'Default party1 typed name must be empty');
+    assertEqual(defaultConfig.party2.signature.typedName, '', 'Default party2 typed name must be empty');
+
+    // 2. Generate PDF from default config (unsigned)
+    const pdfBytes = await generateAgreementPdf(defaultConfig);
+    assertTrue(pdfBytes instanceof Uint8Array, 'Default unsigned agreement should export valid PDF');
+    assertTrue(pdfBytes.length > 1000, 'Default unsigned PDF should be valid size');
+  });
+
+  await testAsync('Agreement Generator', 'Signatures & Execution Renders Full Untruncated Names', async () => {
+    const config = getDefaultContractorAgreement();
+    // Set long names that previously would have been truncated by 40 char limits
+    config.party1.name = 'Consolidated Global Technologies & Quantum Computing International Holdings Corporation';
+    config.party1.representativeName = 'Dr. Alexandros Constantine von Hohenzollern-Smythe III';
+    config.party1.representativeTitle = 'Senior Executive Vice President of Global Infrastructure Engineering';
+
+    config.party2.name = 'Advanced Autonomous Robotics & Neural Networks Development Laboratories LLC';
+    config.party2.representativeName = 'Lady Genevieve Beatrice Montgomery-Huntington, PhD';
+    config.party2.representativeTitle = 'Managing Director & Chief Autonomous Systems Technology Architect';
+
+    // Verify PDF generates without errors with long names and wraps cleanly
+    const pdfBytes = await generateAgreementPdf(config);
+    assertTrue(pdfBytes instanceof Uint8Array, 'PDF output with extra long untruncated names should be valid');
+    assertTrue(pdfBytes.length > 1000, 'PDF size should reflect valid rendering of full names');
+
+    // Verify markdown renders full names
+    const markdown = generateAgreementMarkdown(config);
+    assertTrue(markdown.includes('Dr. Alexandros Constantine von Hohenzollern-Smythe III'), 'Markdown must contain full untruncated Party 1 representative name');
+    assertTrue(markdown.includes('Lady Genevieve Beatrice Montgomery-Huntington, PhD'), 'Markdown must contain full untruncated Party 2 representative name');
+    assertTrue(markdown.includes('Senior Executive Vice President of Global Infrastructure Engineering'), 'Markdown must contain full untruncated Party 1 title');
+  });
+
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
   const passed = results.filter((r) => r.status === 'passed').length;
   const failed = results.filter((r) => r.status === 'failed').length;

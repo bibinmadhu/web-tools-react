@@ -43,11 +43,11 @@ export function getAgreementPresets(): AgreementPreset[] {
       addressCountry: 'United States',
       customFields: [],
       signature: {
-        type: 'typed',
-        typedName: 'Elena Rostova',
+        type: 'blank',
+        typedName: '',
         fontStyle: 'calligraphy',
-        date: '2026-10-24',
-        location: 'San Francisco, CA',
+        date: '',
+        location: '',
       },
     },
     party2: {
@@ -67,11 +67,11 @@ export function getAgreementPresets(): AgreementPreset[] {
       addressCountry: 'United States',
       customFields: [],
       signature: {
-        type: 'typed',
-        typedName: 'David K. Vance',
+        type: 'blank',
+        typedName: '',
         fontStyle: 'calligraphy',
-        date: '2026-10-24',
-        location: 'Palo Alto, CA',
+        date: '',
+        location: '',
       },
     },
     paymentTerms: {
@@ -205,11 +205,11 @@ export function getAgreementPresets(): AgreementPreset[] {
       addressCountry: 'United States',
       customFields: [],
       signature: {
-        type: 'typed',
-        typedName: 'Maya Lin',
+        type: 'blank',
+        typedName: '',
         fontStyle: 'calligraphy',
-        date: '2026-10-24',
-        location: 'Seattle, WA',
+        date: '',
+        location: '',
       },
     },
     paymentTerms: {

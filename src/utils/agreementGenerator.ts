@@ -173,11 +173,11 @@ export function getDefaultContractorAgreement(): AgreementConfig {
     addressCountry: 'United States',
     customFields: [],
     signature: {
-      type: 'typed',
-      typedName: 'Sarah Jenkins',
+      type: 'blank',
+      typedName: '',
       fontStyle: 'calligraphy',
-      date: '2026-10-24',
-      location: 'San Francisco, CA',
+      date: '',
+      location: '',
     },
   };
 
@@ -200,11 +200,11 @@ export function getDefaultContractorAgreement(): AgreementConfig {
     addressCountry: 'United States',
     customFields: [],
     signature: {
-      type: 'typed',
-      typedName: 'Alex Rivera',
+      type: 'blank',
+      typedName: '',
       fontStyle: 'calligraphy',
-      date: '2026-10-24',
-      location: 'Berkeley, CA',
+      date: '',
+      location: '',
     },
   };
 
@@ -866,16 +866,20 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
     color: rgb(0.2, 0.25, 0.35),
   });
 
-  const p1Str = `${config.party1Role}: ${config.party1.name} (${config.party1.entityType || 'Entity'})`;
-  const p2Str = `${config.party2Role}: ${config.party2.name} (${config.party2.entityType || 'Entity'})`;
-  currentPage.drawText(cleanPdfText(p1Str.length > 48 ? p1Str.substring(0, 46) + '...' : p1Str), {
+  const colW = (contentWidth - 28) / 2;
+  const p1StrLines = wrapText(cleanPdfText(`${config.party1Role}: ${config.party1.name} (${config.party1.entityType || 'Entity'})`), fontBody, 7.5, colW);
+  const p2StrLines = wrapText(cleanPdfText(`${config.party2Role}: ${config.party2.name} (${config.party2.entityType || 'Entity'})`), fontBody, 7.5, colW);
+  const p1RepLines = wrapText(cleanPdfText(`Signatory: ${config.party1.representativeName || config.party1.name} (${config.party1.representativeTitle || 'Rep'})`), fontBody, 7.5, colW);
+  const p2TaxLines = wrapText(cleanPdfText(`Tax/Reg ID: ${config.party2.taxId || 'N/A'}`), fontBody, 7.5, colW);
+
+  currentPage.drawText(p1StrLines[0] || '', {
     x: marginX + 12,
     y: y - 28,
     size: 7.5,
     font: fontBody,
     color: rgb(0.3, 0.35, 0.45),
   });
-  currentPage.drawText(cleanPdfText(p2Str.length > 48 ? p2Str.substring(0, 46) + '...' : p2Str), {
+  currentPage.drawText(p2StrLines[0] || '', {
     x: marginX + 270,
     y: y - 28,
     size: 7.5,
@@ -883,16 +887,14 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
     color: rgb(0.3, 0.35, 0.45),
   });
 
-  const p1RepStr = `Signatory: ${config.party1.representativeName || config.party1.name} (${config.party1.representativeTitle || 'Rep'})`;
-  const p2TaxStr = `Tax/Reg ID: ${config.party2.taxId || 'N/A'}`;
-  currentPage.drawText(cleanPdfText(p1RepStr.length > 48 ? p1RepStr.substring(0, 46) + '...' : p1RepStr), {
+  currentPage.drawText(p1RepLines[0] || '', {
     x: marginX + 12,
     y: y - 42,
     size: 7.5,
     font: fontBody,
     color: rgb(0.4, 0.45, 0.55),
   });
-  currentPage.drawText(cleanPdfText(p2TaxStr), {
+  currentPage.drawText(p2TaxLines[0] || '', {
     x: marginX + 270,
     y: y - 42,
     size: 7.5,
@@ -1058,8 +1060,34 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
   }
 
   // 5. Signatures & Execution Section
-  ensureSpace(120);
   y -= 4;
+  const boxW = (contentWidth - 16) / 2;
+  const textMaxW = boxW - 20;
+
+  const p1Header = `FOR ${config.party1Role.toUpperCase()}: ${config.party1.name}`;
+  const p2Header = `FOR ${config.party2Role.toUpperCase()}: ${config.party2.name}`;
+  const p1Print = `Printed Name: ${config.party1.representativeName || config.party1.name}`;
+  const p2Print = `Printed Name: ${config.party2.representativeName || config.party2.name}`;
+  const p1Title = `Title: ${config.party1.representativeTitle || 'Authorized Signatory'}`;
+  const p2Title = `Title: ${config.party2.representativeTitle || 'Authorized Signatory'}`;
+  const p1Date = `Date: ${config.party1.signature.date || '___________________'}`;
+  const p2Date = `Date: ${config.party2.signature.date || '___________________'}`;
+
+  const p1HeaderLines = wrapText(cleanPdfText(p1Header), fontTitle, 7.5, textMaxW);
+  const p2HeaderLines = wrapText(cleanPdfText(p2Header), fontTitle, 7.5, textMaxW);
+  const p1PrintLines = wrapText(cleanPdfText(p1Print), fontBody, 7.5, textMaxW);
+  const p2PrintLines = wrapText(cleanPdfText(p2Print), fontBody, 7.5, textMaxW);
+  const p1TitleLines = wrapText(cleanPdfText(p1Title), fontBody, 7.5, textMaxW);
+  const p2TitleLines = wrapText(cleanPdfText(p2Title), fontBody, 7.5, textMaxW);
+  const p1DateLines = wrapText(cleanPdfText(p1Date), fontMono, 7.5, textMaxW);
+  const p2DateLines = wrapText(cleanPdfText(p2Date), fontMono, 7.5, textMaxW);
+
+  const p1NeededH = 14 + p1HeaderLines.length * 9.5 + 26 + p1PrintLines.length * 9.5 + p1TitleLines.length * 9.5 + p1DateLines.length * 9.5 + 8;
+  const p2NeededH = 14 + p2HeaderLines.length * 9.5 + 26 + p2PrintLines.length * 9.5 + p2TitleLines.length * 9.5 + p2DateLines.length * 9.5 + 8;
+  const boxHeight = Math.max(92, p1NeededH, p2NeededH);
+
+  ensureSpace(boxHeight + 36);
+
   currentPage.drawText('IN WITNESS WHEREOF, the Parties hereto have executed this Agreement.', {
     x: marginX,
     y,
@@ -1068,9 +1096,6 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
     color: rgb(0.2, 0.25, 0.35),
   });
   y -= 16;
-
-  const boxW = (contentWidth - 16) / 2;
-  const boxHeight = 88;
 
   // Party 1 Box
   currentPage.drawRectangle({
@@ -1082,23 +1107,29 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
     borderColor: rgb(0.85, 0.88, 0.95),
     borderWidth: 1,
   });
-  const p1Header = `FOR ${config.party1Role.toUpperCase()}: ${config.party1.name}`;
-  currentPage.drawText(cleanPdfText(p1Header.length > 40 ? p1Header.substring(0, 38) + '...' : p1Header), {
-    x: marginX + 10,
-    y: y - 14,
-    size: 7.5,
-    font: fontTitle,
-    color: rgb(0.1, 0.15, 0.3),
-  });
+
+  let p1CurY = y - 13;
+  for (const hLine of p1HeaderLines) {
+    currentPage.drawText(hLine, {
+      x: marginX + 10,
+      y: p1CurY,
+      size: 7.5,
+      font: fontTitle,
+      color: rgb(0.1, 0.15, 0.3),
+    });
+    p1CurY -= 9.5;
+  }
+  p1CurY -= 2;
 
   const p1HasSig =
     config.party1.signature.type !== 'blank' &&
     (config.party1.signature.typedName || config.party1.signature.dataUrl);
 
   if (p1HasSig && config.party1.signature.type === 'typed') {
-    currentPage.drawText(`Signed: ${cleanPdfText(config.party1.signature.typedName || config.party1.representativeName)}`, {
+    const sigLines = wrapText(`Signed: ${cleanPdfText(config.party1.signature.typedName || config.party1.representativeName)}`, fontSig, 9.5, textMaxW);
+    currentPage.drawText(sigLines[0] || '', {
       x: marginX + 10,
-      y: y - 32,
+      y: p1CurY - 10,
       size: 9.5,
       font: fontSig,
       color: rgb(0.1, 0.25, 0.6),
@@ -1118,24 +1149,24 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
         const dims = img.scaleToFit(boxW - 30, 20);
         currentPage.drawImage(img, {
           x: marginX + 10,
-          y: y - 36,
+          y: p1CurY - 16,
           width: dims.width,
           height: dims.height,
         });
       }
     } catch {
-      currentPage.drawText(`Authorized Signature:`, {
+      currentPage.drawText('Authorized Signature:', {
         x: marginX + 10,
-        y: y - 32,
+        y: p1CurY - 10,
         size: 7,
         font: fontItalic,
         color: rgb(0.45, 0.5, 0.6),
       });
     }
   } else {
-    currentPage.drawText(`Authorized Signature:`, {
+    currentPage.drawText('Authorized Signature:', {
       x: marginX + 10,
-      y: y - 32,
+      y: p1CurY - 10,
       size: 7,
       font: fontItalic,
       color: rgb(0.45, 0.5, 0.6),
@@ -1143,37 +1174,46 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
   }
 
   currentPage.drawLine({
-    start: { x: marginX + 10, y: y - 38 },
-    end: { x: marginX + boxW - 10, y: y - 38 },
+    start: { x: marginX + 10, y: p1CurY - 16 },
+    end: { x: marginX + boxW - 10, y: p1CurY - 16 },
     thickness: 0.5,
     color: rgb(0.7, 0.75, 0.85),
   });
 
-  const p1Print = `Printed Name: ${config.party1.representativeName || config.party1.name}`;
-  const p1Title = `Title: ${config.party1.representativeTitle || 'Authorized Signatory'}`;
-  const p1Date = `Date: ${config.party1.signature.date || '___________________'}`;
+  p1CurY -= 26;
 
-  currentPage.drawText(cleanPdfText(p1Print.length > 40 ? p1Print.substring(0, 38) + '...' : p1Print), {
-    x: marginX + 10,
-    y: y - 50,
-    size: 7.5,
-    font: fontBody,
-    color: rgb(0.3, 0.35, 0.45),
-  });
-  currentPage.drawText(cleanPdfText(p1Title.length > 40 ? p1Title.substring(0, 38) + '...' : p1Title), {
-    x: marginX + 10,
-    y: y - 62,
-    size: 7.5,
-    font: fontBody,
-    color: rgb(0.3, 0.35, 0.45),
-  });
-  currentPage.drawText(cleanPdfText(p1Date), {
-    x: marginX + 10,
-    y: y - 74,
-    size: 7.5,
-    font: fontMono,
-    color: rgb(0.4, 0.45, 0.55),
-  });
+  for (const pLine of p1PrintLines) {
+    currentPage.drawText(pLine, {
+      x: marginX + 10,
+      y: p1CurY,
+      size: 7.5,
+      font: fontBody,
+      color: rgb(0.3, 0.35, 0.45),
+    });
+    p1CurY -= 9.5;
+  }
+
+  for (const tLine of p1TitleLines) {
+    currentPage.drawText(tLine, {
+      x: marginX + 10,
+      y: p1CurY,
+      size: 7.5,
+      font: fontBody,
+      color: rgb(0.3, 0.35, 0.45),
+    });
+    p1CurY -= 9.5;
+  }
+
+  for (const dLine of p1DateLines) {
+    currentPage.drawText(dLine, {
+      x: marginX + 10,
+      y: p1CurY,
+      size: 7.5,
+      font: fontMono,
+      color: rgb(0.4, 0.45, 0.55),
+    });
+    p1CurY -= 9.5;
+  }
 
   // Party 2 Box
   const p2X = marginX + boxW + 16;
@@ -1187,23 +1227,28 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
     borderWidth: 1,
   });
 
-  const p2Header = `FOR ${config.party2Role.toUpperCase()}: ${config.party2.name}`;
-  currentPage.drawText(cleanPdfText(p2Header.length > 40 ? p2Header.substring(0, 38) + '...' : p2Header), {
-    x: p2X + 10,
-    y: y - 14,
-    size: 7.5,
-    font: fontTitle,
-    color: rgb(0.1, 0.15, 0.3),
-  });
+  let p2CurY = y - 13;
+  for (const hLine of p2HeaderLines) {
+    currentPage.drawText(hLine, {
+      x: p2X + 10,
+      y: p2CurY,
+      size: 7.5,
+      font: fontTitle,
+      color: rgb(0.1, 0.15, 0.3),
+    });
+    p2CurY -= 9.5;
+  }
+  p2CurY -= 2;
 
   const p2HasSig =
     config.party2.signature.type !== 'blank' &&
     (config.party2.signature.typedName || config.party2.signature.dataUrl);
 
   if (p2HasSig && config.party2.signature.type === 'typed') {
-    currentPage.drawText(`Signed: ${cleanPdfText(config.party2.signature.typedName || config.party2.representativeName)}`, {
+    const sigLines = wrapText(`Signed: ${cleanPdfText(config.party2.signature.typedName || config.party2.representativeName)}`, fontSig, 9.5, textMaxW);
+    currentPage.drawText(sigLines[0] || '', {
       x: p2X + 10,
-      y: y - 32,
+      y: p2CurY - 10,
       size: 9.5,
       font: fontSig,
       color: rgb(0.1, 0.25, 0.6),
@@ -1223,24 +1268,24 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
         const dims = img.scaleToFit(boxW - 30, 20);
         currentPage.drawImage(img, {
           x: p2X + 10,
-          y: y - 36,
+          y: p2CurY - 16,
           width: dims.width,
           height: dims.height,
         });
       }
     } catch {
-      currentPage.drawText(`Authorized Signature:`, {
+      currentPage.drawText('Authorized Signature:', {
         x: p2X + 10,
-        y: y - 32,
+        y: p2CurY - 10,
         size: 7,
         font: fontItalic,
         color: rgb(0.45, 0.5, 0.6),
       });
     }
   } else {
-    currentPage.drawText(`Authorized Signature:`, {
+    currentPage.drawText('Authorized Signature:', {
       x: p2X + 10,
-      y: y - 32,
+      y: p2CurY - 10,
       size: 7,
       font: fontItalic,
       color: rgb(0.45, 0.5, 0.6),
@@ -1248,37 +1293,46 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
   }
 
   currentPage.drawLine({
-    start: { x: p2X + 10, y: y - 38 },
-    end: { x: p2X + boxW - 10, y: y - 38 },
+    start: { x: p2X + 10, y: p2CurY - 16 },
+    end: { x: p2X + boxW - 10, y: p2CurY - 16 },
     thickness: 0.5,
     color: rgb(0.7, 0.75, 0.85),
   });
 
-  const p2Print = `Printed Name: ${config.party2.representativeName || config.party2.name}`;
-  const p2Title = `Title: ${config.party2.representativeTitle || 'Authorized Signatory'}`;
-  const p2Date = `Date: ${config.party2.signature.date || '___________________'}`;
+  p2CurY -= 26;
 
-  currentPage.drawText(cleanPdfText(p2Print.length > 40 ? p2Print.substring(0, 38) + '...' : p2Print), {
-    x: p2X + 10,
-    y: y - 50,
-    size: 7.5,
-    font: fontBody,
-    color: rgb(0.3, 0.35, 0.45),
-  });
-  currentPage.drawText(cleanPdfText(p2Title.length > 40 ? p2Title.substring(0, 38) + '...' : p2Title), {
-    x: p2X + 10,
-    y: y - 62,
-    size: 7.5,
-    font: fontBody,
-    color: rgb(0.3, 0.35, 0.45),
-  });
-  currentPage.drawText(cleanPdfText(p2Date), {
-    x: p2X + 10,
-    y: y - 74,
-    size: 7.5,
-    font: fontMono,
-    color: rgb(0.4, 0.45, 0.55),
-  });
+  for (const pLine of p2PrintLines) {
+    currentPage.drawText(pLine, {
+      x: p2X + 10,
+      y: p2CurY,
+      size: 7.5,
+      font: fontBody,
+      color: rgb(0.3, 0.35, 0.45),
+    });
+    p2CurY -= 9.5;
+  }
+
+  for (const tLine of p2TitleLines) {
+    currentPage.drawText(tLine, {
+      x: p2X + 10,
+      y: p2CurY,
+      size: 7.5,
+      font: fontBody,
+      color: rgb(0.3, 0.35, 0.45),
+    });
+    p2CurY -= 9.5;
+  }
+
+  for (const dLine of p2DateLines) {
+    currentPage.drawText(dLine, {
+      x: p2X + 10,
+      y: p2CurY,
+      size: 7.5,
+      font: fontMono,
+      color: rgb(0.4, 0.45, 0.55),
+    });
+    p2CurY -= 9.5;
+  }
 
   y -= boxHeight + 14;
 

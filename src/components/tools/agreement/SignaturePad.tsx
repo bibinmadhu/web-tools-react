@@ -14,7 +14,7 @@ export const SignaturePad: React.FC<SignaturePadProps> = ({
   onChange,
 }) => {
   const [activeTab, setActiveTab] = useState<'blank' | 'typed' | 'drawn' | 'uploaded'>(
-    party.signature.type || 'typed'
+    party.signature.type || 'blank'
   );
   const [typedText, setTypedText] = useState(
     party.signature.typedName || party.representativeName || party.name || ''
@@ -188,7 +188,7 @@ export const SignaturePad: React.FC<SignaturePadProps> = ({
           <button
             type="button"
             onClick={handleSelectBlank}
-            title="Leave signature line blank to send for manual or external signature"
+            title="Leave signature line unsigned to send for manual or external signature"
             className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors ${
               activeTab === 'blank'
                 ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 font-semibold shadow-xs'
@@ -196,7 +196,7 @@ export const SignaturePad: React.FC<SignaturePadProps> = ({
             }`}
           >
             <FileSignature className="w-3.5 h-3.5" />
-            <span>Blank (Sign Later)</span>
+            <span>Unsigned (Sign Later)</span>
           </button>
           <button
             type="button"
