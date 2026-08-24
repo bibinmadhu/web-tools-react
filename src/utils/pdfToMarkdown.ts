@@ -1,4 +1,17 @@
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+
+// Configure Mozilla PDF.js worker
+if (typeof window !== 'undefined') {
+  try {
+    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+    }
+  } catch (e) {
+    console.warn('PDF.js worker fallback initializing:', e);
+  }
+}
 
 export interface PdfToMarkdownOptions {
   includeFrontmatter?: boolean;
@@ -37,6 +50,25 @@ export interface MarkdownStats {
   lists: number;
   tables: number;
   readingTimeMinutes: number;
+}
+
+interface RawTextItem {
+  str: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontName: string;
+  hasEOL?: boolean;
+}
+
+interface StructuredLine {
+  text: string;
+  y: number;
+  fontSize: number;
+  isBold: boolean;
+  isMonospace: boolean;
+  columns: string[];
 }
 
 /**
@@ -285,7 +317,9 @@ export async function createSampleMarkdownPdf(): Promise<Uint8Array> {
 }
 
 /**
- * Extracts raw textual lines and metadata from a PDF buffer.
+ * Extracts raw textual lines and metadata from a PDF buffer using Mozilla PDF.js.
+ * This handles all PDF versions, FlateDecode compression, ToUnicode font maps,
+ * embedded TrueType/Type1 fonts, and spatial text coordinate positioning.
  */
 export async function extractPdfTextAndMetadata(pdfBuffer: ArrayBuffer | Uint8Array): Promise<{
   title: string;
@@ -293,137 +327,210 @@ export async function extractPdfTextAndMetadata(pdfBuffer: ArrayBuffer | Uint8Ar
   creationDate?: string;
   pageCount: number;
   pages: ExtractedPageText[];
+  structuredPages: StructuredLine[][];
+  bodyFontSize: number;
   fullRawText: string;
 }> {
-  const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
-  const pageCount = pdfDoc.getPageCount();
-  const title = pdfDoc.getTitle() || '';
-  const author = pdfDoc.getAuthor() || '';
-  const creationDate = pdfDoc.getCreationDate() ? pdfDoc.getCreationDate()!.toISOString() : undefined;
+  // Ensure we have a clean Uint8Array copy
+  const data = pdfBuffer instanceof Uint8Array ? pdfBuffer : new Uint8Array(pdfBuffer);
+  const loadingTask = pdfjsLib.getDocument({
+    data,
+    useSystemFonts: true,
+  } as any);
+
+  const pdfDoc = await loadingTask.promise;
+  const pageCount = pdfDoc.numPages;
+
+  // Extract document metadata
+  let title = '';
+  let author = '';
+  let creationDate: string | undefined = undefined;
+
+  try {
+    const meta: any = await pdfDoc.getMetadata();
+    if (meta?.info) {
+      title = meta.info.Title || '';
+      author = meta.info.Author || '';
+      if (meta.info.CreationDate) {
+        creationDate = formatPdfDate(meta.info.CreationDate);
+      }
+    }
+  } catch (e) {
+    // metadata is optional
+  }
 
   const pages: ExtractedPageText[] = [];
+  const structuredPages: StructuredLine[][] = [];
+  const fontSizesCollected: number[] = [];
 
-  for (let i = 0; i < pageCount; i++) {
-    const page = pdfDoc.getPage(i);
-    const rawPageText = extractPageContentText(page);
+  for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+    const page = await pdfDoc.getPage(pageNum);
+    const textContent = await page.getTextContent();
 
-    const rawLines = rawPageText.split('\n');
-    const lines = rawLines
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
+    const rawItems: RawTextItem[] = [];
+
+    for (const item of textContent.items as any[]) {
+      if (!item || typeof item.str !== 'string') continue;
+      const str = item.str;
+      if (!str && !item.hasEOL) continue;
+
+      const transform = item.transform || [1, 0, 0, 1, 0, 0];
+      const x = transform[4] || 0;
+      const y = transform[5] || 0;
+      const height = item.height || Math.abs(transform[0]) || Math.abs(transform[3]) || 10;
+      const width = item.width || 0;
+      const fontName = (item.fontName || '').toLowerCase();
+
+      rawItems.push({
+        str,
+        x,
+        y,
+        width,
+        height,
+        fontName,
+        hasEOL: item.hasEOL,
+      });
+
+      if (str.trim().length > 0 && height > 4) {
+        fontSizesCollected.push(Math.round(height * 2) / 2);
+      }
+    }
+
+    // Cluster items into lines based on Y coordinate
+    const structuredLines = clusterItemsIntoLines(rawItems);
+    structuredPages.push(structuredLines);
+
+    const lineTexts = structuredLines.map((l) => l.text).filter((t) => t.trim().length > 0);
+    const rawPageText = lineTexts.join('\n');
 
     pages.push({
-      pageNumber: i + 1,
+      pageNumber: pageNum,
       rawText: rawPageText,
-      lines,
+      lines: lineTexts,
     });
+  }
+
+  // Calculate dominant body font size
+  const bodyFontSize = calculateDominantFontSize(fontSizesCollected);
+
+  // If title was not in metadata, take the first prominent heading
+  if (!title && pages[0]?.lines[0]) {
+    title = pages[0].lines[0].replace(/^[#\s*_-]+/, '').trim();
   }
 
   const fullRawText = pages.map((p) => p.rawText).join('\n\n');
 
   return {
-    title,
-    author,
+    title: title || 'PDF Document',
+    author: author || '',
     creationDate,
     pageCount,
     pages,
+    structuredPages,
+    bodyFontSize,
     fullRawText,
   };
 }
 
 /**
- * Internal low-level stream decoder to extract text operators from PDF Content streams.
+ * Clusters unordered PDF text fragments into spatially ordered lines and table columns.
  */
-function extractPageContentText(page: any): string {
-  try {
-    const contents = page.node.Contents();
-    if (!contents) return `[Page Content - Page ${page.node.index + 1}]`;
+function clusterItemsIntoLines(items: RawTextItem[]): StructuredLine[] {
+  if (items.length === 0) return [];
 
-    let streams: any[] = [];
-    if (Array.isArray(contents.array)) {
-      streams = contents.array;
-    } else {
-      streams = [contents];
+  // Group items by Y coordinate with a tolerance of 3.5 points
+  const yBuckets: { y: number; items: RawTextItem[] }[] = [];
+
+  for (const item of items) {
+    if (!item.str && !item.hasEOL) continue;
+
+    let matchedBucket = yBuckets.find((b) => Math.abs(b.y - item.y) <= 3.5);
+    if (!matchedBucket) {
+      matchedBucket = { y: item.y, items: [] };
+      yBuckets.push(matchedBucket);
     }
+    matchedBucket.items.push(item);
+  }
 
-    const collectedLines: string[] = [];
-    let currentLineTokens: string[] = [];
+  // Sort line buckets from TOP of page to BOTTOM of page (descending Y in PDF coordinates)
+  yBuckets.sort((a, b) => b.y - a.y);
 
-    for (const streamObj of streams) {
-      if (!streamObj || typeof streamObj.getUncompressedStream !== 'function') continue;
-      const uncompressed = streamObj.getUncompressedStream();
-      if (!uncompressed) continue;
+  const structuredLines: StructuredLine[] = [];
 
-      const decoder = new TextDecoder('latin1');
-      const streamStr = decoder.decode(uncompressed);
+  for (const bucket of yBuckets) {
+    // Sort items left to right
+    bucket.items.sort((a, b) => a.x - b.x);
 
-      // Split into operators / lines
-      // Recognize T*, TD, Td (newline operators), Tj, TJ, ' and "
-      const tokens = streamStr.split(/(T\*|TD|Td|Tj|TJ|'|")/g);
+    let lineText = '';
+    const columns: string[] = [];
+    let currentColumn = '';
+    let maxFontSize = 10;
+    let isBold = false;
+    let isMonospace = false;
 
-      for (let j = 0; j < tokens.length; j++) {
-        const token = tokens[j];
+    let prevItem: RawTextItem | null = null;
 
-        if (token === 'T*' || token === 'TD' || token === 'Td' || token === "'") {
-          if (currentLineTokens.length > 0) {
-            collectedLines.push(currentLineTokens.join(' ').trim());
-            currentLineTokens = [];
+    for (let i = 0; i < bucket.items.length; i++) {
+      const cur = bucket.items[i];
+      const str = cur.str;
+
+      if (cur.height > maxFontSize) {
+        maxFontSize = cur.height;
+      }
+      if (cur.fontName.includes('bold') || cur.fontName.includes('black') || cur.fontName.includes('heavy') || cur.fontName.includes('b')) {
+        isBold = true;
+      }
+      if (cur.fontName.includes('courier') || cur.fontName.includes('mono') || cur.fontName.includes('code') || cur.fontName.includes('consolas')) {
+        isMonospace = true;
+      }
+
+      if (prevItem) {
+        const gap = cur.x - (prevItem.x + prevItem.width);
+
+        // Wide spatial gap indicates a column or tab boundary (> 22pt)
+        if (gap >= 22) {
+          if (currentColumn.trim()) {
+            columns.push(currentColumn.trim());
+            currentColumn = '';
           }
-        } else if (token === 'TJ') {
-          // Look back at previous chunk for array content
-          const prev = tokens[j - 1] || '';
-          const arrayMatches = prev.match(/\[\s*((?:\([^)]*\)|[0-9\s.-])*)\s*\]/);
-          if (arrayMatches) {
-            const stringMatches = arrayMatches[1].match(/\(([^)]*)\)/g);
-            if (stringMatches) {
-              const joined = stringMatches.map((s) => cleanPdfRawString(s.slice(1, -1))).join('');
-              if (joined.trim().length > 0) {
-                currentLineTokens.push(joined.trim());
-              }
-            }
+          if (!lineText.endsWith('  ')) {
+            lineText += '    '; // Add 4 spaces for tabular alignment
           }
-        } else if (token === 'Tj') {
-          const prev = tokens[j - 1] || '';
-          const stringMatch = prev.match(/\(([^)]*)\)\s*$/);
-          if (stringMatch) {
-            const str = cleanPdfRawString(stringMatch[1]);
-            if (str.trim().length > 0) {
-              currentLineTokens.push(str.trim());
-            }
-          }
+        } else if (gap > 2 && !lineText.endsWith(' ') && !str.startsWith(' ')) {
+          lineText += ' ';
+          currentColumn += ' ';
         }
       }
 
-      if (currentLineTokens.length > 0) {
-        collectedLines.push(currentLineTokens.join(' ').trim());
-        currentLineTokens = [];
-      }
+      lineText += str;
+      currentColumn += str;
+      prevItem = cur;
     }
 
-    const filtered = collectedLines.filter((l) => l.length > 0);
-    if (filtered.length > 0) {
-      return filtered.join('\n');
+    if (currentColumn.trim()) {
+      columns.push(currentColumn.trim());
     }
-  } catch (e) {
-    // fallback
+
+    const trimmed = lineText.trim();
+    if (trimmed.length > 0) {
+      structuredLines.push({
+        text: trimmed,
+        y: bucket.y,
+        fontSize: maxFontSize,
+        isBold,
+        isMonospace,
+        columns: columns.length > 1 ? columns : [trimmed],
+      });
+    }
   }
 
-  return `Sample extracted text content from page ${page.node.index + 1}.`;
-}
-
-function cleanPdfRawString(raw: string): string {
-  return raw
-    .replace(/\\([()\\])/g, '$1')
-    .replace(/\\n/g, '\n')
-    .replace(/\\r/g, '\r')
-    .replace(/\\t/g, '\t')
-    .replace(/\\/g, '');
+  return structuredLines;
 }
 
 /**
  * Main PDF to Markdown Converter Engine.
- * Parses textual tokens, classifies headings, tables, lists, code blocks, and metadata,
- * producing high quality, standardized Markdown.
+ * Parses raw text, spatial coordinates, headings, tables, lists, code blocks, and metadata,
+ * producing high quality, standardized CommonMark & GitHub Flavored Markdown.
  */
 export async function convertPdfToMarkdown(
   pdfBuffer: ArrayBuffer | Uint8Array,
@@ -443,15 +550,15 @@ export async function convertPdfToMarkdown(
   } = options;
 
   const rawExtraction = await extractPdfTextAndMetadata(pdfBuffer);
-  const { title, author, creationDate, pageCount, pages } = rawExtraction;
+  const { title, author, creationDate, pageCount, pages, structuredPages, bodyFontSize } = rawExtraction;
 
   const outputMarkdownSections: string[] = [];
 
   // 1. YAML Frontmatter
   if (includeFrontmatter) {
-    const docTitle = title || (pages[0]?.lines[0] ? sanitizeFrontmatter(pages[0].lines[0]) : 'PDF Document');
+    const docTitle = title || sanitizeFrontmatter(pages[0]?.lines[0] || 'PDF Document');
     const docAuthor = author || 'PDF Extractor';
-    const dateStr = creationDate || new Date().toISOString();
+    const dateStr = creationDate || new Date().toISOString().split('T')[0];
 
     outputMarkdownSections.push(
       `---\ntitle: "${docTitle}"\nauthor: "${docAuthor}"\npages: ${pageCount}\nconverted_at: "${dateStr}"\n---\n`
@@ -459,10 +566,9 @@ export async function convertPdfToMarkdown(
   }
 
   // 2. Process Each Page
-  for (let pIdx = 0; pIdx < pages.length; pIdx++) {
-    const page = pages[pIdx];
-    const pageNum = page.pageNumber;
-    let lines = [...page.lines];
+  for (let pIdx = 0; pIdx < structuredPages.length; pIdx++) {
+    const pageNum = pIdx + 1;
+    let sLines = [...structuredPages[pIdx]];
 
     // Page Divider
     if (preservePageDividers && pIdx > 0) {
@@ -473,44 +579,27 @@ export async function convertPdfToMarkdown(
 
     // Filter Running Headers and Footers
     if (cleanRunningHeadersFooters) {
-      lines = lines.filter((line) => {
-        const lower = line.toLowerCase();
+      sLines = sLines.filter((l) => {
+        const lower = l.text.toLowerCase().trim();
         // Page X of Y or Page X
         if (/^page\s+\d+(\s+of\s+\d+)?/i.test(lower)) return false;
         if (/^\d+\s*\/\s*\d+$/.test(lower)) return false;
         if (/^page\s+\d+$/i.test(lower)) return false;
+        if (/^-\s*\d+\s*-$/.test(lower)) return false;
         return true;
       });
     }
 
-    // Repair Hyphenated line wraps across broken text
-    if (cleanHyphenation) {
-      const repairedLines: string[] = [];
-      for (let i = 0; i < lines.length; i++) {
-        let current = lines[i];
-        if (current.endsWith('-') && i + 1 < lines.length) {
-          const next = lines[i + 1];
-          // Check if next starts with a lowercase letter (indicating word split)
-          if (/^[a-z]/.test(next)) {
-            const merged = current.slice(0, -1) + next;
-            repairedLines.push(merged);
-            i++; // skip next
-            continue;
-          }
-        }
-        repairedLines.push(current);
-      }
-      lines = repairedLines;
-    }
-
     // Parse Page Structure into Markdown Blocks
-    const parsedPageMarkdown = formatLinesToMarkdown(lines, {
+    const parsedPageMarkdown = formatStructuredLinesToMarkdown(sLines, {
       detectHeadings,
       detectLists,
       detectTables,
       detectCodeBlocks,
       detectBlockquotes,
+      cleanHyphenation,
       bulletStyle,
+      bodyFontSize,
     });
 
     if (parsedPageMarkdown.trim().length > 0) {
@@ -537,21 +626,23 @@ interface FormatContext {
   detectTables: boolean;
   detectCodeBlocks: boolean;
   detectBlockquotes: boolean;
+  cleanHyphenation: boolean;
   bulletStyle: '-' | '*' | '+';
+  bodyFontSize: number;
 }
 
 /**
- * Parses raw text lines into structured Markdown (Headings, Lists, Tables, Code, Paragraphs)
+ * Transforms spatially structured lines into GitHub Flavored Markdown
  */
-function formatLinesToMarkdown(lines: string[], ctx: FormatContext): string {
+function formatStructuredLinesToMarkdown(lines: StructuredLine[], ctx: FormatContext): string {
   const result: string[] = [];
   let inCodeBlock = false;
   let codeBlockLines: string[] = [];
-  let tableBuffer: string[] = [];
+  let tableBuffer: StructuredLine[] = [];
 
   const flushTableBuffer = () => {
     if (tableBuffer.length > 0) {
-      const gfmTable = convertLinesToGfmTable(tableBuffer);
+      const gfmTable = convertStructuredLinesToGfmTable(tableBuffer);
       result.push(gfmTable);
       tableBuffer = [];
     }
@@ -566,8 +657,8 @@ function formatLinesToMarkdown(lines: string[], ctx: FormatContext): string {
   };
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trim();
+    const lineObj = lines[i];
+    let trimmed = lineObj.text.trim();
 
     if (!trimmed) {
       flushTableBuffer();
@@ -575,9 +666,25 @@ function formatLinesToMarkdown(lines: string[], ctx: FormatContext): string {
       continue;
     }
 
-    // 1. Code Block Detection
+    // Repair Hyphenation
+    if (ctx.cleanHyphenation && trimmed.endsWith('-') && i + 1 < lines.length) {
+      const nextText = lines[i + 1].text.trim();
+      if (/^[a-z]/.test(nextText)) {
+        const nextWords = nextText.split(/\s+/);
+        const mergedWord = trimmed.slice(0, -1) + nextWords[0];
+        trimmed = mergedWord;
+        if (nextWords.length > 1) {
+          lines[i + 1].text = nextWords.slice(1).join(' ');
+        } else {
+          i++; // consumed next line entirely
+        }
+      }
+    }
+
+    // 1. Code Block Detection (via Monospace font or programming keywords)
     if (ctx.detectCodeBlocks) {
       const isCodeLike =
+        lineObj.isMonospace ||
         /^(import|export|const|let|var|function|class|interface|type|return|if|for|while|console\.)\b/.test(trimmed) ||
         trimmed.startsWith('```') ||
         (trimmed.includes('{') && trimmed.includes('}')) ||
@@ -593,45 +700,51 @@ function formatLinesToMarkdown(lines: string[], ctx: FormatContext): string {
       }
     }
 
-    // 2. Table Row Detection (multiple columns with 2+ spaces, tabs, or pipe characters)
+    // 2. Table Row Detection (multi-column structure)
     if (ctx.detectTables) {
-      const isTableRow =
-        trimmed.includes('|') ||
-        /\b[A-Za-z0-9_.-]+\s{2,}[A-Za-z0-9_.-]+\s{2,}[A-Za-z0-9_.-]+/.test(trimmed) ||
-        (trimmed.includes('\t') && trimmed.split('\t').length >= 2);
+      const hasMultipleCols = lineObj.columns.length >= 2;
+      const isPipeDelimited = trimmed.includes('|') && trimmed.split('|').length >= 3;
+      const hasLargeSpacing = /\b[A-Za-z0-9_.-]+\s{3,}[A-Za-z0-9_.-]+/.test(trimmed);
 
-      if (isTableRow) {
-        tableBuffer.push(trimmed);
+      if (hasMultipleCols || isPipeDelimited || hasLargeSpacing) {
+        tableBuffer.push(lineObj);
         continue;
       } else {
         flushTableBuffer();
       }
     }
 
-    // 3. Heading Detection
+    // 3. Heading Detection (Font size comparison + numbered patterns)
     if (ctx.detectHeadings) {
-      // Level 1: "1. Heading", "Chapter 1", or UPPERCASE Title
-      if (/^(\d+\.0?\s+[A-Z][\w\s&,-]+|CHAPTER\s+\d+|SECTION\s+\d+)/i.test(trimmed)) {
-        result.push(`\n## ${trimmed.replace(/^#+\s*/, '')}`);
+      const isLargeHeading = lineObj.fontSize >= ctx.bodyFontSize * 1.35 || lineObj.fontSize >= 15;
+      const isMediumHeading = (lineObj.fontSize >= ctx.bodyFontSize * 1.15 || lineObj.fontSize >= 13) && lineObj.isBold;
+
+      // Level 1: "1. Heading", "Chapter 1", or prominent large title
+      if (/^(\d+\.0?\s+[A-Z][\w\s&,-]+|CHAPTER\s+\d+|SECTION\s+\d+)/i.test(trimmed) || isLargeHeading) {
+        const cleanTitle = trimmed.replace(/^#+\s*/, '');
+        result.push(`\n## ${cleanTitle}`);
         continue;
       }
       // Level 2: "1.1 Heading", "A. Heading"
-      if (/^(\d+\.\d+\s+[A-Z][\w\s&,-]+|[A-Z]\.\s+[A-Z][\w\s&,-]+)/i.test(trimmed)) {
-        result.push(`\n### ${trimmed.replace(/^#+\s*/, '')}`);
+      if (/^(\d+\.\d+\s+[A-Z][\w\s&,-]+|[A-Z]\.\s+[A-Z][\w\s&,-]+)/i.test(trimmed) || isMediumHeading) {
+        const cleanTitle = trimmed.replace(/^#+\s*/, '');
+        result.push(`\n### ${cleanTitle}`);
         continue;
       }
       // Level 3: "1.1.1 Heading"
       if (/^\d+\.\d+\.\d+\s+[A-Z][\w\s&,-]+/i.test(trimmed)) {
-        result.push(`\n#### ${trimmed.replace(/^#+\s*/, '')}`);
+        const cleanTitle = trimmed.replace(/^#+\s*/, '');
+        result.push(`\n#### ${cleanTitle}`);
         continue;
       }
-      // Pure uppercase short heading line (under 60 chars)
+      // Pure uppercase short title line (under 60 chars)
       if (
         trimmed.length > 3 &&
         trimmed.length < 60 &&
         trimmed === trimmed.toUpperCase() &&
         /^[A-Z0-9\s:_-]+$/.test(trimmed) &&
-        !trimmed.startsWith('PAGE')
+        !trimmed.startsWith('PAGE') &&
+        !trimmed.startsWith('DOCUMENT ID')
       ) {
         result.push(`\n# ${capitalizeHeading(trimmed)}`);
         continue;
@@ -653,7 +766,7 @@ function formatLinesToMarkdown(lines: string[], ctx: FormatContext): string {
 
     // 5. Bullet & Numbered List Detection
     if (ctx.detectLists) {
-      // Unordered bullets: •, -, *, ◦, ▪
+      // Unordered bullets: •, ◦, ▪, -, *, etc.
       if (/^[•◦▪*-]\s+/.test(trimmed)) {
         const content = trimmed.replace(/^[•◦▪*-]\s+/, '');
         result.push(`${ctx.bulletStyle} ${content}`);
@@ -669,7 +782,7 @@ function formatLinesToMarkdown(lines: string[], ctx: FormatContext): string {
       }
     }
 
-    // 6. Key-Value Pairs
+    // 6. Key-Value Label pairs
     if (/^[A-Z][\w\s]{1,25}:\s+[\w\s.,/#-]+$/.test(trimmed) && !trimmed.startsWith('http')) {
       const parts = trimmed.split(/:\s+(.+)/);
       if (parts.length >= 2) {
@@ -689,29 +802,29 @@ function formatLinesToMarkdown(lines: string[], ctx: FormatContext): string {
 }
 
 /**
- * Converts space-separated or pipe-separated lines into a valid GitHub Flavored Markdown table
+ * Converts collected table line candidates into a clean GitHub Flavored Markdown table.
  */
-function convertLinesToGfmTable(lines: string[]): string {
+function convertStructuredLinesToGfmTable(lines: StructuredLine[]): string {
   if (lines.length === 0) return '';
 
-  const parsedRows: string[][] = lines.map((line) => {
-    if (line.includes('|')) {
-      return line
+  const parsedRows: string[][] = lines.map((l) => {
+    if (l.columns && l.columns.length > 1) {
+      return l.columns;
+    }
+    const raw = l.text;
+    if (raw.includes('|')) {
+      return raw
         .split('|')
         .map((cell) => cell.trim())
         .filter((cell, idx, arr) => (idx > 0 && idx < arr.length - 1) || cell.length > 0);
     }
-    if (line.includes('\t')) {
-      return line.split('\t').map((c) => c.trim()).filter((c) => c.length > 0);
-    }
-    // Split by 2 or more spaces
-    return line.split(/\s{2,}/).map((c) => c.trim()).filter((c) => c.length > 0);
+    // Split by 3 or more spaces
+    return raw.split(/\s{3,}/).map((c) => c.trim()).filter((c) => c.length > 0);
   });
 
-  // Calculate max columns
   const maxCols = Math.max(...parsedRows.map((r) => r.length), 1);
   if (maxCols <= 1) {
-    return lines.join('\n');
+    return lines.map((l) => l.text).join('\n');
   }
 
   // Normalize row length
@@ -736,8 +849,25 @@ function convertLinesToGfmTable(lines: string[]): string {
   return tableLines.join('\n');
 }
 
+function calculateDominantFontSize(sizes: number[]): number {
+  if (sizes.length === 0) return 10;
+  const counts: Record<number, number> = {};
+  let maxCount = 0;
+  let dominant = 10;
+
+  for (const s of sizes) {
+    counts[s] = (counts[s] || 0) + 1;
+    if (counts[s] > maxCount) {
+      maxCount = counts[s];
+      dominant = s;
+    }
+  }
+
+  return dominant;
+}
+
 function sanitizeFrontmatter(str: string): string {
-  return str.replace(/["\n\r\\]/g, ' ').trim();
+  return (str || '').replace(/["\n\r\\]/g, ' ').trim();
 }
 
 function capitalizeHeading(str: string): string {
@@ -746,6 +876,27 @@ function capitalizeHeading(str: string): string {
     .split(' ')
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ');
+}
+
+function formatPdfDate(pdfDate: string): string {
+  try {
+    // PDF dates are in format D:YYYYMMDDHHmmSS...
+    if (pdfDate.startsWith('D:')) {
+      const yr = pdfDate.substring(2, 6);
+      const mo = pdfDate.substring(6, 8);
+      const dy = pdfDate.substring(8, 10);
+      if (yr && mo && dy) {
+        return `${yr}-${mo}-${dy}`;
+      }
+    }
+    const d = new Date(pdfDate);
+    if (!isNaN(d.getTime())) {
+      return d.toISOString().split('T')[0];
+    }
+  } catch (e) {
+    // fallback
+  }
+  return new Date().toISOString().split('T')[0];
 }
 
 /**

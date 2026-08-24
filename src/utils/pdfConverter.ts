@@ -1,4 +1,6 @@
 import { PDFDocument } from 'pdf-lib';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import {
   Document,
   Packer,
@@ -11,6 +13,17 @@ import {
   AlignmentType,
 } from 'docx';
 import JSZip from 'jszip';
+
+// Configure Mozilla PDF.js worker
+if (typeof window !== 'undefined') {
+  try {
+    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+    }
+  } catch (e) {
+    // Ignore worker setup errors
+  }
+}
 
 export type OutputDocFormat = 'docx' | 'txt' | 'html' | 'rtf' | 'odt' | 'epub' | 'md';
 
@@ -44,41 +57,121 @@ export interface ExtractedPdfContent {
  * Extracts raw text and lines from PDF page content streams.
  */
 export async function extractPdfContent(pdfBuffer: ArrayBuffer | Uint8Array): Promise<ExtractedPdfContent> {
-  const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
-  const pageCount = pdfDoc.getPageCount();
+  const data = pdfBuffer instanceof Uint8Array ? pdfBuffer : new Uint8Array(pdfBuffer);
+  
+  try {
+    const loadingTask = pdfjsLib.getDocument({
+      data,
+      useSystemFonts: true,
+    } as any);
+    const pdfDoc = await loadingTask.promise;
+    const pageCount = pdfDoc.numPages;
 
-  const title = pdfDoc.getTitle() || 'Converted Document';
-  const author = pdfDoc.getAuthor() || 'PDF Converter Tool';
+    let title = '';
+    let author = '';
 
-  const pages: ExtractedPage[] = [];
+    try {
+      const meta: any = await pdfDoc.getMetadata();
+      if (meta?.info) {
+        title = meta.info.Title || '';
+        author = meta.info.Author || '';
+      }
+    } catch (e) {
+      // metadata optional
+    }
 
-  for (let i = 0; i < pageCount; i++) {
-    const page = pdfDoc.getPage(i);
-    // Extract text operators from content stream
-    const pageText = extractTextFromPage(page);
-    
-    // Clean and split lines
-    const rawLines = pageText.split('\n');
-    const lines = rawLines
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
+    const pages: ExtractedPage[] = [];
 
-    pages.push({
-      pageNumber: i + 1,
-      text: lines.join('\n'),
-      lines,
-    });
+    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+      const page = await pdfDoc.getPage(pageNum);
+      const textContent = await page.getTextContent();
+
+      const items: { str: string; x: number; y: number; width: number }[] = [];
+      for (const item of textContent.items as any[]) {
+        if (!item || typeof item.str !== 'string') continue;
+        const transform = item.transform || [1, 0, 0, 1, 0, 0];
+        items.push({
+          str: item.str,
+          x: transform[4] || 0,
+          y: transform[5] || 0,
+          width: item.width || 0,
+        });
+      }
+
+      // Group into lines
+      const yBuckets: { y: number; items: { str: string; x: number; y: number; width: number }[] }[] = [];
+      for (const it of items) {
+        let bucket = yBuckets.find((b) => Math.abs(b.y - it.y) <= 3.5);
+        if (!bucket) {
+          bucket = { y: it.y, items: [] };
+          yBuckets.push(bucket);
+        }
+        bucket.items.push(it);
+      }
+      yBuckets.sort((a, b) => b.y - a.y);
+
+      const lines: string[] = [];
+      for (const b of yBuckets) {
+        b.items.sort((a, b) => a.x - b.x);
+        let lineText = '';
+        let prev: any = null;
+        for (const it of b.items) {
+          if (prev && it.x - (prev.x + prev.width) > 2.5 && !lineText.endsWith(' ') && !it.str.startsWith(' ')) {
+            lineText += ' ';
+          }
+          lineText += it.str;
+          prev = it;
+        }
+        const trimmed = lineText.trim();
+        if (trimmed.length > 0) {
+          lines.push(trimmed);
+        }
+      }
+
+      pages.push({
+        pageNumber: pageNum,
+        text: lines.join('\n'),
+        lines,
+      });
+    }
+
+    const fullText = pages.map((p) => p.text).join('\n\n');
+    return {
+      title: title || (pages[0]?.lines[0] || 'Converted Document'),
+      author: author || 'PDF Converter Tool',
+      pageCount,
+      pages,
+      fullText,
+    };
+  } catch (err) {
+    // Fallback using pdf-lib
+    const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+    const pageCount = pdfDoc.getPageCount();
+    const title = pdfDoc.getTitle() || 'Converted Document';
+    const author = pdfDoc.getAuthor() || 'PDF Converter Tool';
+    const pages: ExtractedPage[] = [];
+
+    for (let i = 0; i < pageCount; i++) {
+      const page = pdfDoc.getPage(i);
+      const pageText = extractTextFromPage(page);
+      const rawLines = pageText.split('\n');
+      const lines = rawLines.map((l) => l.trim()).filter((l) => l.length > 0);
+      pages.push({
+        pageNumber: i + 1,
+        text: lines.join('\n'),
+        lines,
+      });
+    }
+
+    const fullText = pages.map((p) => p.text).join('\n\n');
+    return {
+      title,
+      author,
+      pageCount,
+      pages,
+      fullText,
+    };
   }
-
-  const fullText = pages.map((p) => p.text).join('\n\n');
-
-  return {
-    title,
-    author,
-    pageCount,
-    pages,
-    fullText,
-  };
 }
 
 /**
