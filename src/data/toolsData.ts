@@ -71,6 +71,16 @@ export const TOOLS_DATA: DevTool[] = [
     isPopular: true,
   },
   {
+    id: 'pdf-to-markdown',
+    name: 'PDF to Markdown Converter',
+    description: 'Convert PDF documents to clean GitHub Flavored Markdown (GFM) with tables, headings, code blocks & YAML frontmatter',
+    category: 'converters',
+    tags: ['PDF', 'Markdown', 'Converter', 'Doc', 'Extract', 'Parser', 'GFM', 'Export'],
+    iconText: 'MD',
+    iconType: 'markdown',
+    isPopular: true,
+  },
+  {
     id: 'converter-platform',
     name: 'Converter Platform',
     description: 'Data & units converter',

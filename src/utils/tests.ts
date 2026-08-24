@@ -37,6 +37,12 @@ import {
   parseInvoiceTemplate,
   createInvoiceTemplateFile,
 } from './invoiceGenerator';
+import {
+  createSampleMarkdownPdf,
+  convertPdfToMarkdown,
+  calculateMarkdownStats,
+  renderMarkdownToHtml,
+} from './pdfToMarkdown';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -824,6 +830,43 @@ curl -X POST "https://api.example.com/data" \\
     // PDF Magic bytes check (%PDF-)
     const headerStr = String.fromCharCode(...pdfBytes.slice(0, 5));
     assertTrue(headerStr.startsWith('%PDF'), 'PDF document should start with %PDF header');
+  });
+
+  await testAsync('PDF to Markdown Converter', 'Converts structured PDF document to clean GFM Markdown with YAML frontmatter & tables', async () => {
+    const samplePdf = await createSampleMarkdownPdf();
+    assertTrue(samplePdf.length > 1000, 'Sample PDF should be generated with valid bytes');
+
+    const result = await convertPdfToMarkdown(samplePdf, {
+      includeFrontmatter: true,
+      detectHeadings: true,
+      detectLists: true,
+      detectTables: true,
+      detectCodeBlocks: true,
+      detectBlockquotes: true,
+      preservePageDividers: true,
+    });
+
+    assertTrue(result.pageCount === 2, 'Sample PDF should have 2 pages');
+    assertTrue(result.markdown.includes('title: "DevHub Architecture & Engineering Guide"'), 'Markdown should include YAML frontmatter title');
+    assertTrue(result.markdown.includes('## 1. Executive Overview & Architecture'), 'Markdown should detect Section 1 heading');
+    assertTrue(result.markdown.includes('### 1.1 Core Engineering Principles'), 'Markdown should detect Subsection 1.1 heading');
+    assertTrue(result.markdown.includes('- Deterministic Output:'), 'Markdown should format bullet list item');
+    assertTrue(result.markdown.includes('1. PDF Document Parsing:'), 'Markdown should format numbered list item');
+    assertTrue(result.markdown.includes('> **Note: Security Compliance Guidelines**') || result.markdown.includes('> Note: Security Compliance Guidelines'), 'Markdown should format blockquote note');
+    assertTrue(result.markdown.includes('| Pipeline Component | Throughput (Docs/s) |'), 'Markdown should format GFM table header');
+    assertTrue(result.markdown.includes('| --- | --- |'), 'Markdown should format GFM table delimiter row');
+    assertTrue(result.markdown.includes('```ts') || result.markdown.includes('import { convertPdfToMarkdown }'), 'Markdown should detect code block');
+
+    // Test Markdown Stats calculation
+    const stats = calculateMarkdownStats(result.markdown);
+    assertTrue(stats.words > 50, 'Markdown stats should compute word count');
+    assertTrue(stats.headings >= 4, 'Markdown stats should detect headings');
+    assertTrue(stats.readingTimeMinutes >= 1, 'Markdown stats should compute reading time');
+
+    // Test HTML rendering
+    const html = renderMarkdownToHtml(result.markdown);
+    assertTrue(html.includes('<h2'), 'HTML render should include <h2> tag');
+    assertTrue(html.includes('<table'), 'HTML render should include <table> tag');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
