@@ -211,4 +211,14 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'pdf',
     isPopular: true,
   },
+  {
+    id: 'agreement-generator',
+    name: 'Agreement Generator',
+    description: 'Generate customizable legal agreements, contractor contracts, NDAs, and MSAs with milestone schedules, party entity configurations & PDF/Markdown export',
+    category: 'documents',
+    tags: ['Agreement', 'Contract', 'Legal', 'Contractor', 'NDA', 'Milestones', 'Signatures', 'Document', 'Generator'],
+    iconText: 'AGR',
+    iconType: 'pdf',
+    isPopular: true,
+  },
 ];

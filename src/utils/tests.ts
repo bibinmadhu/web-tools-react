@@ -43,6 +43,15 @@ import {
   calculateMarkdownStats,
   renderMarkdownToHtml,
 } from './pdfToMarkdown';
+import {
+  getDefaultContractorAgreement,
+  generateAgreementMarkdown,
+  generateAgreementPdf,
+  generateAgreementDocx,
+  generateAgreementHtml,
+  interpolatePlaceholders,
+} from './agreementGenerator';
+import { getAgreementPresets } from './agreementPresets';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -867,6 +876,65 @@ curl -X POST "https://api.example.com/data" \\
     const html = renderMarkdownToHtml(result.markdown);
     assertTrue(html.includes('<h2'), 'HTML render should include <h2> tag');
     assertTrue(html.includes('<table'), 'HTML render should include <table> tag');
+  });
+
+  // ==========================================
+  // AGREEMENT GENERATOR TESTS
+  // ==========================================
+  await testAsync('Agreement Generator', 'Default Agreement Configuration & Presets', () => {
+    const defaultAgreement = getDefaultContractorAgreement();
+    assertTrue(!!defaultAgreement.title, 'Default agreement should have title');
+    assertTrue(defaultAgreement.party1.entityType === 'company', 'Party 1 should default to company');
+    assertTrue(defaultAgreement.party2.entityType === 'individual', 'Party 2 should default to individual');
+    assertTrue(defaultAgreement.milestones.length === 3, 'Default agreement should have 3 milestones');
+    assertTrue(defaultAgreement.clauses.length >= 8, 'Default agreement should have at least 8 standard clauses');
+
+    const presets = getAgreementPresets();
+    assertTrue(presets.length >= 4, 'Should provide at least 4 presets (Contractor, NDA, Design, MSA)');
+    const ndaPreset = presets.find((p) => p.id === 'mutual-nda');
+    assertTrue(!!ndaPreset, 'Should find Mutual NDA preset');
+    assertTrue(ndaPreset?.config.party1Role === 'Disclosing Party', 'NDA should configure Disclosing Party role');
+  });
+
+  await testAsync('Agreement Generator', 'Placeholder Interpolation & Markdown Generation', () => {
+    const config = getDefaultContractorAgreement();
+    const rawTemplate = 'Pay {{TOTAL_AMOUNT}} on {{NET_DAYS}} net terms in {{JURISDICTION}} to {{CONTRACTOR_NAME}}.';
+    const interpolated = interpolatePlaceholders(rawTemplate, config);
+
+    assertTrue(interpolated.includes('$20,000') || interpolated.includes('20,000'), 'Should interpolate total amount with currency symbol');
+    assertTrue(interpolated.includes('14 net terms'), 'Should interpolate net days');
+    assertTrue(interpolated.includes('State of California'), 'Should interpolate jurisdiction');
+    assertTrue(interpolated.includes('Alex Rivera'), 'Should interpolate contractor name');
+
+    const markdown = generateAgreementMarkdown(config);
+    assertTrue(markdown.includes('---'), 'Markdown should include YAML frontmatter delimiters');
+    assertTrue(markdown.includes('title: "INDEPENDENT CONTRACTOR AGREEMENT"'), 'Markdown should have contract title in frontmatter');
+    assertTrue(markdown.includes('# INDEPENDENT CONTRACTOR AGREEMENT'), 'Markdown should have H1 title');
+    assertTrue(markdown.includes('## 1. SCOPE OF SERVICES'), 'Markdown should have Section 1');
+    assertTrue(markdown.includes('| Milestone Deliverables / Acceptance Criteria | Payout (% / $) | Target Date |'), 'Markdown should render GFM milestone table');
+    assertTrue(markdown.includes('IN WITNESS WHEREOF'), 'Markdown should have execution statement');
+    assertTrue(markdown.includes('**SIGNATURES & EXECUTION**'), 'Markdown should have signatures header');
+  });
+
+  await testAsync('Agreement Generator', 'Multi-Format Document Export (PDF, Docx, HTML)', async () => {
+    const config = getDefaultContractorAgreement();
+
+    // Test PDF Generation
+    const pdfBytes = await generateAgreementPdf(config);
+    assertTrue(pdfBytes instanceof Uint8Array, 'PDF output should be Uint8Array');
+    assertTrue(pdfBytes.length > 500, 'PDF output should contain valid bytes');
+    const headerStr = String.fromCharCode(...pdfBytes.slice(0, 5));
+    assertTrue(headerStr.startsWith('%PDF'), 'PDF output should start with %PDF header');
+
+    // Test Docx Generation
+    const docxBlob = await generateAgreementDocx(config);
+    assertTrue(docxBlob instanceof Blob, 'Docx output should be a Blob');
+    assertTrue(docxBlob.size > 500, 'Docx output should have valid size');
+
+    // Test HTML Generation
+    const html = generateAgreementHtml(config);
+    assertTrue(html.includes('<!DOCTYPE html>'), 'HTML output should be a full standalone document');
+    assertTrue(html.includes('INDEPENDENT CONTRACTOR AGREEMENT'), 'HTML output should include title');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

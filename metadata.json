@@ -1,6 +1,6 @@
 {
   "name": "DevHub - Developer Utilities Platform",
-  "description": "A comprehensive developer tool suite featuring PDF to Markdown conversion, PDF signing, PDF to Docx conversion, Invoice Generator, cURL converters, formatters, security utilities, and code tools with dark mode and search.",
+  "description": "A comprehensive developer tool suite featuring Agreement Generator, PDF to Markdown conversion, PDF signing, PDF to Docx conversion, Invoice Generator, cURL converters, formatters, security utilities, and code tools with dark mode and search.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
