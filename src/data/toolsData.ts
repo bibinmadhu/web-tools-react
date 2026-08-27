@@ -156,6 +156,16 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'color',
   },
   {
+    id: 'qr-generator',
+    name: 'QR Code Generator',
+    description: 'Customizable QR codes with Wi-Fi, vCard, URL, crypto protocols, colors, logos & vector SVG/PNG export',
+    category: 'generators',
+    tags: ['QR Code', 'Generator', 'Barcode', 'Wi-Fi', 'vCard', 'Vector', 'SVG', 'Design'],
+    iconText: 'QR',
+    iconType: 'qr',
+    isPopular: true,
+  },
+  {
     id: 'uuid-generator',
     name: 'UUID Generator',
     description: 'Bulk v4 UUID & password creator',

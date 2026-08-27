@@ -64,6 +64,12 @@ import {
   DEFAULT_MULTI_OBFUSCATOR_OPTIONS,
 } from './multiObfuscator';
 import { MULTI_OBFUSCATOR_PRESETS } from './multiObfuscatorPresets';
+import {
+  formatQrPayload,
+  generateQrSvg,
+  getQrMatrix,
+  DEFAULT_QR_OPTIONS,
+} from './qrGenerator';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -1219,6 +1225,64 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
 
     // 3. Alphabetical tokens should follow format v_... or fn_...
     assertTrue(set1Out.obfuscatedScript.includes('v_') || set1Out.obfuscatedScript.includes('fn_') || set1Out.obfuscatedScript.includes('Cls_'), 'Should contain alphabetical prefixed tokens');
+  });
+
+  await testAsync('QR Code Generator', 'Protocol Payload Formatting & Escaping', async () => {
+    // 1. Wi-Fi formatting
+    const wifiPayload = formatQrPayload('wifi', {
+      wifi: { ssid: 'DevHub-Wifi;5G', password: 'pass:123;secret', encryption: 'WPA', hidden: true },
+    });
+    assertTrue(wifiPayload.startsWith('WIFI:S:DevHub-Wifi\\;5G;'), 'Wi-Fi SSID with special characters should be escaped');
+    assertTrue(wifiPayload.includes('P:pass\\:123\\;secret;'), 'Wi-Fi password with colons and semicolons should be escaped');
+    assertTrue(wifiPayload.includes('H:true;'), 'Hidden network flag should be present');
+
+    // 2. vCard formatting
+    const vcardPayload = formatQrPayload('vcard', {
+      vcard: {
+        firstName: 'Sarah',
+        lastName: 'Connor',
+        organization: 'Cyberdyne Resistance',
+        title: 'Security Commander',
+        email: 'sarah@resistance.org',
+        phone: '+15550199',
+        mobile: '',
+        url: 'https://resistance.org',
+        address: 'Bunker 4',
+        city: 'Los Angeles',
+        state: 'CA',
+        zip: '90001',
+        country: 'USA',
+        note: 'High Priority Contact',
+      },
+    });
+    assertTrue(vcardPayload.includes('BEGIN:VCARD') && vcardPayload.includes('END:VCARD'), 'vCard must have envelope tags');
+    assertTrue(vcardPayload.includes('FN:Sarah Connor'), 'vCard must format full name');
+    assertTrue(vcardPayload.includes('EMAIL;TYPE=INTERNET,WORK:sarah@resistance.org'), 'vCard must format email');
+
+    // 3. Crypto formatting
+    const btcPayload = formatQrPayload('crypto', {
+      crypto: { coin: 'bitcoin', address: 'bc1qexample123', amount: '0.05', label: 'Donation', message: 'Coffee' },
+    });
+    assertEqual(btcPayload, 'bitcoin:bc1qexample123?amount=0.05&label=Donation&message=Coffee', 'Crypto Bitcoin protocol URL formatted accurately');
+  });
+
+  await testAsync('QR Code Generator', 'SVG Generation & Matrix Computation', async () => {
+    const payload = 'https://devhub.local/suite';
+    const svgStr = await generateQrSvg(payload, {
+      fgColor: '#1E293B',
+      bgColor: '#FFFFFF',
+      errorCorrectionLevel: 'H',
+      margin: 2,
+    });
+
+    assertTrue(svgStr.includes('<svg') && svgStr.includes('</svg>'), 'Generated SVG must be valid markup');
+    assertTrue(svgStr.includes('#1E293B'), 'SVG must include foreground color');
+
+    // Test matrix generator
+    const matrixData = getQrMatrix(payload, 'H');
+    assertTrue(matrixData.size > 20, 'QR module dimension should be > 20 for standard payload');
+    assertEqual(matrixData.finderPatterns.length, 3, 'Must have exactly 3 finder patterns');
+    assertEqual(matrixData.matrix.length, matrixData.size, 'Matrix row count matches module count');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
