@@ -22,6 +22,16 @@ export const TOOLS_DATA: DevTool[] = [
     isPopular: true,
   },
   {
+    id: 'multi-obfuscator',
+    name: 'Multiple JS/TS & HTML Obfuscator',
+    description: 'Obfuscate & de-obfuscate 2 sets of JS/TS & HTML with synchronized mapping, tag preservation & ZIP export',
+    category: 'security',
+    tags: ['JavaScript', 'TypeScript', 'HTML', 'Obfuscator', 'Deobfuscate', 'Security', 'Web', 'Mapping'],
+    iconText: '</>',
+    iconType: 'shield',
+    isPopular: true,
+  },
+  {
     id: 'java-obfuscator',
     name: 'Java Code Obfuscator',
     description: 'Obfuscate & de-obfuscate Java packages, classes, methods & fields',

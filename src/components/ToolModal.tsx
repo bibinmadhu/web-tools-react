@@ -14,6 +14,7 @@ import { CronParserTool } from './tools/CronParserTool';
 import { MarkdownPreviewTool } from './tools/MarkdownPreviewTool';
 import { CodeFormatterTool } from './tools/CodeFormatterTool';
 import { JavaObfuscatorTool } from './tools/JavaObfuscatorTool';
+import { MultiObfuscatorTool } from './tools/MultiObfuscatorTool';
 import { PdfSignerTool } from './tools/PdfSignerTool';
 import { PdfConverterTool } from './tools/PdfConverterTool';
 import { JavaFormatterTool } from './tools/JavaFormatterTool';
@@ -47,6 +48,8 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return <CodeObfuscatorTool />;
       case 'java-obfuscator':
         return <JavaObfuscatorTool />;
+      case 'multi-obfuscator':
+        return <MultiObfuscatorTool />;
       case 'base64-encoder':
         return <Base64Tool />;
       case 'regex-tester':
@@ -88,7 +91,7 @@ export const ToolModal: React.FC<ToolModalProps> = ({
     }
   };
 
-  const isWideModal = ['pdf-signer', 'pdf-converter', 'pdf-to-markdown', 'invoice-generator', 'agreement-generator', 'curl-converter', 'java-formatter'].includes(tool.id);
+  const isWideModal = ['pdf-signer', 'pdf-converter', 'pdf-to-markdown', 'invoice-generator', 'agreement-generator', 'curl-converter', 'java-formatter', 'multi-obfuscator'].includes(tool.id);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6">

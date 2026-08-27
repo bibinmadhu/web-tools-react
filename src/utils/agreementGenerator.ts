@@ -98,6 +98,7 @@ export interface AgreementConfig {
   effectiveDate: string;
   expirationDate?: string;
   classification: string; // "CONFIDENTIAL & PROPRIETARY"
+  currency?: InvoiceCurrency; // Generic document-level currency
   party1Role: string; // "Client"
   party2Role: string; // "Contractor"
   party1: AgreementParty;
@@ -147,6 +148,37 @@ export const TAX_ID_PRESETS = [
   'CNPJ / CPF (Brazil)',
   'Custom Tax / Reg ID',
 ];
+
+/**
+ * Gets the primary document-level currency, falling back cleanly.
+ */
+export function getAgreementCurrency(config: AgreementConfig): InvoiceCurrency {
+  return config.currency || config.paymentTerms?.currency || POPULAR_CURRENCIES[0];
+}
+
+/**
+ * Formats monetary amounts according to the agreement document's generic currency configuration.
+ */
+export function formatAgreementCurrency(
+  amount: number,
+  currency: InvoiceCurrency,
+  includeCode: boolean = false
+): string {
+  const decimals = currency.decimals !== undefined ? currency.decimals : 0;
+  const absVal = Math.abs(amount || 0);
+  const formattedNum = absVal.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+  const symbol = currency.symbol || '$';
+  let formatted = currency.position === 'after'
+    ? `${formattedNum} ${symbol}`
+    : `${symbol}${formattedNum}`;
+  if (includeCode && currency.code) {
+    formatted = `${formatted} ${currency.code}`;
+  }
+  return formatted;
+}
 
 /**
  * Default sample contractor agreement configuration matching the reference markdown.
@@ -281,7 +313,7 @@ export function getDefaultContractorAgreement(): AgreementConfig {
           subNumber: '2.1',
           title: 'Total Fee',
           content:
-            'As full compensation for the satisfactory performance and completion of the Services, Client shall pay Contractor the total fixed fee of ${{TOTAL_AMOUNT}} {{CURRENCY_CODE}} (the "Contract Price").',
+            'As full compensation for the satisfactory performance and completion of the Services, Client shall pay Contractor the total fixed fee of {{TOTAL_AMOUNT}} {{CURRENCY_CODE}} (the "Contract Price").',
         },
         {
           id: 'sc2_2',
@@ -458,6 +490,7 @@ export function getDefaultContractorAgreement(): AgreementConfig {
     effectiveDate: '2026-10-24',
     expirationDate: '2027-04-30',
     classification: 'CONFIDENTIAL & PROPRIETARY',
+    currency: usdCurrency,
     party1Role: 'Client',
     party2Role: 'Contractor',
     party1,
@@ -492,22 +525,26 @@ export function getDefaultContractorAgreement(): AgreementConfig {
  * Replaces placeholders in clause texts with actual agreement variables.
  */
 export function interpolatePlaceholders(text: string, config: AgreementConfig): string {
-  const symbol = config.paymentTerms.currency.symbol;
-  const totalStr = `${symbol}${config.paymentTerms.totalAmount.toLocaleString()}`;
+  const currency = getAgreementCurrency(config);
+  const totalFormatted = formatAgreementCurrency(config.paymentTerms.totalAmount, currency);
 
   let result = text
-    .replace(/\$\{\{TOTAL_AMOUNT\}\}/g, totalStr)
-    .replace(/\{\{TOTAL_AMOUNT\}\}/g, totalStr)
-    .replace(/\{\{CURRENCY_CODE\}\}/g, config.paymentTerms.currency.code)
+    .replace(/\$\{\{TOTAL_AMOUNT\}\}/g, totalFormatted)
+    .replace(/\{\{TOTAL_AMOUNT\}\}/g, totalFormatted)
+    .replace(/\{\{CURRENCY_CODE\}\}/g, currency.code)
+    .replace(/\{\{CURRENCY_SYMBOL\}\}/g, currency.symbol)
+    .replace(/\{\{CURRENCY_NAME\}\}/g, currency.name)
+    .replace(/\{\{CURRENCY\}\}/g, `${currency.name} (${currency.code})`)
     .replace(/\{\{NET_DAYS\}\}/g, `${config.paymentTerms.netDays}`)
     .replace(/\{\{WARRANTY_DAYS\}\}/g, `${config.paymentTerms.warrantyDays}`)
+    .replace(/\{\{LATE_FEE_PERCENT\}\}/g, `${config.paymentTerms.lateFeePercent || 1.5}%`)
     .replace(/\{\{JURISDICTION\}\}/g, config.governingJurisdiction)
     .replace(/\{\{CITY\}\}/g, config.governingCity)
     .replace(/\{\{EFFECTIVE_DATE\}\}/g, config.effectiveDate)
     .replace(/\{\{CLIENT_NAME\}\}/g, config.party1.name)
     .replace(/\{\{CONTRACTOR_NAME\}\}/g, config.party2.name);
 
-  // Clean up any unintended double currency symbols
+  // Clean up any double symbols (e.g. if template had ${{TOTAL_AMOUNT}} and currency is €)
   result = result.replace(/\$\$+/g, '$');
   return result;
 }
@@ -571,12 +608,13 @@ export function generateAgreementMarkdown(config: AgreementConfig): string {
 
       // If this is Section 2.2, insert Milestone Payment Table
       if (clause.sectionNumber === '2' && sub.subNumber === '2.2' && config.milestones.length > 0) {
-        clauseLines.push('\n| Milestone Deliverables / Acceptance Criteria | Payout (% / $) | Target Date |');
+        const curr = getAgreementCurrency(config);
+        const headerLabel = curr.code ? `Payout (% / ${curr.code})` : `Payout (% / ${curr.symbol})`;
+        clauseLines.push(`\n| Milestone Deliverables / Acceptance Criteria | ${headerLabel} | Target Date |`);
         clauseLines.push('| --- | --- | --- |');
 
-        const sym = config.paymentTerms.currency.symbol;
         for (const m of config.milestones) {
-          const formattedAmt = `${m.percentage}% (${sym}${m.amount.toLocaleString()})`;
+          const formattedAmt = `${m.percentage}% (${formatAgreementCurrency(m.amount, curr)})`;
           clauseLines.push(`| **${m.name}**: ${m.deliverables} | ${formattedAmt} | ${m.targetDate || '[Date]'} |`);
         }
       }
@@ -658,6 +696,17 @@ export function cleanPdfText(text: string): string {
     .replace(/\u00A9/g, '(c)')
     .replace(/\u00AE/g, '(R)')
     .replace(/\u2122/g, '(TM)')
+    // Replace non-WinAnsi currency symbols with readable ASCII abbreviations
+    .replace(/₹/g, 'Rs. ')
+    .replace(/₩/g, 'KRW ')
+    .replace(/₪/g, 'ILS ')
+    .replace(/₫/g, 'VND ')
+    .replace(/₺/g, 'TRY ')
+    .replace(/₴/g, 'UAH ')
+    .replace(/₽/g, 'RUB ')
+    .replace(/₸/g, 'KZT ')
+    .replace(/₦/g, 'NGN ')
+    .replace(/₵/g, 'GHS ')
     // Strip markdown formatting symbols like **bold**, *italic*, ###
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
@@ -1001,7 +1050,10 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
           font: fontTitle,
           color: rgb(0.15, 0.2, 0.35),
         });
-        currentPage.drawText('Payout (% / $)', {
+        const curr = getAgreementCurrency(config);
+        const colHeader = curr.code ? `Payout (% / ${curr.code})` : `Payout (% / ${curr.symbol})`;
+
+        currentPage.drawText(cleanPdfText(colHeader), {
           x: marginX + 320,
           y: y - 10,
           size: 7.5,
@@ -1017,7 +1069,6 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
         });
         y -= 15;
 
-        const sym = config.paymentTerms.currency.symbol || '$';
         for (let mIdx = 0; mIdx < config.milestones.length; mIdx++) {
           const m = config.milestones[mIdx];
           if (mIdx % 2 === 1) {
@@ -1037,7 +1088,8 @@ export async function generateAgreementPdf(config: AgreementConfig): Promise<Uin
             font: fontBody,
             color: rgb(0.2, 0.25, 0.35),
           });
-          currentPage.drawText(`${m.percentage}% (${sym}${m.amount.toLocaleString()})`, {
+          const formattedPayout = `${m.percentage}% (${formatAgreementCurrency(m.amount, curr)})`;
+          currentPage.drawText(cleanPdfText(formattedPayout), {
             x: marginX + 320,
             y: y - 10,
             size: 7,

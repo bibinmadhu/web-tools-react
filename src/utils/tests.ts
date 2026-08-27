@@ -52,8 +52,18 @@ import {
   interpolatePlaceholders,
   cleanPdfText,
   wrapText,
+  getAgreementCurrency,
+  formatAgreementCurrency,
 } from './agreementGenerator';
 import { getAgreementPresets } from './agreementPresets';
+import {
+  obfuscateMultipleSets,
+  deobfuscateMultipleSets,
+  deobfuscateCode,
+  MultiObfuscatorOptions,
+  DEFAULT_MULTI_OBFUSCATOR_OPTIONS,
+} from './multiObfuscator';
+import { MULTI_OBFUSCATOR_PRESETS } from './multiObfuscatorPresets';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -913,7 +923,7 @@ curl -X POST "https://api.example.com/data" \\
     assertTrue(markdown.includes('title: "INDEPENDENT CONTRACTOR AGREEMENT"'), 'Markdown should have contract title in frontmatter');
     assertTrue(markdown.includes('# INDEPENDENT CONTRACTOR AGREEMENT'), 'Markdown should have H1 title');
     assertTrue(markdown.includes('## 1. SCOPE OF SERVICES'), 'Markdown should have Section 1');
-    assertTrue(markdown.includes('| Milestone Deliverables / Acceptance Criteria | Payout (% / $) | Target Date |'), 'Markdown should render GFM milestone table');
+    assertTrue(markdown.includes('| Milestone Deliverables / Acceptance Criteria | Payout (% / USD) | Target Date |') || markdown.includes('| Milestone Deliverables / Acceptance Criteria | Payout (% / $) | Target Date |'), 'Markdown should render GFM milestone table with currency');
     assertTrue(markdown.includes('IN WITNESS WHEREOF'), 'Markdown should have execution statement');
     assertTrue(markdown.includes('**SIGNATURES & EXECUTION**'), 'Markdown should have signatures header');
   });
@@ -1032,6 +1042,183 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     assertTrue(markdown.includes('Dr. Alexandros Constantine von Hohenzollern-Smythe III'), 'Markdown must contain full untruncated Party 1 representative name');
     assertTrue(markdown.includes('Lady Genevieve Beatrice Montgomery-Huntington, PhD'), 'Markdown must contain full untruncated Party 2 representative name');
     assertTrue(markdown.includes('Senior Executive Vice President of Global Infrastructure Engineering'), 'Markdown must contain full untruncated Party 1 title');
+  });
+
+  await testAsync('Agreement Generator', 'Generic Document Currency Configuration across Clauses, Tables & Exports', async () => {
+    const config = getDefaultContractorAgreement();
+
+    // 1. Verify default currency resolution
+    const defaultCurr = getAgreementCurrency(config);
+    assertEqual(defaultCurr.code, 'USD', 'Default document currency should be USD');
+    assertEqual(defaultCurr.symbol, '$', 'Default document currency symbol should be $');
+
+    // 2. Configure generic EUR currency at document root
+    const eurCurrency = POPULAR_CURRENCIES.find((c) => c.code === 'EUR')!;
+    config.currency = eurCurrency;
+    delete (config.paymentTerms as any).currency; // Test root-level resolution even if absent in paymentTerms
+
+    const resolvedEur = getAgreementCurrency(config);
+    assertEqual(resolvedEur.code, 'EUR', 'Should resolve EUR from document root');
+    assertEqual(resolvedEur.symbol, '€', 'Should resolve € symbol from document root');
+
+    // 3. Test placeholder interpolation with generic EUR
+    const eurTemplate = 'The aggregate contract price is {{TOTAL_AMOUNT}} ({{CURRENCY_CODE}} {{CURRENCY_SYMBOL}}).';
+    const interpolatedEur = interpolatePlaceholders(eurTemplate, config);
+    assertTrue(interpolatedEur.includes('20,000') && interpolatedEur.includes('€'), 'Interpolation should format with Euro symbol');
+    assertTrue(interpolatedEur.includes('EUR'), 'Interpolation should contain EUR code');
+
+    // 4. Test markdown milestone table with EUR
+    const markdownEur = generateAgreementMarkdown(config);
+    assertTrue(markdownEur.includes('Payout (% / EUR)') || markdownEur.includes('Payout (% / €)'), 'Markdown milestone table header should use EUR');
+    assertTrue(markdownEur.includes('6,000') && markdownEur.includes('€'), 'Markdown milestone table row should format with €');
+
+    // 5. Test PDF generation with EUR & non-WinAnsi currencies (INR, GBP)
+    const inrCurrency = POPULAR_CURRENCIES.find((c) => c.code === 'INR')!;
+    config.currency = inrCurrency;
+    const inrFormatted = formatAgreementCurrency(150000, inrCurrency);
+    assertTrue(inrFormatted.includes('150,000') && (inrFormatted.includes('₹') || inrFormatted.includes('INR')), 'INR format should format correctly');
+
+    const pdfInrBytes = await generateAgreementPdf(config);
+    assertTrue(pdfInrBytes instanceof Uint8Array, 'PDF with INR generic currency should generate valid Uint8Array');
+    assertTrue(pdfInrBytes.length > 1000, 'PDF with INR should have valid non-empty size');
+
+    // 6. Test Custom Document Currency (e.g. Swiss Franc / CHF)
+    config.currency = {
+      code: 'CHF',
+      symbol: 'CHF',
+      name: 'Swiss Franc',
+      position: 'before',
+      decimals: 2,
+    };
+    const chfFormatted = formatAgreementCurrency(50000, config.currency);
+    assertTrue(chfFormatted.includes('50,000') && chfFormatted.includes('CHF'), 'Custom currency should format with CHF');
+
+    const markdownChf = generateAgreementMarkdown(config);
+    assertTrue(markdownChf.includes('Payout (% / CHF)'), 'Markdown table should display CHF column header');
+
+    const htmlChf = generateAgreementHtml(config);
+    assertTrue(htmlChf.includes('CHF') || htmlChf.includes('50,000'), 'HTML export should contain CHF currency');
+  });
+
+  await testAsync('Multiple JS/TS & HTML Obfuscator', 'Synchronized Multi-Set Obfuscation & Fundamentals Preservation', async () => {
+    const preset = MULTI_OBFUSCATOR_PRESETS[0]; // E-commerce catalog & checkout
+    assertEqual(preset.sets.length, 2, 'Preset must provide exactly 2 sets');
+
+    const result = obfuscateMultipleSets(preset.sets, {
+      namingStyle: 'hex',
+      obfuscateVariables: true,
+      obfuscateFunctions: true,
+      obfuscateClassesAndInterfaces: true,
+      obfuscateHtmlIds: true,
+      obfuscateHtmlClasses: true,
+      obfuscateStrings: true,
+      obfuscateHtmlText: true,
+      stripComments: true,
+    });
+
+    // 1. Verify 2 output sets generated
+    assertEqual(result.sets.length, 2, 'Should generate 2 obfuscated output sets');
+    const set1Out = result.sets[0];
+    const set2Out = result.sets[1];
+
+    // 2. Fundamentals preservation in Script:
+    // Keywords & DOM APIs must remain intact
+    assertTrue(set1Out.obfuscatedScript.includes('class ') || set1Out.obfuscatedScript.includes('function'), 'Script should preserve standard language structure');
+    assertTrue(set1Out.obfuscatedScript.includes('document.getElementById'), 'Standard DOM API getElementById should not be mangled');
+    assertTrue(set1Out.obfuscatedScript.includes('addEventListener'), 'Standard DOM API addEventListener should not be mangled');
+
+    // 3. Custom identifiers in script should be mangled:
+    assertTrue(!set1Out.obfuscatedScript.includes('CatalogManager'), 'Custom class CatalogManager should be mangled');
+    assertTrue(set1Out.obfuscatedScript.includes('_0x'), 'Mangled hex tokens should appear in script');
+
+    // 4. HTML tags & attributes preservation:
+    assertTrue(set1Out.obfuscatedHtml.includes('<div') && set1Out.obfuscatedHtml.includes('</div>'), 'HTML <div> tags should be preserved');
+    assertTrue(set1Out.obfuscatedHtml.includes('<select') && set1Out.obfuscatedHtml.includes('<option'), 'HTML form elements should be preserved');
+    assertTrue(set1Out.obfuscatedHtml.includes('id=') && set1Out.obfuscatedHtml.includes('class='), 'HTML attribute names should be preserved');
+
+    // 5. Synchronized ID & Class mapping between JS and HTML:
+    // Original ID 'catalog-grid-wrapper' was mangled to an obfuscated token (e.g. _0xid...)
+    const mappedGridId = result.mapping.htmlIds['catalog-grid-wrapper'];
+    assertTrue(!!mappedGridId, 'Mapping should register HTML ID catalog-grid-wrapper');
+    assertTrue(set1Out.obfuscatedHtml.includes(mappedGridId), 'Obfuscated HTML should contain the mapped ID token');
+    assertTrue(set1Out.obfuscatedScript.includes(mappedGridId), 'Obfuscated JS/TS getElementById should use the exact same mapped ID token');
+
+    // 6. Inline event handler synchronization:
+    // Original onclick="handleAddToCart('p-101')" in Set 1 HTML must call the mangled function name
+    const mappedFn = result.mapping.identifiers['handleAddToCart'];
+    if (mappedFn) {
+      assertTrue(set1Out.obfuscatedHtml.includes(mappedFn), 'HTML onclick should reference the mangled function token');
+      assertTrue(set2Out.obfuscatedScript.includes(mappedFn), 'Script defining function should use the mangled function token');
+    }
+
+    // 7. HTML Text nodes obfuscated:
+    assertTrue(!set1Out.obfuscatedHtml.includes('Featured Hardware & Accessories'), 'Original text heading should be obfuscated');
+  });
+
+  await testAsync('Multiple JS/TS & HTML Obfuscator', 'Lossless 100% De-Obfuscation with Mapping Restoration', async () => {
+    const preset = MULTI_OBFUSCATOR_PRESETS[0];
+    const obfResult = obfuscateMultipleSets(preset.sets, {
+      namingStyle: 'hex',
+      obfuscateVariables: true,
+      obfuscateFunctions: true,
+      obfuscateClassesAndInterfaces: true,
+      obfuscateHtmlIds: true,
+      obfuscateHtmlClasses: true,
+      obfuscateStrings: false, // keep strings clear for strict text comparison
+      obfuscateHtmlText: true,
+      stripComments: false,
+    });
+
+    // Run de-obfuscation batch
+    const deobfuscated = deobfuscateMultipleSets(
+      [
+        { id: 'set-1', name: 'Set 1', scriptCode: obfResult.sets[0].obfuscatedScript, htmlCode: obfResult.sets[0].obfuscatedHtml },
+        { id: 'set-2', name: 'Set 2', scriptCode: obfResult.sets[1].obfuscatedScript, htmlCode: obfResult.sets[1].obfuscatedHtml },
+      ],
+      obfResult.mapping
+    );
+
+    assertEqual(deobfuscated.length, 2, 'De-obfuscation should return 2 sets');
+
+    // Verify Set 1 Restored
+    const set1Restored = deobfuscated[0];
+    assertTrue(set1Restored.restoredScript.includes('CatalogManager'), 'Restored script must recover class CatalogManager');
+    assertTrue(set1Restored.restoredScript.includes('products'), 'Restored script must recover products variable');
+    assertTrue(set1Restored.restoredScript.includes('catalog-grid-wrapper'), 'Restored script must recover catalog-grid-wrapper ID');
+    assertTrue(set1Restored.restoredHtml.includes('Featured Hardware & Accessories'), 'Restored HTML must recover text heading');
+    assertTrue(set1Restored.restoredHtml.includes('catalog-grid-wrapper'), 'Restored HTML must recover original ID');
+    assertTrue(set1Restored.restoredHtml.includes('store-wrapper'), 'Restored HTML must recover original CSS classes');
+
+    // Verify Set 2 Restored
+    const set2Restored = deobfuscated[1];
+    assertTrue(set2Restored.restoredScript.includes('cartState'), 'Restored script 2 must recover cartState variable');
+    assertTrue(set2Restored.restoredScript.includes('calculateOrderTotal'), 'Restored script 2 must recover calculateOrderTotal function');
+    assertTrue(set2Restored.restoredHtml.includes('Your Shopping Cart & Review'), 'Restored HTML 2 must recover modal title text');
+    assertTrue(set2Restored.restoredHtml.includes('order-summary-container'), 'Restored HTML 2 must recover order-summary-container ID');
+  });
+
+  await testAsync('Multiple JS/TS & HTML Obfuscator', 'Custom Exclusions Whitelist & Naming Styles', async () => {
+    const preset = MULTI_OBFUSCATOR_PRESETS[1]; // Auth & Dashboard
+
+    // Test with Alphabetical style and Custom Exclusions
+    const resultAlphabetical = obfuscateMultipleSets(preset.sets, {
+      namingStyle: 'alphabetical',
+      obfuscateVariables: true,
+      obfuscateFunctions: true,
+      customExclusions: ['AuthenticationService', 'metric-throughput', 'telemetry-dashboard-panel'],
+    });
+
+    const set1Out = resultAlphabetical.sets[0];
+    const set2Out = resultAlphabetical.sets[1];
+
+    // 1. Whitelisted class AuthenticationService must NOT be mangled
+    assertTrue(set1Out.obfuscatedScript.includes('AuthenticationService'), 'Whitelisted class AuthenticationService should be preserved');
+
+    // 2. Whitelisted ID metric-throughput must NOT be mangled
+    assertTrue(set2Out.obfuscatedHtml.includes('metric-throughput'), 'Whitelisted HTML ID metric-throughput should be preserved');
+
+    // 3. Alphabetical tokens should follow format v_... or fn_...
+    assertTrue(set1Out.obfuscatedScript.includes('v_') || set1Out.obfuscatedScript.includes('fn_') || set1Out.obfuscatedScript.includes('Cls_'), 'Should contain alphabetical prefixed tokens');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

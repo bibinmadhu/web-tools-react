@@ -9,6 +9,7 @@ import {
   Building2,
   User,
   DollarSign,
+  Coins,
   Layers,
   Settings,
   Eye,
@@ -29,9 +30,12 @@ import {
   generateAgreementPdf,
   generateAgreementDocx,
   generateAgreementHtml,
+  getAgreementCurrency,
+  formatAgreementCurrency,
   JURISDICTION_PRESETS,
 } from '../../utils/agreementGenerator';
 import { getAgreementPresets, AgreementPreset } from '../../utils/agreementPresets';
+import { POPULAR_CURRENCIES, InvoiceCurrency } from '../../utils/invoiceGenerator';
 import { PartyEditor } from './agreement/PartyEditor';
 import { MilestoneEditor } from './agreement/MilestoneEditor';
 import { ClauseEditor } from './agreement/ClauseEditor';
@@ -54,6 +58,38 @@ export const AgreementGeneratorTool: React.FC = () => {
   const showStatus = (msg: string) => {
     setStatusMessage(msg);
     setTimeout(() => setStatusMessage(null), 3000);
+  };
+
+  const currentCurrency = getAgreementCurrency(config);
+
+  const handleCurrencySelect = (currencyCode: string) => {
+    const found = POPULAR_CURRENCIES.find((c) => c.code === currencyCode);
+    if (found) {
+      setConfig({
+        ...config,
+        currency: found,
+        paymentTerms: {
+          ...config.paymentTerms,
+          currency: found,
+        },
+      });
+      showStatus(`Document currency set to ${found.name} (${found.symbol})`);
+    }
+  };
+
+  const handleCustomCurrencyUpdate = (updates: Partial<InvoiceCurrency>) => {
+    const updatedCurrency: InvoiceCurrency = {
+      ...currentCurrency,
+      ...updates,
+    };
+    setConfig({
+      ...config,
+      currency: updatedCurrency,
+      paymentTerms: {
+        ...config.paymentTerms,
+        currency: updatedCurrency,
+      },
+    });
   };
 
   const handleSelectPreset = (presetId: string) => {
@@ -250,41 +286,60 @@ export const AgreementGeneratorTool: React.FC = () => {
 
       {/* Main Action Bar */}
       <div className="bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-xs flex flex-wrap items-center justify-between gap-3">
-        {/* Layout Switcher */}
-        <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/90 p-1 rounded-xl">
-          <button
-            type="button"
-            onClick={() => setViewLayout('split')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-              viewLayout === 'split'
-                ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
-          >
-            Split View
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewLayout('form')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-              viewLayout === 'form'
-                ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
-          >
-            Form Only
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewLayout('preview')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-              viewLayout === 'preview'
-                ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
-          >
-            Preview Only
-          </button>
+        {/* Layout Switcher & Global Currency */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/90 p-1 rounded-xl">
+            <button
+              type="button"
+              onClick={() => setViewLayout('split')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                viewLayout === 'split'
+                  ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+              }`}
+            >
+              Split View
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewLayout('form')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                viewLayout === 'form'
+                  ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+              }`}
+            >
+              Form Only
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewLayout('preview')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                viewLayout === 'preview'
+                  ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+              }`}
+            >
+              Preview Only
+            </button>
+          </div>
+
+          {/* Global Currency Quick Switcher */}
+          <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/90 px-2.5 py-1 rounded-xl border border-slate-200/80 dark:border-slate-700/80">
+            <Coins className="w-3.5 h-3.5 text-indigo-500" />
+            <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400">Currency:</span>
+            <select
+              value={currentCurrency.code}
+              onChange={(e) => handleCurrencySelect(e.target.value)}
+              className="bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold px-2 py-0.5 rounded-lg border border-slate-300 dark:border-slate-600 focus:ring-1 focus:ring-indigo-500"
+            >
+              {POPULAR_CURRENCIES.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.code} ({c.symbol})
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* Export / Download Buttons */}
@@ -518,6 +573,108 @@ export const AgreementGeneratorTool: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Global Document Currency Configuration */}
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                        <Coins className="w-3.5 h-3.5 text-indigo-500" />
+                        <span>Document Currency (Generic Configuration)</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        Configures the primary currency used across all agreement clauses, milestone payment tables, fee summaries, Markdown, PDF, and Word exports.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Popular Currencies Quick Selector */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {POPULAR_CURRENCIES.map((c) => {
+                      const isSelected = currentCurrency.code === c.code;
+                      return (
+                        <button
+                          key={c.code}
+                          type="button"
+                          onClick={() => handleCurrencySelect(c.code)}
+                          className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition-all ${
+                            isSelected
+                              ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs'
+                              : 'bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-indigo-400'
+                          }`}
+                        >
+                          {c.code} ({c.symbol})
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Custom Currency Details Inputs */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                        Currency Code
+                      </label>
+                      <input
+                        type="text"
+                        value={currentCurrency.code}
+                        onChange={(e) => handleCustomCurrencyUpdate({ code: e.target.value.toUpperCase() })}
+                        placeholder="e.g. USD, EUR, INR"
+                        className="w-full px-2.5 py-1.5 text-xs font-mono font-bold bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-500 uppercase"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                        Symbol
+                      </label>
+                      <input
+                        type="text"
+                        value={currentCurrency.symbol}
+                        onChange={(e) => handleCustomCurrencyUpdate({ symbol: e.target.value })}
+                        placeholder="e.g. $, €, £, ₹"
+                        className="w-full px-2.5 py-1.5 text-xs font-bold bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                        Currency Name
+                      </label>
+                      <input
+                        type="text"
+                        value={currentCurrency.name}
+                        onChange={(e) => handleCustomCurrencyUpdate({ name: e.target.value })}
+                        placeholder="e.g. US Dollar"
+                        className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                        Symbol Position
+                      </label>
+                      <select
+                        value={currentCurrency.position || 'before'}
+                        onChange={(e) => handleCustomCurrencyUpdate({ position: e.target.value as 'before' | 'after' })}
+                        className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-500"
+                      >
+                        <option value="before">Before Amount ($100)</option>
+                        <option value="after">After Amount (100 kr)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Format Sample Banner */}
+                  <div className="bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200/60 dark:border-indigo-800/60 p-2.5 rounded-xl text-xs flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                      <span className="text-slate-700 dark:text-slate-300">
+                        Active document format:
+                      </span>
+                    </div>
+                    <div className="font-mono font-bold text-indigo-700 dark:text-indigo-300">
+                      Sample Fee: {formatAgreementCurrency(config.paymentTerms.totalAmount || 20000, currentCurrency)}
+                    </div>
+                  </div>
+                </div>
+
                 {/* Jurisdiction & Dispute Resolution */}
                 <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
                   <div className="flex items-center justify-between">
@@ -626,7 +783,13 @@ export const AgreementGeneratorTool: React.FC = () => {
               <MilestoneEditor
                 paymentTerms={config.paymentTerms}
                 milestones={config.milestones}
-                onUpdatePaymentTerms={(paymentTerms) => setConfig({ ...config, paymentTerms })}
+                onUpdatePaymentTerms={(paymentTerms) =>
+                  setConfig({
+                    ...config,
+                    currency: paymentTerms.currency,
+                    paymentTerms,
+                  })
+                }
                 onUpdateMilestones={(milestones) => setConfig({ ...config, milestones })}
               />
             )}

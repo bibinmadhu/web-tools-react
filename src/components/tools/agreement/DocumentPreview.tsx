@@ -1,5 +1,11 @@
 import React from 'react';
-import { AgreementConfig, interpolatePlaceholders, generateAgreementMarkdown } from '../../../utils/agreementGenerator';
+import {
+  AgreementConfig,
+  interpolatePlaceholders,
+  generateAgreementMarkdown,
+  getAgreementCurrency,
+  formatAgreementCurrency,
+} from '../../../utils/agreementGenerator';
 import { Copy, Check, FileText, Download, Code, Eye, Sparkles } from 'lucide-react';
 
 interface DocumentPreviewProps {
@@ -19,7 +25,8 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
 }) => {
   const md = generateAgreementMarkdown(config);
   const activeClauses = config.clauses.filter((c) => c.enabled);
-  const sym = config.paymentTerms.currency.symbol;
+  const curr = getAgreementCurrency(config);
+  const sym = curr.symbol || '$';
 
   const p1Address = [config.party1.addressStreet, config.party1.addressCity, config.party1.addressState, config.party1.addressCountry]
     .filter(Boolean)
@@ -200,7 +207,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                                 <thead>
                                   <tr className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold border-b border-slate-200 dark:border-slate-700">
                                     <th className="p-2.5">Milestone Deliverables / Acceptance Criteria</th>
-                                    <th className="p-2.5 w-36">Payout (% / $)</th>
+                                    <th className="p-2.5 w-36">Payout (% / {curr.code || sym})</th>
                                     <th className="p-2.5 w-28">Target Date</th>
                                   </tr>
                                 </thead>
@@ -212,7 +219,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                                         <span className="text-slate-600 dark:text-slate-400">{m.deliverables}</span>
                                       </td>
                                       <td className="p-2.5 font-mono font-semibold text-indigo-600 dark:text-indigo-400">
-                                        {m.percentage}% ({sym}{m.amount.toLocaleString()})
+                                        {m.percentage}% ({formatAgreementCurrency(m.amount, curr)})
                                       </td>
                                       <td className="p-2.5 font-mono text-slate-500">{m.targetDate || '[Date]'}</td>
                                     </tr>

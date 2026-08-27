@@ -24,6 +24,7 @@ export function getAgreementPresets(): AgreementPreset[] {
     effectiveDate: '2026-10-24',
     expirationDate: '2028-10-24',
     classification: 'STRICTLY CONFIDENTIAL & PROPRIETARY',
+    currency: usd,
     party1Role: 'Disclosing / Receiving Party 1',
     party2Role: 'Disclosing / Receiving Party 2',
     party1: {
@@ -185,6 +186,7 @@ export function getAgreementPresets(): AgreementPreset[] {
     title: 'FREELANCE DESIGN & CREATIVE ASSETS AGREEMENT',
     subtitle: 'Brand Identity, UI/UX Design & Design System Deliverables',
     contractId: 'DES-2026-CR8',
+    currency: usd,
     party1Role: 'Client',
     party2Role: 'Designer',
     party2: {
@@ -258,6 +260,7 @@ export function getAgreementPresets(): AgreementPreset[] {
     title: 'MASTER SERVICES AGREEMENT',
     subtitle: 'Enterprise Cloud Infrastructure & Software Engineering Framework',
     contractId: 'MSA-ENT-2026-904',
+    currency: usd,
     paymentTerms: {
       paymentModel: 'hourly_rate',
       totalAmount: 45000,
