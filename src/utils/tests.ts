@@ -1385,6 +1385,8 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     assertTrue(sessionScript.includes('"token": token'), 'Must update session headers with token');
     assertTrue(sessionScript.includes('url_2 ='), 'Must define subsequent request url');
     assertTrue(sessionScript.includes('session.get(url_2'), 'Must execute subsequent request using session');
+    assertTrue(!sessionScript.includes('{method}'), 'Must not contain undefined {method} in f-strings');
+    assertTrue(sessionScript.includes('[GET]'), 'Must interpolate concrete HTTP method [GET]');
 
     // Test modular functions structure
     const funcScript = generateChainedPythonScript(

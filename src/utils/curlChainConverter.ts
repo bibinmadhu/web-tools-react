@@ -352,7 +352,7 @@ function generateSingleCallSnippet(
   }
 
   if (options.printResponses) {
-    lines.push(`${indent}print(f"[{method}] {${urlVar}} -> Status {${resVar}.status_code}")`);
+    lines.push(`${indent}print(f"[${pyEscape(method)}] {${urlVar}} -> Status {${resVar}.status_code}")`);
     lines.push(`${indent}try:`);
     lines.push(`${indent}    print(json.dumps(${resVar}.json(), indent=2))`);
     lines.push(`${indent}except Exception:`);
