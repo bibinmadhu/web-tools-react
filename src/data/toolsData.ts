@@ -71,6 +71,16 @@ export const TOOLS_DATA: DevTool[] = [
     isPopular: true,
   },
   {
+    id: 'curl-chain-to-python',
+    name: 'cURL Auth Chain to Python',
+    description: 'Convert login cURL & subsequent cURLs into an authenticated Python script with configurable token extraction & headers',
+    category: 'converters',
+    tags: ['cURL', 'Python', 'Converter', 'Auth', 'Token', 'API', 'Chain', 'Requests'],
+    iconText: 'Py🔗',
+    iconType: 'curl',
+    isPopular: true,
+  },
+  {
     id: 'curl-converter',
     name: 'cURL to Python / TypeScript',
     description: 'Convert cURL to production-ready Python (requests, httpx, aiohttp) & TypeScript (fetch, axios, ky) scripts',

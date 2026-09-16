@@ -70,6 +70,16 @@ import {
   getQrMatrix,
   DEFAULT_QR_OPTIONS,
 } from './qrGenerator';
+import {
+  generateChainedPythonScript,
+  generateTokenExtractionCode,
+  prepareSubsequentRequest,
+  getHeaderValuePythonExpr,
+  DEFAULT_EXTRACTION_CONFIG,
+  DEFAULT_INJECTION_CONFIG,
+  DEFAULT_OPTIONS,
+} from './curlChainConverter';
+import { CURL_CHAIN_PRESETS } from './curlChainPresets';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -1283,6 +1293,110 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     assertTrue(matrixData.size > 20, 'QR module dimension should be > 20 for standard payload');
     assertEqual(matrixData.finderPatterns.length, 3, 'Must have exactly 3 finder patterns');
     assertEqual(matrixData.matrix.length, matrixData.size, 'Matrix row count matches module count');
+  });
+
+  await testAsync('cURL Auth Chain Converter', 'Token Extraction Code Generation', async () => {
+    // 1. Root token extraction (e.g. "token" or "access_token")
+    const codeToken = generateTokenExtractionCode({
+      source: 'json_body',
+      keyPath: 'token',
+      variableName: 'token',
+    }, 'login_res', '    ');
+    assertTrue(codeToken.includes('login_res.json()'), 'Should parse json from login_res');
+    assertTrue(codeToken.includes('token = login_data.get("token")'), 'Should extract token from root dict');
+
+    // 2. Nested token extraction (e.g. "data.auth.token")
+    const codeNested = generateTokenExtractionCode({
+      source: 'json_body',
+      keyPath: 'data.auth.token',
+      variableName: 'jwt_key',
+    }, 'res', '  ');
+    assertTrue(codeNested.includes('jwt_key = login_data.get("data", {}).get("auth", {}).get("token")'), 'Should extract nested path safely');
+
+    // 3. Response header extraction (e.g. "X-Auth-Token")
+    const codeHeader = generateTokenExtractionCode({
+      source: 'response_header',
+      keyPath: '',
+      headerName: 'X-Auth-Token',
+      variableName: 'auth_token',
+    }, 'login_res', '    ');
+    assertTrue(codeHeader.includes('login_res.headers.get("X-Auth-Token")'), 'Should extract from headers');
+
+    // 4. Cookie extraction
+    const codeCookie = generateTokenExtractionCode({
+      source: 'cookie',
+      keyPath: 'session_id',
+      variableName: 'session_tok',
+    }, 'login_res', '    ');
+    assertTrue(codeCookie.includes('login_res.cookies.get("session_id")'), 'Should extract from cookies');
+  });
+
+  await testAsync('cURL Auth Chain Converter', 'Header Value Expressions & Auth Replacement', async () => {
+    // 1. Bearer format
+    const exprBearer = getHeaderValuePythonExpr({
+      placement: 'header',
+      headerName: 'Authorization',
+      headerFormat: 'Bearer {token}',
+      queryParamName: 'token',
+      bodyFieldName: 'token',
+    }, 'token');
+    assertEqual(exprBearer, 'f"Bearer {token}"', 'Bearer format expression should match');
+
+    // 2. Raw token format (user specified "token" header)
+    const exprRaw = getHeaderValuePythonExpr({
+      placement: 'header',
+      headerName: 'token',
+      headerFormat: '{token}',
+      queryParamName: 'token',
+      bodyFieldName: 'token',
+    }, 'my_token');
+    assertEqual(exprRaw, 'my_token', 'Raw token format should directly use variable name');
+
+    // 3. Prepare subsequent request: removes existing stale header
+    const parsedSubsequent = parseCurlCommand(
+      'curl -X GET https://api.example.com/me -H "Authorization: Bearer static_old" -H "Accept: application/json"'
+    );
+    const prep = prepareSubsequentRequest(parsedSubsequent, {
+      placement: 'header',
+      headerName: 'token',
+      headerFormat: '{token}',
+      queryParamName: 'token',
+      bodyFieldName: 'token',
+    }, 'token');
+    assertEqual(prep.headers['Authorization'], undefined, 'Conflicting static Authorization header should be stripped');
+    assertEqual(prep.headers['Accept'], 'application/json', 'Non-auth header should be preserved');
+    assertTrue(prep.replacedExistingAuth, 'Should flag replaced existing auth');
+  });
+
+  await testAsync('cURL Auth Chain Converter', 'Full Chained Script Generation (Session & Functions)', async () => {
+    const preset = CURL_CHAIN_PRESETS[1]; // Simple "token" header preset
+    const sessionScript = generateChainedPythonScript(
+      preset.loginCurl,
+      preset.subsequentRequests,
+      preset.extraction,
+      preset.injection,
+      { ...DEFAULT_OPTIONS, structure: 'session' }
+    );
+
+    assertTrue(sessionScript.includes('import requests'), 'Session script must import requests');
+    assertTrue(sessionScript.includes('session = requests.Session()'), 'Must initialize session');
+    assertTrue(sessionScript.includes('login_res = session.post('), 'Must invoke login endpoint');
+    assertTrue(sessionScript.includes('token = login_data.get("token")'), 'Must extract token');
+    assertTrue(sessionScript.includes('"token": token'), 'Must update session headers with token');
+    assertTrue(sessionScript.includes('url_2 ='), 'Must define subsequent request url');
+    assertTrue(sessionScript.includes('session.get(url_2'), 'Must execute subsequent request using session');
+
+    // Test modular functions structure
+    const funcScript = generateChainedPythonScript(
+      preset.loginCurl,
+      preset.subsequentRequests,
+      preset.extraction,
+      preset.injection,
+      { ...DEFAULT_OPTIONS, structure: 'functions' }
+    );
+    assertTrue(funcScript.includes('def login() -> str:'), 'Must generate typed login function');
+    assertTrue(funcScript.includes('def step_1_check_account_status(token: str) -> dict:'), 'Must generate step functions with token parameter');
+    assertTrue(funcScript.includes('def main():'), 'Must generate main orchestrator');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
