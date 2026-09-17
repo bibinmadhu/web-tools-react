@@ -254,9 +254,9 @@ export const TOOLS_DATA: DevTool[] = [
   {
     id: 'curl-db-chain-to-python',
     name: 'Curl & Database Chain to Python',
-    description: 'Chain cURL login authentication with subsequent cURL requests and PostgreSQL database operations via pg8000 into clean Python test scripts',
+    description: 'Chain cURL login authentication with subsequent cURL requests and database operations (PostgreSQL via pg8000, SQL Server via pymssql/pyodbc, Oracle via oracledb) into robust Python test scripts',
     category: 'testing',
-    tags: ['Testing', 'cURL', 'PostgreSQL', 'pg8000', 'Python', 'Database', 'Integration Test'],
+    tags: ['Testing', 'cURL', 'PostgreSQL', 'SQL Server', 'Oracle', 'pg8000', 'pymssql', 'oracledb', 'Python', 'Database', 'Integration Test'],
     iconText: '🗄️',
     iconType: 'database',
     isPopular: true,

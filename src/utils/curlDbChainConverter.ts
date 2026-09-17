@@ -47,19 +47,40 @@ export interface DatabaseChainStep {
 
 export type AnyChainStep = CurlChainStep | DatabaseChainStep;
 
-export interface PostgresConfig {
+export type SupportedDatabaseType = 'postgresql' | 'sqlserver' | 'oracle';
+export type SqlServerDriver = 'pymssql' | 'pyodbc';
+
+export interface DatabaseConfig {
+  dbType: SupportedDatabaseType;
   host: string;
   port: number;
-  database: string;
+  database: string; // Database name, or service name/SID for Oracle
   user: string;
   password: string;
+
+  // PostgreSQL specific
+  interfaceStyle?: 'dbapi' | 'native'; // pg8000.dbapi vs pg8000.native
+
+  // SQL Server specific
+  sqlServerDriver?: SqlServerDriver;
+  sqlServerOdbcDriverName?: string; // e.g. 'ODBC Driver 18 for SQL Server'
+  trustServerCertificate?: boolean;
+
+  // Oracle specific
+  oracleServiceName?: string;
+  oracleConnectionType?: 'service_name' | 'sid' | 'dsn';
+  oracleSid?: string;
+
+  // Common flags
   ssl: boolean;
   useEnvVars: boolean;
   connectionMode: 'shared' | 'per_step';
-  interfaceStyle: 'dbapi' | 'native';
   autoCommit: boolean;
   returnAsDict: boolean;
 }
+
+// Backward compatibility alias for PostgreSQL
+export type PostgresConfig = DatabaseConfig;
 
 export interface PythonDbChainOptions {
   httpLibrary: PythonClientLibrary;
@@ -74,7 +95,8 @@ export interface PythonDbChainOptions {
   modularMethods: boolean;
 }
 
-export const DEFAULT_POSTGRES_CONFIG: PostgresConfig = {
+export const DEFAULT_DATABASE_CONFIG: DatabaseConfig = {
+  dbType: 'postgresql',
   host: 'localhost',
   port: 5432,
   database: 'postgres',
@@ -84,9 +106,17 @@ export const DEFAULT_POSTGRES_CONFIG: PostgresConfig = {
   useEnvVars: true,
   connectionMode: 'shared',
   interfaceStyle: 'dbapi',
+  sqlServerDriver: 'pymssql',
+  sqlServerOdbcDriverName: 'ODBC Driver 18 for SQL Server',
+  trustServerCertificate: true,
+  oracleServiceName: 'XEPDB1',
+  oracleConnectionType: 'service_name',
+  oracleSid: 'ORCL',
   autoCommit: true,
   returnAsDict: true,
 };
+
+export const DEFAULT_POSTGRES_CONFIG: PostgresConfig = DEFAULT_DATABASE_CONFIG;
 
 export const DEFAULT_DB_CHAIN_OPTIONS: PythonDbChainOptions = {
   httpLibrary: 'requests',
@@ -100,6 +130,58 @@ export const DEFAULT_DB_CHAIN_OPTIONS: PythonDbChainOptions = {
   baseUrlVariable: true,
   modularMethods: true,
 };
+
+export function getDatabaseMeta(dbType: SupportedDatabaseType, config?: Partial<DatabaseConfig>) {
+  switch (dbType) {
+    case 'sqlserver':
+      const isOdbc = config?.sqlServerDriver === 'pyodbc';
+      return {
+        type: 'sqlserver' as const,
+        name: 'Microsoft SQL Server',
+        shortName: 'SQL Server',
+        defaultPort: 1433,
+        defaultUser: 'sa',
+        defaultDb: 'master',
+        driverPackage: isOdbc ? 'pyodbc' : 'pymssql',
+        pipPackage: isOdbc ? 'pyodbc' : 'pymssql',
+        envPrefix: 'MSSQL',
+        paramStyle: isOdbc ? '?' : '%s',
+        badge: isOdbc ? 'SQL Server (pyodbc)' : 'SQL Server (pymssql)',
+        description: 'Enterprise T-SQL database connected via pure-python DB-API pymssql or pyodbc',
+      };
+    case 'oracle':
+      return {
+        type: 'oracle' as const,
+        name: 'Oracle Database',
+        shortName: 'Oracle DB',
+        defaultPort: 1521,
+        defaultUser: 'SYSTEM',
+        defaultDb: 'XEPDB1',
+        driverPackage: 'oracledb',
+        pipPackage: 'oracledb',
+        envPrefix: 'ORACLE',
+        paramStyle: ':1 or :name',
+        badge: 'Oracle (oracledb thin)',
+        description: 'Oracle enterprise database connected in zero-client Thin Mode via modern oracledb',
+      };
+    case 'postgresql':
+    default:
+      return {
+        type: 'postgresql' as const,
+        name: 'PostgreSQL',
+        shortName: 'PostgreSQL',
+        defaultPort: 5432,
+        defaultUser: 'postgres',
+        defaultDb: 'postgres',
+        driverPackage: 'pg8000',
+        pipPackage: 'pg8000',
+        envPrefix: 'PG',
+        paramStyle: '%s',
+        badge: 'PostgreSQL (pg8000)',
+        description: 'Pure-python PostgreSQL driver with DB-API 2.0 and native interfaces',
+      };
+  }
+}
 
 function pyEscape(str: string): string {
   return str
@@ -131,30 +213,73 @@ export function sanitizeApiMethodName(name: string, stepIndex: number): string {
 }
 
 /**
- * Generates the Python code for configuring and connecting to PostgreSQL via pg8000
+ * Generates the Python code for database connection configuration
  */
-function renderPostgresConfigBlock(pgConfig: PostgresConfig): string[] {
+function renderDatabaseConfigBlock(dbConfig: DatabaseConfig): string[] {
   const lines: string[] = [];
+  const meta = getDatabaseMeta(dbConfig.dbType, dbConfig);
+
   lines.push('# ==============================================================================');
-  lines.push('# PostgreSQL Database Configuration (pg8000)');
+  lines.push(`# ${meta.name} Configuration (${meta.driverPackage})`);
   lines.push('# ==============================================================================');
 
-  if (pgConfig.useEnvVars) {
-    lines.push(`PG_HOST = os.environ.get("PGHOST", "${pyEscape(pgConfig.host || 'localhost')}")`);
-    lines.push(`PG_PORT = int(os.environ.get("PGPORT", "${pgConfig.port || 5432}"))`);
-    lines.push(`PG_DATABASE = os.environ.get("PGDATABASE", "${pyEscape(pgConfig.database || 'postgres')}")`);
-    lines.push(`PG_USER = os.environ.get("PGUSER", "${pyEscape(pgConfig.user || 'postgres')}")`);
-    lines.push(`PG_PASSWORD = os.environ.get("PGPASSWORD", "${pyEscape(pgConfig.password || '')}")`);
-  } else {
-    lines.push(`PG_HOST = "${pyEscape(pgConfig.host || 'localhost')}"`);
-    lines.push(`PG_PORT = ${pgConfig.port || 5432}`);
-    lines.push(`PG_DATABASE = "${pyEscape(pgConfig.database || 'postgres')}"`);
-    lines.push(`PG_USER = "${pyEscape(pgConfig.user || 'postgres')}"`);
-    lines.push(`PG_PASSWORD = "${pyEscape(pgConfig.password || '')}"`);
-  }
+  if (dbConfig.dbType === 'postgresql') {
+    if (dbConfig.useEnvVars) {
+      lines.push(`PG_HOST = os.environ.get("PGHOST", "${pyEscape(dbConfig.host || 'localhost')}")`);
+      lines.push(`PG_PORT = int(os.environ.get("PGPORT", "${dbConfig.port || 5432}"))`);
+      lines.push(`PG_DATABASE = os.environ.get("PGDATABASE", "${pyEscape(dbConfig.database || 'postgres')}")`);
+      lines.push(`PG_USER = os.environ.get("PGUSER", "${pyEscape(dbConfig.user || 'postgres')}")`);
+      lines.push(`PG_PASSWORD = os.environ.get("PGPASSWORD", "${pyEscape(dbConfig.password || '')}")`);
+    } else {
+      lines.push(`PG_HOST = "${pyEscape(dbConfig.host || 'localhost')}"`);
+      lines.push(`PG_PORT = ${dbConfig.port || 5432}`);
+      lines.push(`PG_DATABASE = "${pyEscape(dbConfig.database || 'postgres')}"`);
+      lines.push(`PG_USER = "${pyEscape(dbConfig.user || 'postgres')}"`);
+      lines.push(`PG_PASSWORD = "${pyEscape(dbConfig.password || '')}"`);
+    }
 
-  if (pgConfig.ssl) {
-    lines.push('PG_SSL_CONTEXT = ssl.create_default_context()');
+    if (dbConfig.ssl) {
+      lines.push('PG_SSL_CONTEXT = ssl.create_default_context()');
+    }
+  } else if (dbConfig.dbType === 'sqlserver') {
+    const isOdbc = dbConfig.sqlServerDriver === 'pyodbc';
+    if (dbConfig.useEnvVars) {
+      lines.push(`MSSQL_HOST = os.environ.get("MSSQL_HOST", "${pyEscape(dbConfig.host || 'localhost')}")`);
+      lines.push(`MSSQL_PORT = int(os.environ.get("MSSQL_PORT", "${dbConfig.port || 1433}"))`);
+      lines.push(`MSSQL_DATABASE = os.environ.get("MSSQL_DATABASE", "${pyEscape(dbConfig.database || 'master')}")`);
+      lines.push(`MSSQL_USER = os.environ.get("MSSQL_USER", "${pyEscape(dbConfig.user || 'sa')}")`);
+      lines.push(`MSSQL_PASSWORD = os.environ.get("MSSQL_PASSWORD", "${pyEscape(dbConfig.password || '')}")`);
+      if (isOdbc) {
+        lines.push(`MSSQL_ODBC_DRIVER = os.environ.get("MSSQL_ODBC_DRIVER", "${pyEscape(dbConfig.sqlServerOdbcDriverName || 'ODBC Driver 18 for SQL Server')}")`);
+      }
+    } else {
+      lines.push(`MSSQL_HOST = "${pyEscape(dbConfig.host || 'localhost')}"`);
+      lines.push(`MSSQL_PORT = ${dbConfig.port || 1433}`);
+      lines.push(`MSSQL_DATABASE = "${pyEscape(dbConfig.database || 'master')}"`);
+      lines.push(`MSSQL_USER = "${pyEscape(dbConfig.user || 'sa')}"`);
+      lines.push(`MSSQL_PASSWORD = "${pyEscape(dbConfig.password || '')}"`);
+      if (isOdbc) {
+        lines.push(`MSSQL_ODBC_DRIVER = "${pyEscape(dbConfig.sqlServerOdbcDriverName || 'ODBC Driver 18 for SQL Server')}"`);
+      }
+    }
+    if (isOdbc && dbConfig.trustServerCertificate) {
+      lines.push('MSSQL_TRUST_CERT = True');
+    }
+  } else if (dbConfig.dbType === 'oracle') {
+    const serviceOrSid = dbConfig.oracleServiceName || dbConfig.database || 'XEPDB1';
+    if (dbConfig.useEnvVars) {
+      lines.push(`ORACLE_HOST = os.environ.get("ORACLE_HOST", "${pyEscape(dbConfig.host || 'localhost')}")`);
+      lines.push(`ORACLE_PORT = int(os.environ.get("ORACLE_PORT", "${dbConfig.port || 1521}"))`);
+      lines.push(`ORACLE_SERVICE_NAME = os.environ.get("ORACLE_SERVICE_NAME", "${pyEscape(serviceOrSid)}")`);
+      lines.push(`ORACLE_USER = os.environ.get("ORACLE_USER", "${pyEscape(dbConfig.user || 'SYSTEM')}")`);
+      lines.push(`ORACLE_PASSWORD = os.environ.get("ORACLE_PASSWORD", "${pyEscape(dbConfig.password || '')}")`);
+    } else {
+      lines.push(`ORACLE_HOST = "${pyEscape(dbConfig.host || 'localhost')}"`);
+      lines.push(`ORACLE_PORT = ${dbConfig.port || 1521}`);
+      lines.push(`ORACLE_SERVICE_NAME = "${pyEscape(serviceOrSid)}"`);
+      lines.push(`ORACLE_USER = "${pyEscape(dbConfig.user || 'SYSTEM')}"`);
+      lines.push(`ORACLE_PASSWORD = "${pyEscape(dbConfig.password || '')}"`);
+    }
   }
 
   lines.push('');
@@ -164,34 +289,83 @@ function renderPostgresConfigBlock(pgConfig: PostgresConfig): string[] {
 /**
  * Generates database connection helper function
  */
-function renderGetDbConnectionFunction(pgConfig: PostgresConfig, options: PythonDbChainOptions): string[] {
+function renderGetDbConnectionFunction(dbConfig: DatabaseConfig, options: PythonDbChainOptions): string[] {
   const lines: string[] = [];
   const ind = '    ';
-  const sslArg = pgConfig.ssl ? ', ssl_context=PG_SSL_CONTEXT' : '';
 
-  if (pgConfig.interfaceStyle === 'native') {
-    const retType = options.useTypeHints ? ' -> pg8000.native.Connection' : '';
+  if (dbConfig.dbType === 'postgresql') {
+    const sslArg = dbConfig.ssl ? ', ssl_context=PG_SSL_CONTEXT' : '';
+    if (dbConfig.interfaceStyle === 'native') {
+      const retType = options.useTypeHints ? ' -> pg8000.native.Connection' : '';
+      lines.push(`def get_db_connection()${retType}:`);
+      lines.push(`${ind}"""Establishes native connection to PostgreSQL via pg8000.native"""`);
+      lines.push(`${ind}return pg8000.native.Connection(`);
+      lines.push(`${ind}${ind}host=PG_HOST,`);
+      lines.push(`${ind}${ind}port=PG_PORT,`);
+      lines.push(`${ind}${ind}database=PG_DATABASE,`);
+      lines.push(`${ind}${ind}user=PG_USER,`);
+      lines.push(`${ind}${ind}password=PG_PASSWORD${sslArg}`);
+      lines.push(`${ind})`);
+    } else {
+      const retType = options.useTypeHints ? ' -> pg8000.dbapi.Connection' : '';
+      lines.push(`def get_db_connection()${retType}:`);
+      lines.push(`${ind}"""Establishes DB-API 2.0 connection to PostgreSQL via pg8000.dbapi"""`);
+      lines.push(`${ind}return pg8000.dbapi.connect(`);
+      lines.push(`${ind}${ind}host=PG_HOST,`);
+      lines.push(`${ind}${ind}port=PG_PORT,`);
+      lines.push(`${ind}${ind}database=PG_DATABASE,`);
+      lines.push(`${ind}${ind}user=PG_USER,`);
+      lines.push(`${ind}${ind}password=PG_PASSWORD${sslArg}`);
+      lines.push(`${ind})`);
+    }
+  } else if (dbConfig.dbType === 'sqlserver') {
+    if (dbConfig.sqlServerDriver === 'pyodbc') {
+      const retType = options.useTypeHints ? ' -> pyodbc.Connection' : '';
+      lines.push(`def get_db_connection()${retType}:`);
+      lines.push(`${ind}"""Establishes connection to Microsoft SQL Server via pyodbc"""`);
+      lines.push(`${ind}conn_str = (`);
+      lines.push(`${ind}${ind}f"DRIVER={{{MSSQL_ODBC_DRIVER}}};"`);
+      lines.push(`${ind}${ind}f"SERVER={MSSQL_HOST},{MSSQL_PORT};"`);
+      lines.push(`${ind}${ind}f"DATABASE={MSSQL_DATABASE};"`);
+      lines.push(`${ind}${ind}f"UID={MSSQL_USER};"`);
+      lines.push(`${ind}${ind}f"PWD={MSSQL_PASSWORD};"`);
+      if (dbConfig.trustServerCertificate) {
+        lines.push(`${ind}${ind}"TrustServerCertificate=yes;"`);
+      }
+      lines.push(`${ind})`);
+      lines.push(`${ind}return pyodbc.connect(conn_str, autocommit=${dbConfig.autoCommit ? 'True' : 'False'})`);
+    } else {
+      // pymssql
+      const retType = options.useTypeHints ? ' -> pymssql.Connection' : '';
+      lines.push(`def get_db_connection()${retType}:`);
+      lines.push(`${ind}"""Establishes connection to Microsoft SQL Server via pymssql"""`);
+      lines.push(`${ind}return pymssql.connect(`);
+      lines.push(`${ind}${ind}server=MSSQL_HOST,`);
+      lines.push(`${ind}${ind}port=MSSQL_PORT,`);
+      lines.push(`${ind}${ind}database=MSSQL_DATABASE,`);
+      lines.push(`${ind}${ind}user=MSSQL_USER,`);
+      lines.push(`${ind}${ind}password=MSSQL_PASSWORD,`);
+      lines.push(`${ind}${ind}as_dict=${dbConfig.returnAsDict ? 'True' : 'False'},`);
+      lines.push(`${ind}${ind}autocommit=${dbConfig.autoCommit ? 'True' : 'False'}`);
+      lines.push(`${ind})`);
+    }
+  } else if (dbConfig.dbType === 'oracle') {
+    const retType = options.useTypeHints ? ' -> oracledb.Connection' : '';
     lines.push(`def get_db_connection()${retType}:`);
-    lines.push(`${ind}"""Establishes native connection to PostgreSQL via pg8000.native"""`);
-    lines.push(`${ind}return pg8000.native.Connection(`);
-    lines.push(`${ind}${ind}host=PG_HOST,`);
-    lines.push(`${ind}${ind}port=PG_PORT,`);
-    lines.push(`${ind}${ind}database=PG_DATABASE,`);
-    lines.push(`${ind}${ind}user=PG_USER,`);
-    lines.push(`${ind}${ind}password=PG_PASSWORD${sslArg}`);
+    lines.push(`${ind}"""Establishes connection to Oracle Database in Thin Mode via oracledb"""`);
+    lines.push(`${ind}conn = oracledb.connect(`);
+    lines.push(`${ind}${ind}user=ORACLE_USER,`);
+    lines.push(`${ind}${ind}password=ORACLE_PASSWORD,`);
+    lines.push(`${ind}${ind}host=ORACLE_HOST,`);
+    lines.push(`${ind}${ind}port=ORACLE_PORT,`);
+    lines.push(`${ind}${ind}service_name=ORACLE_SERVICE_NAME`);
     lines.push(`${ind})`);
-  } else {
-    const retType = options.useTypeHints ? ' -> pg8000.dbapi.Connection' : '';
-    lines.push(`def get_db_connection()${retType}:`);
-    lines.push(`${ind}"""Establishes DB-API 2.0 connection to PostgreSQL via pg8000.dbapi"""`);
-    lines.push(`${ind}return pg8000.dbapi.connect(`);
-    lines.push(`${ind}${ind}host=PG_HOST,`);
-    lines.push(`${ind}${ind}port=PG_PORT,`);
-    lines.push(`${ind}${ind}database=PG_DATABASE,`);
-    lines.push(`${ind}${ind}user=PG_USER,`);
-    lines.push(`${ind}${ind}password=PG_PASSWORD${sslArg}`);
-    lines.push(`${ind})`);
+    if (dbConfig.autoCommit) {
+      lines.push(`${ind}conn.autocommit = True`);
+    }
+    lines.push(`${ind}return conn`);
   }
+
   lines.push('');
   return lines;
 }
@@ -202,28 +376,34 @@ function renderGetDbConnectionFunction(pgConfig: PostgresConfig, options: Python
 function renderDatabaseStepFunction(
   step: DatabaseChainStep,
   stepNum: number,
-  pgConfig: PostgresConfig,
+  dbConfig: DatabaseConfig,
   options: PythonDbChainOptions,
   tokenVar: string
 ): string[] {
   const lines: string[] = [];
   const ind = '    ';
+  const meta = getDatabaseMeta(dbConfig.dbType, dbConfig);
   const fnName = sanitizeDbMethodName(step.name || `db_query_${stepNum}`, stepNum);
-  const connType = options.useTypeHints
-    ? pgConfig.interfaceStyle === 'native'
-      ? 'db_conn: pg8000.native.Connection'
-      : 'db_conn: pg8000.dbapi.Connection'
-    : 'db_conn';
+
+  let connType = 'db_conn';
+  if (options.useTypeHints) {
+    if (dbConfig.dbType === 'postgresql') {
+      connType = dbConfig.interfaceStyle === 'native' ? 'db_conn: pg8000.native.Connection' : 'db_conn: pg8000.dbapi.Connection';
+    } else if (dbConfig.dbType === 'sqlserver') {
+      connType = dbConfig.sqlServerDriver === 'pyodbc' ? 'db_conn: pyodbc.Connection' : 'db_conn: pymssql.Connection';
+    } else if (dbConfig.dbType === 'oracle') {
+      connType = 'db_conn: oracledb.Connection';
+    }
+  }
 
   // Parameters list for method
-  // If params expression references tokenVar or other vars, include tokenVar in signature
-  const needsToken = step.params.includes(tokenVar) || step.query.includes('%s') || step.query.includes(':');
+  const needsToken = step.params.includes(tokenVar) || step.query.includes('%s') || step.query.includes(':') || step.query.includes('?');
   const tokenParam = needsToken ? (options.useTypeHints ? `, ${tokenVar}: str = ""` : `, ${tokenVar}=""`) : '';
   const returnType = options.useTypeHints ? (step.fetchMode === 'execute' ? ' -> int' : ' -> list') : '';
 
   lines.push(`def ${fnName}(${connType}${tokenParam})${returnType}:`);
-  lines.push(`${ind}"""[Step ${stepNum} - PostgreSQL DB] ${step.name || 'Execute Query'}"""`);
-  lines.push(`${ind}print(f"\\n[{stepNum}/DB] Executing query: ${pyEscape(step.name || 'Database Operation')}...")`);
+  lines.push(`${ind}"""[Step ${stepNum} - ${meta.shortName}] ${step.name || 'Execute Query'}"""`);
+  lines.push(`${ind}print(f"\\n[{stepNum}/DB] Executing ${meta.shortName} query: ${pyEscape(step.name || 'Database Operation')}...")`);
 
   const cleanQuery = step.query.trim().replace(/\r\n/g, '\n');
   lines.push(`${ind}query = """${cleanQuery}"""`);
@@ -236,12 +416,15 @@ function renderDatabaseStepFunction(
       paramsExpr = rawParams;
     } else if (rawParams.startsWith('[') && rawParams.endsWith(']')) {
       paramsExpr = rawParams;
+    } else if (rawParams.startsWith('{') && rawParams.endsWith('}')) {
+      paramsExpr = rawParams;
     } else {
       paramsExpr = ifNotTuple(rawParams);
     }
   }
 
-  if (pgConfig.interfaceStyle === 'native') {
+  // PostgreSQL Native mode
+  if (dbConfig.dbType === 'postgresql' && dbConfig.interfaceStyle === 'native') {
     lines.push(`${ind}try:`);
     if (paramsExpr !== '()') {
       lines.push(`${ind}${ind}results = db_conn.run(query, ${paramsExpr})`);
@@ -255,86 +438,110 @@ function renderDatabaseStepFunction(
     }
     if (options.includeAssertions && step.assertRowCount) {
       const cond = step.assertCondition || 'len(results) > 0';
-      lines.push(`${ind}${ind}assert ${cond}, f"PostgreSQL Assertion failed on step ${stepNum}: condition '{${pyEscape(cond)}}' was false"`);
+      lines.push(`${ind}${ind}assert ${cond}, f"${meta.shortName} Assertion failed on step ${stepNum}: condition '{${pyEscape(cond)}}' was false"`);
       lines.push(`${ind}${ind}print(f"  ✓ Assertion passed: {${pyEscape(cond)}}")`);
     }
     lines.push(`${ind}${ind}return results`);
     lines.push(`${ind}except Exception as e:`);
-    lines.push(`${ind}${ind}print(f"  ✗ PostgreSQL Error on step ${stepNum}: {e}")`);
+    lines.push(`${ind}${ind}print(f"  ✗ ${meta.shortName} Error on step ${stepNum}: {e}")`);
     lines.push(`${ind}${ind}raise`);
-  } else {
-    // Standard DBAPI (cursor pattern)
-    lines.push(`${ind}cursor = db_conn.cursor()`);
-    lines.push(`${ind}try:`);
-    if (paramsExpr !== '()') {
-      lines.push(`${ind}${ind}cursor.execute(query, ${paramsExpr})`);
-    } else {
-      lines.push(`${ind}${ind}cursor.execute(query)`);
-    }
-
-    if (step.fetchMode === 'fetchall') {
-      if (pgConfig.returnAsDict) {
-        lines.push(`${ind}${ind}columns = [desc[0] for desc in cursor.description] if cursor.description else []`);
-        lines.push(`${ind}${ind}raw_rows = cursor.fetchall()`);
-        lines.push(`${ind}${ind}rows = [dict(zip(columns, row)) for row in raw_rows]`);
-      } else {
-        lines.push(`${ind}${ind}rows = cursor.fetchall()`);
-      }
-
-      if (options.printDbResults) {
-        lines.push(`${ind}${ind}print(f"  ✓ DB query returned {len(rows)} row(s):")`);
-        lines.push(`${ind}${ind}for idx, r in enumerate(rows[:5]):`);
-        lines.push(`${ind}${ind}    print(f"    [{idx + 1}] {r}")`);
-      }
-
-      if (options.includeAssertions && step.assertRowCount) {
-        const cond = step.assertCondition || 'len(rows) > 0';
-        lines.push(`${ind}${ind}assert ${cond}, f"PostgreSQL Assertion failed on step ${stepNum}: condition '{${pyEscape(cond)}}' was false"`);
-        lines.push(`${ind}${ind}print(f"  ✓ Assertion passed: {${pyEscape(cond)}}")`);
-      }
-
-      lines.push(`${ind}${ind}return rows`);
-    } else if (step.fetchMode === 'fetchone') {
-      if (pgConfig.returnAsDict) {
-        lines.push(`${ind}${ind}columns = [desc[0] for desc in cursor.description] if cursor.description else []`);
-        lines.push(`${ind}${ind}raw_row = cursor.fetchone()`);
-        lines.push(`${ind}${ind}row = dict(zip(columns, raw_row)) if raw_row else None`);
-      } else {
-        lines.push(`${ind}${ind}row = cursor.fetchone()`);
-      }
-
-      if (options.printDbResults) {
-        lines.push(`${ind}${ind}print(f"  ✓ DB query returned single row: {row}")`);
-      }
-
-      if (options.includeAssertions && step.assertRowCount) {
-        const cond = step.assertCondition || 'row is not None';
-        lines.push(`${ind}${ind}assert ${cond}, f"PostgreSQL Assertion failed on step ${stepNum}: condition '{${pyEscape(cond)}}' was false"`);
-        lines.push(`${ind}${ind}print(f"  ✓ Assertion passed: {${pyEscape(cond)}}")`);
-      }
-
-      lines.push(`${ind}${ind}return row`);
-    } else {
-      // DML (execute, commit)
-      if (pgConfig.autoCommit) {
-        lines.push(`${ind}${ind}db_conn.commit()`);
-      }
-      lines.push(`${ind}${ind}rowcount = cursor.rowcount`);
-      if (options.printDbResults) {
-        lines.push(`${ind}${ind}print(f"  ✓ DB mutation executed. Affected rows: {rowcount}")`);
-      }
-      lines.push(`${ind}${ind}return rowcount`);
-    }
-
-    lines.push(`${ind}except Exception as e:`);
-    if (pgConfig.autoCommit) {
-      lines.push(`${ind}${ind}db_conn.rollback()`);
-    }
-    lines.push(`${ind}${ind}print(f"  ✗ PostgreSQL Error on step ${stepNum}: {e}")`);
-    lines.push(`${ind}${ind}raise`);
-    lines.push(`${ind}finally:`);
-    lines.push(`${ind}${ind}cursor.close()`);
+    lines.push('');
+    return lines;
   }
+
+  // Standard DB-API cursor pattern (PostgreSQL pg8000.dbapi, SQL Server pymssql/pyodbc, Oracle oracledb)
+  if (dbConfig.dbType === 'sqlserver' && dbConfig.sqlServerDriver !== 'pyodbc' && dbConfig.returnAsDict) {
+    lines.push(`${ind}cursor = db_conn.cursor(as_dict=True)`);
+  } else {
+    lines.push(`${ind}cursor = db_conn.cursor()`);
+  }
+
+  lines.push(`${ind}try:`);
+  if (paramsExpr !== '()') {
+    lines.push(`${ind}${ind}cursor.execute(query, ${paramsExpr})`);
+  } else {
+    lines.push(`${ind}${ind}cursor.execute(query)`);
+  }
+
+  if (step.fetchMode === 'fetchall') {
+    if (dbConfig.dbType === 'sqlserver' && dbConfig.sqlServerDriver !== 'pyodbc' && dbConfig.returnAsDict) {
+      // pymssql with as_dict=True directly yields dictionary rows
+      lines.push(`${ind}${ind}rows = cursor.fetchall()`);
+    } else if (dbConfig.dbType === 'oracle') {
+      lines.push(`${ind}${ind}columns = [desc[0].lower() for desc in cursor.description] if cursor.description else []`);
+      lines.push(`${ind}${ind}raw_rows = cursor.fetchall()`);
+      lines.push(`${ind}${ind}rows = [dict(zip(columns, row)) for row in raw_rows] if columns else raw_rows`);
+    } else if (dbConfig.returnAsDict) {
+      lines.push(`${ind}${ind}columns = [desc[0] for desc in cursor.description] if cursor.description else []`);
+      lines.push(`${ind}${ind}raw_rows = cursor.fetchall()`);
+      lines.push(`${ind}${ind}rows = [dict(zip(columns, row)) for row in raw_rows] if columns else raw_rows`);
+    } else {
+      lines.push(`${ind}${ind}rows = cursor.fetchall()`);
+    }
+
+    if (options.printDbResults) {
+      lines.push(`${ind}${ind}print(f"  ✓ DB query returned {len(rows)} row(s):")`);
+      lines.push(`${ind}${ind}for idx, r in enumerate(rows[:5]):`);
+      lines.push(`${ind}${ind}    print(f"    [{idx + 1}] {r}")`);
+    }
+
+    if (options.includeAssertions && step.assertRowCount) {
+      const cond = step.assertCondition || 'len(rows) > 0';
+      lines.push(`${ind}${ind}assert ${cond}, f"${meta.shortName} Assertion failed on step ${stepNum}: condition '{${pyEscape(cond)}}' was false"`);
+      lines.push(`${ind}${ind}print(f"  ✓ Assertion passed: {${pyEscape(cond)}}")`);
+    }
+
+    lines.push(`${ind}${ind}return rows`);
+  } else if (step.fetchMode === 'fetchone') {
+    if (dbConfig.dbType === 'sqlserver' && dbConfig.sqlServerDriver !== 'pyodbc' && dbConfig.returnAsDict) {
+      lines.push(`${ind}${ind}row = cursor.fetchone()`);
+    } else if (dbConfig.dbType === 'oracle') {
+      lines.push(`${ind}${ind}columns = [desc[0].lower() for desc in cursor.description] if cursor.description else []`);
+      lines.push(`${ind}${ind}raw_row = cursor.fetchone()`);
+      lines.push(`${ind}${ind}row = dict(zip(columns, raw_row)) if raw_row and columns else raw_row`);
+    } else if (dbConfig.returnAsDict) {
+      lines.push(`${ind}${ind}columns = [desc[0] for desc in cursor.description] if cursor.description else []`);
+      lines.push(`${ind}${ind}raw_row = cursor.fetchone()`);
+      lines.push(`${ind}${ind}row = dict(zip(columns, raw_row)) if raw_row and columns else raw_row`);
+    } else {
+      lines.push(`${ind}${ind}row = cursor.fetchone()`);
+    }
+
+    if (options.printDbResults) {
+      lines.push(`${ind}${ind}print(f"  ✓ DB query returned single row: {row}")`);
+    }
+
+    if (options.includeAssertions && step.assertRowCount) {
+      const cond = step.assertCondition || 'row is not None';
+      lines.push(`${ind}${ind}assert ${cond}, f"${meta.shortName} Assertion failed on step ${stepNum}: condition '{${pyEscape(cond)}}' was false"`);
+      lines.push(`${ind}${ind}print(f"  ✓ Assertion passed: {${pyEscape(cond)}}")`);
+    }
+
+    lines.push(`${ind}${ind}return row`);
+  } else {
+    // DML (execute, commit)
+    if (dbConfig.autoCommit) {
+      lines.push(`${ind}${ind}if not getattr(db_conn, 'autocommit', False):`);
+      lines.push(`${ind}${ind}    db_conn.commit()`);
+    }
+    lines.push(`${ind}${ind}rowcount = cursor.rowcount`);
+    if (options.printDbResults) {
+      lines.push(`${ind}${ind}print(f"  ✓ DB mutation executed. Affected rows: {rowcount}")`);
+    }
+    lines.push(`${ind}${ind}return rowcount`);
+  }
+
+  lines.push(`${ind}except Exception as e:`);
+  if (dbConfig.autoCommit) {
+    lines.push(`${ind}${ind}try:`);
+    lines.push(`${ind}${ind}    db_conn.rollback()`);
+    lines.push(`${ind}${ind}except Exception:`);
+    lines.push(`${ind}${ind}    pass`);
+  }
+  lines.push(`${ind}${ind}print(f"  ✗ ${meta.shortName} Error on step ${stepNum}: {e}")`);
+  lines.push(`${ind}${ind}raise`);
+  lines.push(`${ind}finally:`);
+  lines.push(`${ind}${ind}cursor.close()`);
 
   lines.push('');
   return lines;
@@ -355,7 +562,7 @@ export function generateCurlAndDatabaseScript(
   steps: AnyChainStep[],
   extraction: TokenExtractionConfig = DEFAULT_EXTRACTION_CONFIG,
   injection: TokenInjectionConfig = DEFAULT_INJECTION_CONFIG,
-  pgConfig: PostgresConfig = DEFAULT_POSTGRES_CONFIG,
+  dbConfig: DatabaseConfig = DEFAULT_DATABASE_CONFIG,
   options: PythonDbChainOptions = DEFAULT_DB_CHAIN_OPTIONS
 ): string {
   const parsedLogin = parseCurlCommand(loginCurl);
@@ -384,7 +591,7 @@ export function generateCurlAndDatabaseScript(
         curlSteps,
         extraction,
         injection,
-        pgConfig,
+        dbConfig,
         options,
         isAsync,
         tokenVar,
@@ -401,7 +608,7 @@ export function generateCurlAndDatabaseScript(
         curlSteps,
         extraction,
         injection,
-        pgConfig,
+        dbConfig,
         options,
         isAsync,
         tokenVar,
@@ -412,7 +619,7 @@ export function generateCurlAndDatabaseScript(
 }
 
 /**
- * Session & Modular Functions generator combining HTTP requests & pg8000 PostgreSQL operations
+ * Session & Modular Functions generator combining HTTP requests & Database operations
  */
 function generateModularSessionScript(
   loginReq: ParsedCurlRequest,
@@ -420,7 +627,7 @@ function generateModularSessionScript(
   curlSteps: (CurlChainStep & { parsed: ParsedCurlRequest })[],
   extraction: TokenExtractionConfig,
   injection: TokenInjectionConfig,
-  pgConfig: PostgresConfig,
+  dbConfig: DatabaseConfig,
   options: PythonDbChainOptions,
   isAsync: boolean,
   tokenVar: string,
@@ -431,17 +638,28 @@ function generateModularSessionScript(
   const ind = '    ';
   const asyncPrefix = isAsync ? 'async ' : '';
   const awaitPref = isAsync ? 'await ' : '';
+  const meta = getDatabaseMeta(dbConfig.dbType, dbConfig);
 
   // Imports
   lines.push('import json');
   lines.push('import os');
   if (isAsync) lines.push('import asyncio');
-  if (pgConfig.ssl) lines.push('import ssl');
+  if (dbConfig.ssl && dbConfig.dbType === 'postgresql') lines.push('import ssl');
 
-  if (pgConfig.interfaceStyle === 'native') {
-    lines.push('import pg8000.native');
-  } else {
-    lines.push('import pg8000.dbapi');
+  if (dbConfig.dbType === 'postgresql') {
+    if (dbConfig.interfaceStyle === 'native') {
+      lines.push('import pg8000.native');
+    } else {
+      lines.push('import pg8000.dbapi');
+    }
+  } else if (dbConfig.dbType === 'sqlserver') {
+    if (dbConfig.sqlServerDriver === 'pyodbc') {
+      lines.push('import pyodbc');
+    } else {
+      lines.push('import pymssql');
+    }
+  } else if (dbConfig.dbType === 'oracle') {
+    lines.push('import oracledb');
   }
 
   if (options.httpLibrary === 'requests') {
@@ -464,14 +682,14 @@ function generateModularSessionScript(
     lines.push('');
   }
 
-  // PostgreSQL Config Block
-  lines.push(...renderPostgresConfigBlock(pgConfig));
+  // Database Config Block
+  lines.push(...renderDatabaseConfigBlock(dbConfig));
 
-  // PostgreSQL Connection Function
-  lines.push(...renderGetDbConnectionFunction(pgConfig, options));
+  // Database Connection Function
+  lines.push(...renderGetDbConnectionFunction(dbConfig, options));
 
   lines.push('# ==============================================================================');
-  lines.push('# Authenticated cURL & PostgreSQL Integration Chain');
+  lines.push(`# Authenticated cURL & ${meta.name} Integration Chain`);
   lines.push(`# Token extracted from '${extraction.keyPath}' and injected into subsequent API calls & DB queries`);
   lines.push('# ==============================================================================\n');
 
@@ -557,7 +775,7 @@ function generateModularSessionScript(
     const stepNum = index + 2;
 
     if (step.type === 'database') {
-      const dbSnippet = renderDatabaseStepFunction(step, stepNum, pgConfig, options, tokenVar);
+      const dbSnippet = renderDatabaseStepFunction(step, stepNum, dbConfig, options, tokenVar);
       lines.push(...dbSnippet);
     } else {
       // cURL Step
@@ -609,7 +827,7 @@ function generateModularSessionScript(
   const mainFunc = isAsync ? 'async def run_chain():' : 'def run_chain():';
   lines.push(`\n\n${mainFunc}`);
   lines.push(`${ind}"""Executes the full auth, API & database workflow sequentially."""`);
-  lines.push(`${ind}print("=== Starting cURL & PostgreSQL Test Execution Chain ===")`);
+  lines.push(`${ind}print("=== Starting cURL & ${meta.name} Test Execution Chain ===")`);
 
   // Initialize HTTP session
   if (options.httpLibrary === 'requests') {
@@ -625,8 +843,8 @@ function generateModularSessionScript(
   const runBlockInd = (options.httpLibrary === 'httpx_async' || options.httpLibrary === 'aiohttp') ? ind + ind : ind;
 
   // Initialize DB Connection
-  lines.push(`\n${runBlockInd}# Connect to PostgreSQL via pg8000`);
-  lines.push(`${runBlockInd}print("[DB] Connecting to PostgreSQL database...")`);
+  lines.push(`\n${runBlockInd}# Connect to ${meta.name} via ${meta.driverPackage}`);
+  lines.push(`${runBlockInd}print("[DB] Connecting to ${meta.name} database...")`);
   lines.push(`${runBlockInd}db_conn = get_db_connection()`);
 
   lines.push(`${runBlockInd}try:`);
@@ -644,9 +862,9 @@ function generateModularSessionScript(
     const stepNum = index + 2;
     if (step.type === 'database') {
       const fnName = sanitizeDbMethodName(step.name || `db_query_${stepNum}`, stepNum);
-      const needsToken = step.params.includes(tokenVar) || step.query.includes('%s') || step.query.includes(':');
+      const needsToken = step.params.includes(tokenVar) || step.query.includes('%s') || step.query.includes(':') || step.query.includes('?');
       const callArgs = needsToken ? `db_conn, ${tokenVar}` : 'db_conn';
-      lines.push(`${bodyInd}# Step ${stepNum} [PostgreSQL DB]: ${step.name || 'Database Query'}`);
+      lines.push(`${bodyInd}# Step ${stepNum} [${meta.shortName}]: ${step.name || 'Database Query'}`);
       lines.push(`${bodyInd}${fnName}(${callArgs})`);
       lines.push('');
     } else {
@@ -657,14 +875,10 @@ function generateModularSessionScript(
     }
   });
 
-  lines.push(`${bodyInd}print("\\n✓ All cURL & PostgreSQL operations executed successfully!")`);
+  lines.push(`${bodyInd}print("\\n✓ All cURL & ${meta.shortName} operations executed successfully!")`);
   lines.push(`${runBlockInd}finally:`);
-  if (pgConfig.interfaceStyle === 'native') {
-    lines.push(`${bodyInd}db_conn.close()`);
-  } else {
-    lines.push(`${bodyInd}db_conn.close()`);
-  }
-  lines.push(`${bodyInd}print("[DB] PostgreSQL connection closed.")`);
+  lines.push(`${bodyInd}db_conn.close()`);
+  lines.push(`${bodyInd}print("[DB] ${meta.shortName} connection closed.")`);
 
   // Entry Point
   lines.push('\n\nif __name__ == "__main__":');
@@ -686,7 +900,7 @@ function generateClassClientScript(
   curlSteps: (CurlChainStep & { parsed: ParsedCurlRequest })[],
   extraction: TokenExtractionConfig,
   injection: TokenInjectionConfig,
-  pgConfig: PostgresConfig,
+  dbConfig: DatabaseConfig,
   options: PythonDbChainOptions,
   isAsync: boolean,
   tokenVar: string,
@@ -697,16 +911,27 @@ function generateClassClientScript(
   const ind = '    ';
   const asyncPref = isAsync ? 'async ' : '';
   const awaitPrefix = isAsync ? 'await ' : '';
+  const meta = getDatabaseMeta(dbConfig.dbType, dbConfig);
 
   lines.push('import json');
   lines.push('import os');
   if (isAsync) lines.push('import asyncio');
-  if (pgConfig.ssl) lines.push('import ssl');
+  if (dbConfig.ssl && dbConfig.dbType === 'postgresql') lines.push('import ssl');
 
-  if (pgConfig.interfaceStyle === 'native') {
-    lines.push('import pg8000.native');
-  } else {
-    lines.push('import pg8000.dbapi');
+  if (dbConfig.dbType === 'postgresql') {
+    if (dbConfig.interfaceStyle === 'native') {
+      lines.push('import pg8000.native');
+    } else {
+      lines.push('import pg8000.dbapi');
+    }
+  } else if (dbConfig.dbType === 'sqlserver') {
+    if (dbConfig.sqlServerDriver === 'pyodbc') {
+      lines.push('import pyodbc');
+    } else {
+      lines.push('import pymssql');
+    }
+  } else if (dbConfig.dbType === 'oracle') {
+    lines.push('import oracledb');
   }
 
   if (options.httpLibrary === 'requests') lines.push('import requests');
@@ -722,10 +947,10 @@ function generateClassClientScript(
     lines.push('');
   }
 
-  lines.push(...renderPostgresConfigBlock(pgConfig));
+  lines.push(...renderDatabaseConfigBlock(dbConfig));
 
   lines.push('class ApiAndDatabaseTestSuite:');
-  lines.push(`${ind}"""Unified Test Client coordinating cURL API requests and PostgreSQL validations"""\n`);
+  lines.push(`${ind}"""Unified Test Client coordinating cURL API requests and ${meta.name} validations"""\n`);
 
   lines.push(`${ind}def __init__(self):`);
   lines.push(`${ind}${ind}self.${tokenVar} = None`);
@@ -739,22 +964,42 @@ function generateClassClientScript(
 
   // Connect DB
   lines.push(`${ind}def connect_db(self):`);
-  lines.push(`${ind}${ind}"""Establishes connection to PostgreSQL using pg8000"""`);
-  const sslArg = pgConfig.ssl ? ', ssl_context=PG_SSL_CONTEXT' : '';
-  if (pgConfig.interfaceStyle === 'native') {
-    lines.push(`${ind}${ind}self.db_conn = pg8000.native.Connection(`);
-  } else {
-    lines.push(`${ind}${ind}self.db_conn = pg8000.dbapi.connect(`);
+  lines.push(`${ind}${ind}"""Establishes connection to ${meta.name} using ${meta.driverPackage}"""`);
+
+  if (dbConfig.dbType === 'postgresql') {
+    const sslArg = dbConfig.ssl ? ', ssl_context=PG_SSL_CONTEXT' : '';
+    if (dbConfig.interfaceStyle === 'native') {
+      lines.push(`${ind}${ind}self.db_conn = pg8000.native.Connection(`);
+    } else {
+      lines.push(`${ind}${ind}self.db_conn = pg8000.dbapi.connect(`);
+    }
+    lines.push(`${ind}${ind}${ind}host=PG_HOST, port=PG_PORT, database=PG_DATABASE, user=PG_USER, password=PG_PASSWORD${sslArg}`);
+    lines.push(`${ind}${ind})`);
+  } else if (dbConfig.dbType === 'sqlserver') {
+    if (dbConfig.sqlServerDriver === 'pyodbc') {
+      lines.push(`${ind}${ind}conn_str = f"DRIVER={{{MSSQL_ODBC_DRIVER}}};SERVER={MSSQL_HOST},{MSSQL_PORT};DATABASE={MSSQL_DATABASE};UID={MSSQL_USER};PWD={MSSQL_PASSWORD};"`);
+      lines.push(`${ind}${ind}self.db_conn = pyodbc.connect(conn_str, autocommit=${dbConfig.autoCommit ? 'True' : 'False'})`);
+    } else {
+      lines.push(`${ind}${ind}self.db_conn = pymssql.connect(`);
+      lines.push(`${ind}${ind}${ind}server=MSSQL_HOST, port=MSSQL_PORT, database=MSSQL_DATABASE, user=MSSQL_USER, password=MSSQL_PASSWORD, as_dict=${dbConfig.returnAsDict ? 'True' : 'False'}, autocommit=${dbConfig.autoCommit ? 'True' : 'False'}`);
+      lines.push(`${ind}${ind})`);
+    }
+  } else if (dbConfig.dbType === 'oracle') {
+    lines.push(`${ind}${ind}self.db_conn = oracledb.connect(`);
+    lines.push(`${ind}${ind}${ind}user=ORACLE_USER, password=ORACLE_PASSWORD, host=ORACLE_HOST, port=ORACLE_PORT, service_name=ORACLE_SERVICE_NAME`);
+    lines.push(`${ind}${ind})`);
+    if (dbConfig.autoCommit) {
+      lines.push(`${ind}${ind}self.db_conn.autocommit = True`);
+    }
   }
-  lines.push(`${ind}${ind}${ind}host=PG_HOST, port=PG_PORT, database=PG_DATABASE, user=PG_USER, password=PG_PASSWORD${sslArg}`);
-  lines.push(`${ind}${ind})`);
+
   lines.push(`${ind}${ind}return self.db_conn\n`);
 
   // Close DB
   lines.push(`${ind}def close(self):`);
   lines.push(`${ind}${ind}if self.db_conn:`);
   lines.push(`${ind}${ind}    self.db_conn.close()`);
-  lines.push(`${ind}${ind}    print("[DB] PostgreSQL connection closed.")\n`);
+  lines.push(`${ind}${ind}    print("[DB] ${meta.shortName} connection closed.")\n`);
 
   // Authenticate
   lines.push(`${ind}${asyncPref}def authenticate(self)${options.useTypeHints ? ' -> str' : ''}:`);
@@ -819,7 +1064,7 @@ function generateClassClientScript(
     if (step.type === 'database') {
       const fnName = sanitizeDbMethodName(step.name || `db_query_${stepNum}`, stepNum);
       lines.push(`${ind}def ${fnName}(self):`);
-      lines.push(`${ind}${ind}"""[Step ${stepNum} - PostgreSQL DB] ${step.name || 'Database Query'}"""`);
+      lines.push(`${ind}${ind}"""[Step ${stepNum} - ${meta.shortName}] ${step.name || 'Database Query'}"""`);
       lines.push(`${ind}${ind}if not self.db_conn:`);
       lines.push(`${ind}${ind}    self.connect_db()`);
 
@@ -832,7 +1077,12 @@ function generateClassClientScript(
         paramsExpr = ifNotTuple(rawParams);
       }
 
-      lines.push(`${ind}${ind}cursor = self.db_conn.cursor()`);
+      if (dbConfig.dbType === 'sqlserver' && dbConfig.sqlServerDriver !== 'pyodbc' && dbConfig.returnAsDict) {
+        lines.push(`${ind}${ind}cursor = self.db_conn.cursor(as_dict=True)`);
+      } else {
+        lines.push(`${ind}${ind}cursor = self.db_conn.cursor()`);
+      }
+
       lines.push(`${ind}${ind}try:`);
       if (paramsExpr !== '()') {
         lines.push(`${ind}${ind}${ind}cursor.execute(query, ${paramsExpr})`);
@@ -841,21 +1091,36 @@ function generateClassClientScript(
       }
 
       if (step.fetchMode === 'fetchall') {
-        lines.push(`${ind}${ind}${ind}cols = [d[0] for d in cursor.description] if cursor.description else []`);
-        lines.push(`${ind}${ind}${ind}rows = [dict(zip(cols, r)) for r in cursor.fetchall()]`);
+        if (dbConfig.dbType === 'sqlserver' && dbConfig.sqlServerDriver !== 'pyodbc' && dbConfig.returnAsDict) {
+          lines.push(`${ind}${ind}${ind}rows = cursor.fetchall()`);
+        } else if (dbConfig.dbType === 'oracle') {
+          lines.push(`${ind}${ind}${ind}cols = [d[0].lower() for d in cursor.description] if cursor.description else []`);
+          lines.push(`${ind}${ind}${ind}rows = [dict(zip(cols, r)) for r in cursor.fetchall()]`);
+        } else {
+          lines.push(`${ind}${ind}${ind}cols = [d[0] for d in cursor.description] if cursor.description else []`);
+          lines.push(`${ind}${ind}${ind}rows = [dict(zip(cols, r)) for r in cursor.fetchall()]`);
+        }
         lines.push(`${ind}${ind}${ind}print(f"  ✓ DB query step {${stepNum}} returned {len(rows)} row(s)")`);
         if (options.includeAssertions && step.assertRowCount) {
-          lines.push(`${ind}${ind}${ind}assert len(rows) > 0, "PostgreSQL assertion failed: 0 rows returned"`);
+          lines.push(`${ind}${ind}${ind}assert len(rows) > 0, "${meta.shortName} assertion failed: 0 rows returned"`);
         }
         lines.push(`${ind}${ind}${ind}return rows`);
       } else if (step.fetchMode === 'fetchone') {
-        lines.push(`${ind}${ind}${ind}cols = [d[0] for d in cursor.description] if cursor.description else []`);
-        lines.push(`${ind}${ind}${ind}raw = cursor.fetchone()`);
-        lines.push(`${ind}${ind}${ind}row = dict(zip(cols, raw)) if raw else None`);
+        if (dbConfig.dbType === 'sqlserver' && dbConfig.sqlServerDriver !== 'pyodbc' && dbConfig.returnAsDict) {
+          lines.push(`${ind}${ind}${ind}row = cursor.fetchone()`);
+        } else if (dbConfig.dbType === 'oracle') {
+          lines.push(`${ind}${ind}${ind}cols = [d[0].lower() for d in cursor.description] if cursor.description else []`);
+          lines.push(`${ind}${ind}${ind}raw = cursor.fetchone()`);
+          lines.push(`${ind}${ind}${ind}row = dict(zip(cols, raw)) if raw else None`);
+        } else {
+          lines.push(`${ind}${ind}${ind}cols = [d[0] for d in cursor.description] if cursor.description else []`);
+          lines.push(`${ind}${ind}${ind}raw = cursor.fetchone()`);
+          lines.push(`${ind}${ind}${ind}row = dict(zip(cols, raw)) if raw else None`);
+        }
         lines.push(`${ind}${ind}${ind}print(f"  ✓ DB query step {${stepNum}} returned: {row}")`);
         lines.push(`${ind}${ind}${ind}return row`);
       } else {
-        if (pgConfig.autoCommit) lines.push(`${ind}${ind}${ind}self.db_conn.commit()`);
+        if (dbConfig.autoCommit) lines.push(`${ind}${ind}${ind}self.db_conn.commit()`);
         lines.push(`${ind}${ind}${ind}return cursor.rowcount`);
       }
       lines.push(`${ind}${ind}finally:`);
@@ -911,7 +1176,7 @@ function generateClassClientScript(
     const stepNum = index + 2;
     if (step.type === 'database') {
       const fnName = sanitizeDbMethodName(step.name || `db_query_${stepNum}`, stepNum);
-      lines.push(`        # Step ${stepNum} [PostgreSQL DB]: ${step.name}`);
+      lines.push(`        # Step ${stepNum} [${meta.shortName}]: ${step.name}`);
       lines.push(`        suite.${fnName}()`);
       lines.push('');
     } else {

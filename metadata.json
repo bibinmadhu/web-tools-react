@@ -1,6 +1,6 @@
 {
   "name": "DevHub - Developer Utilities Platform",
-  "description": "A comprehensive developer tool suite featuring Testing Tools (Curl & Database Chain to Python with PostgreSQL pg8000), cURL Auth Chain to Python Converter, QR Code Generator, Multiple JS/TS & HTML Obfuscator, Agreement Generator, PDF to Markdown conversion, PDF signing, and code utilities with dark mode and search.",
+  "description": "A comprehensive developer tool suite featuring Testing Tools (Curl & Database Chain to Python with PostgreSQL, SQL Server & Oracle databases), cURL Auth Chain to Python Converter, QR Code Generator, Multiple JS/TS & HTML Obfuscator, Agreement Generator, PDF to Markdown conversion, PDF signing, and code utilities with dark mode and search.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

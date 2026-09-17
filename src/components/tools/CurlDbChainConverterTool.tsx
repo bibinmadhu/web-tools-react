@@ -31,6 +31,8 @@ import {
   Lock,
   Workflow,
   AlertCircle,
+  HardDrive,
+  Cpu,
 } from 'lucide-react';
 import { parseCurlCommand, ParsedCurlRequest } from '../../utils/curlParser';
 import {
@@ -47,21 +49,25 @@ import {
   AnyChainStep,
   CurlChainStep,
   DatabaseChainStep,
-  PostgresConfig,
+  DatabaseConfig,
+  SupportedDatabaseType,
+  SqlServerDriver,
   PythonDbChainOptions,
-  DEFAULT_POSTGRES_CONFIG,
+  DEFAULT_DATABASE_CONFIG,
   DEFAULT_DB_CHAIN_OPTIONS,
   generateCurlAndDatabaseScript,
+  getDatabaseMeta,
 } from '../../utils/curlDbChainConverter';
 
 interface PresetDefinition {
   id: string;
   name: string;
   badge: string;
+  dbType: SupportedDatabaseType;
   description: string;
   loginCurl: string;
   steps: AnyChainStep[];
-  pgConfig: Partial<PostgresConfig>;
+  dbConfig: Partial<DatabaseConfig>;
   extraction: TokenExtractionConfig;
   injection: TokenInjectionConfig;
 }
@@ -70,8 +76,9 @@ const PRESETS: PresetDefinition[] = [
   {
     id: 'user-auth-db-audit',
     name: 'User Auth & PostgreSQL Audit Verification',
-    badge: 'Auth + DB Check',
-    description: 'Login via API token, verify active user record in PostgreSQL, fetch profile, and inspect audit logs',
+    badge: 'PostgreSQL',
+    dbType: 'postgresql',
+    description: 'Login via API token, verify active user record in PostgreSQL via pg8000, fetch profile, and inspect audit logs',
     loginCurl: `curl -X POST https://api.example.com/v1/auth/login \\
   -H "Content-Type: application/json" \\
   -H "Accept: application/json" \\
@@ -88,7 +95,8 @@ const PRESETS: PresetDefinition[] = [
       queryParamName: 'token',
       bodyFieldName: 'token',
     },
-    pgConfig: {
+    dbConfig: {
+      dbType: 'postgresql',
       host: 'localhost',
       port: 5432,
       database: 'production_db',
@@ -140,9 +148,158 @@ LIMIT 5;`,
     ],
   },
   {
+    id: 'sqlserver-customer-audit',
+    name: 'SQL Server (T-SQL) Customer Verification & Audit',
+    badge: 'SQL Server',
+    dbType: 'sqlserver',
+    description: 'OAuth token authentication with Microsoft SQL Server checks using pymssql (T-SQL SELECT TOP 1 and updates)',
+    loginCurl: `curl -X POST https://auth.enterprise.net/oauth/v2/token \\
+  -H "Content-Type: application/x-www-form-urlencoded" \\
+  -d "grant_type=client_credentials&client_id=erp_client&client_secret=secret_xyz"`,
+    extraction: {
+      source: 'json_body',
+      keyPath: 'access_token',
+      variableName: 'access_token',
+    },
+    injection: {
+      placement: 'header',
+      headerName: 'Authorization',
+      headerFormat: 'Bearer {token}',
+      queryParamName: 'access_token',
+      bodyFieldName: 'access_token',
+    },
+    dbConfig: {
+      dbType: 'sqlserver',
+      host: 'localhost',
+      port: 1433,
+      database: 'ERP_Production',
+      user: 'sa',
+      sqlServerDriver: 'pymssql',
+      useEnvVars: true,
+      returnAsDict: true,
+      autoCommit: true,
+    },
+    steps: [
+      {
+        id: 'step-sqlserver-check-user',
+        type: 'database',
+        name: 'Query Customer Record in SQL Server',
+        query: `SELECT TOP 1 CustomerID, CompanyName, ContactName, AccountStatus, CreditLimit
+FROM dbo.Customers
+WHERE ContactEmail = 'client@enterprise.net';`,
+        params: '',
+        fetchMode: 'fetchone',
+        enabled: true,
+        assertRowCount: true,
+        assertCondition: 'row is not None and row.get("AccountStatus") == "ACTIVE"',
+        description: 'Verify customer account exists and is ACTIVE in SQL Server',
+      },
+      {
+        id: 'step-curl-dispatch-job',
+        type: 'curl',
+        name: 'Dispatch Workflow Job via REST API',
+        curl: `curl -X POST https://api.enterprise.net/v1/jobs/sync \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer <token>" \\
+  -d '{"jobType": "ACCOUNT_RECONCILIATION", "priority": "HIGH"}'`,
+        enabled: true,
+      },
+      {
+        id: 'step-sqlserver-verify-log',
+        type: 'database',
+        name: 'Assert Audit Log Inserted in SQL Server',
+        query: `SELECT TOP 5 LogID, EventType, ExecutionStatus, CreatedAt
+FROM dbo.IntegrationAuditLogs
+ORDER BY CreatedAt DESC;`,
+        params: '',
+        fetchMode: 'fetchall',
+        enabled: true,
+        assertRowCount: true,
+        assertCondition: 'len(rows) > 0',
+        description: 'Verify background job logged reconciliation event in SQL Server',
+      },
+    ],
+  },
+  {
+    id: 'oracle-ledger-inspection',
+    name: 'Oracle DB (PL/SQL) Token Verification & Ledger',
+    badge: 'Oracle DB',
+    dbType: 'oracle',
+    description: 'Zero-client Thin Mode oracledb connection to Oracle Database with session authorization & ledger check',
+    loginCurl: `curl -X POST https://finance.corp.internal/api/auth/session \\
+  -H "Content-Type: application/json" \\
+  -d '{"service_principal": "ledger_auditor", "passcode": "CertPass#9921"}'`,
+    extraction: {
+      source: 'json_body',
+      keyPath: 'session_id',
+      variableName: 'session_id',
+    },
+    injection: {
+      placement: 'header',
+      headerName: 'X-Financial-Session',
+      headerFormat: '{token}',
+      queryParamName: 'session_id',
+      bodyFieldName: 'session_id',
+    },
+    dbConfig: {
+      dbType: 'oracle',
+      host: 'localhost',
+      port: 1521,
+      database: 'XEPDB1',
+      oracleServiceName: 'XEPDB1',
+      user: 'SYSTEM',
+      useEnvVars: true,
+      returnAsDict: true,
+      autoCommit: true,
+    },
+    steps: [
+      {
+        id: 'step-oracle-verify-principal',
+        type: 'database',
+        name: 'Verify Authorization in Oracle Database',
+        query: `SELECT principal_id, principal_name, security_clearance, status
+FROM sec_principals
+WHERE principal_name = 'ledger_auditor'
+FETCH FIRST 1 ROWS ONLY`,
+        params: '',
+        fetchMode: 'fetchone',
+        enabled: true,
+        assertRowCount: true,
+        assertCondition: 'row is not None and row.get("status") == "APPROVED"',
+        description: 'Assert principal privileges in Oracle DB using oracledb Thin Mode',
+      },
+      {
+        id: 'step-curl-audit-report',
+        type: 'curl',
+        name: 'Generate Financial Audit Snapshot API',
+        curl: `curl -X POST https://finance.corp.internal/api/v2/ledger/snapshot \\
+  -H "Content-Type: application/json" \\
+  -H "X-Financial-Session: <token>" \\
+  -d '{"fiscal_quarter": "Q3", "reconcile": true}'`,
+        enabled: true,
+      },
+      {
+        id: 'step-oracle-audit-records',
+        type: 'database',
+        name: 'Fetch Recent Oracle Ledger Entries',
+        query: `SELECT entry_id, account_code, amount, currency, transaction_time
+FROM general_ledger_entries
+ORDER BY transaction_time DESC
+FETCH FIRST 10 ROWS ONLY`,
+        params: '',
+        fetchMode: 'fetchall',
+        enabled: true,
+        assertRowCount: true,
+        assertCondition: 'len(rows) > 0',
+        description: 'Verify financial ledger entries updated in Oracle DB',
+      },
+    ],
+  },
+  {
     id: 'order-create-db-check',
     name: 'Order Creation API & PostgreSQL Verification',
-    badge: 'API + DB Mutation',
+    badge: 'PostgreSQL',
+    dbType: 'postgresql',
     description: 'Authenticate, create an order via REST API, verify database row was inserted, then update shipping state',
     loginCurl: `curl -X POST https://api.example.com/oauth/token \\
   -H "Content-Type: application/x-www-form-urlencoded" \\
@@ -159,7 +316,8 @@ LIMIT 5;`,
       queryParamName: 'token',
       bodyFieldName: 'token',
     },
-    pgConfig: {
+    dbConfig: {
+      dbType: 'postgresql',
       host: 'localhost',
       port: 5432,
       database: 'ecommerce_db',
@@ -222,6 +380,7 @@ WHERE sku = 'ITEM-4092';`,
     id: 'db-preseed-api-validate',
     name: 'Database Pre-Seed & API Workflow Test',
     badge: 'Pre-Seed + API',
+    dbType: 'postgresql',
     description: 'Seed test record into PostgreSQL using pg8000, call API to process it, and check final DB state',
     loginCurl: `curl -X POST https://api.example.com/api/v1/sessions \\
   -H "Content-Type: application/json" \\
@@ -238,7 +397,8 @@ WHERE sku = 'ITEM-4092';`,
       queryParamName: 'session_token',
       bodyFieldName: 'session_token',
     },
-    pgConfig: {
+    dbConfig: {
+      dbType: 'postgresql',
       host: 'localhost',
       port: 5432,
       database: 'integration_test_db',
@@ -303,10 +463,10 @@ export const CurlDbChainConverterTool: React.FC = () => {
   const [extraction, setExtraction] = useState<TokenExtractionConfig>(PRESETS[0].extraction);
   const [injection, setInjection] = useState<TokenInjectionConfig>(PRESETS[0].injection);
 
-  // PostgreSQL Config
-  const [pgConfig, setPgConfig] = useState<PostgresConfig>({
-    ...DEFAULT_POSTGRES_CONFIG,
-    ...PRESETS[0].pgConfig,
+  // Database Config (PostgreSQL default)
+  const [dbConfig, setDbConfig] = useState<DatabaseConfig>({
+    ...DEFAULT_DATABASE_CONFIG,
+    ...PRESETS[0].dbConfig,
   });
 
   // Generator Options
@@ -319,6 +479,11 @@ export const CurlDbChainConverterTool: React.FC = () => {
   const [showGeneratorOptions, setShowGeneratorOptions] = useState<boolean>(false);
   const [isCustomResponseToken, setIsCustomResponseToken] = useState<boolean>(false);
   const [isCustomTokenHeader, setIsCustomTokenHeader] = useState<boolean>(false);
+
+  // Active database metadata
+  const currentDbMeta = useMemo(() => {
+    return getDatabaseMeta(dbConfig.dbType, dbConfig);
+  }, [dbConfig.dbType, dbConfig.sqlServerDriver]);
 
   // Parse login cURL live
   const parsedLogin: ParsedCurlRequest = useMemo(() => {
@@ -333,13 +498,26 @@ export const CurlDbChainConverterTool: React.FC = () => {
         steps,
         extraction,
         injection,
-        pgConfig,
+        dbConfig,
         options
       );
     } catch (err: any) {
       return `# Error generating Python script: ${err.message || String(err)}`;
     }
-  }, [loginCurl, steps, extraction, injection, pgConfig, options]);
+  }, [loginCurl, steps, extraction, injection, dbConfig, options]);
+
+  // Handle Switch Database Type
+  const handleSwitchDbType = (newType: SupportedDatabaseType) => {
+    const meta = getDatabaseMeta(newType);
+    setDbConfig((prev) => ({
+      ...prev,
+      dbType: newType,
+      port: meta.defaultPort,
+      user: meta.defaultUser,
+      database: meta.defaultDb,
+      oracleServiceName: newType === 'oracle' ? meta.defaultDb : prev.oracleServiceName,
+    }));
+  };
 
   // Handle Preset change
   const handleSelectPreset = (presetId: string) => {
@@ -350,7 +528,7 @@ export const CurlDbChainConverterTool: React.FC = () => {
     setSteps(preset.steps);
     setExtraction(preset.extraction);
     setInjection(preset.injection);
-    setPgConfig((prev) => ({ ...prev, ...preset.pgConfig }));
+    setDbConfig((prev) => ({ ...prev, ...preset.dbConfig, dbType: preset.dbType }));
 
     const isStandardResp = COMMON_RESPONSE_TOKENS.some((t) => t.value === preset.extraction.keyPath);
     setIsCustomResponseToken(!isStandardResp);
@@ -377,17 +555,24 @@ export const CurlDbChainConverterTool: React.FC = () => {
   // Add a new Database Step
   const handleAddDbStep = () => {
     const newId = `step-db-${Date.now()}`;
+    let sampleQuery = `SELECT id, name, status, created_at\nFROM my_table\nWHERE status = 'active'\nLIMIT 10;`;
+    if (dbConfig.dbType === 'sqlserver') {
+      sampleQuery = `SELECT TOP 10 id, name, status, created_at\nFROM dbo.my_table\nWHERE status = 'active';`;
+    } else if (dbConfig.dbType === 'oracle') {
+      sampleQuery = `SELECT id, name, status, created_at\nFROM my_table\nWHERE status = 'active'\nFETCH FIRST 10 ROWS ONLY;`;
+    }
+
     const newStep: DatabaseChainStep = {
       id: newId,
       type: 'database',
-      name: `Step ${steps.length + 2}: PostgreSQL Database Query`,
-      query: `SELECT id, name, status, created_at\nFROM my_table\nWHERE status = 'active'\nLIMIT 10;`,
+      name: `Step ${steps.length + 2}: ${currentDbMeta.shortName} Query`,
+      query: sampleQuery,
       params: '',
       fetchMode: 'fetchall',
       enabled: true,
       assertRowCount: true,
       assertCondition: 'len(rows) > 0',
-      description: 'Execute query and verify records exist in PostgreSQL',
+      description: `Execute query and verify records exist in ${currentDbMeta.shortName}`,
     };
     setSteps([...steps, newStep]);
   };
@@ -440,7 +625,7 @@ export const CurlDbChainConverterTool: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'curl_database_chain_test.py';
+    link.download = `curl_${dbConfig.dbType}_chain_test.py`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -459,9 +644,9 @@ export const CurlDbChainConverterTool: React.FC = () => {
   return (
     <div className="flex flex-col gap-6 max-w-7xl mx-auto p-4 sm:p-6 text-slate-800 dark:text-slate-200">
       {/* Header Banner */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 rounded-2xl bg-gradient-to-r from-emerald-500/10 via-indigo-500/10 to-cyan-500/10 border border-emerald-500/20 dark:border-emerald-500/30">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 rounded-2xl bg-gradient-to-r from-emerald-500/10 via-sky-500/10 to-amber-500/10 border border-emerald-500/20 dark:border-emerald-500/30">
         <div>
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
             <div className="p-2 rounded-xl bg-emerald-600 text-white shadow-md">
               <Workflow className="w-5 h-5" />
             </div>
@@ -469,11 +654,14 @@ export const CurlDbChainConverterTool: React.FC = () => {
               cURL & Database Chain to Python
             </h1>
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
-              PostgreSQL + pg8000
+              {currentDbMeta.badge}
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1.5 max-w-3xl">
-            Authenticate via cURL, extract bearer tokens, and seamlessly interweave REST API requests with PostgreSQL database operations using pure-Python <code className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 font-mono text-xs">pg8000</code>.
+            Authenticate via cURL, extract bearer tokens, and seamlessly interweave REST API calls with database operations in{' '}
+            <strong className="text-emerald-700 dark:text-emerald-300">PostgreSQL (pg8000)</strong>,{' '}
+            <strong className="text-sky-700 dark:text-sky-300">SQL Server (pymssql/pyodbc)</strong>, or{' '}
+            <strong className="text-amber-700 dark:text-amber-300">Oracle Database (oracledb Thin Mode)</strong>.
           </p>
         </div>
 
@@ -496,6 +684,99 @@ export const CurlDbChainConverterTool: React.FC = () => {
         </div>
       </div>
 
+      {/* DATABASE TYPE SELECTOR (PostgreSQL Default) */}
+      <div className="flex flex-col gap-2 p-4 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+            <Database className="w-4 h-4 text-emerald-500" />
+            Target Database Engine:
+          </span>
+          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+            PostgreSQL is selected by default. Choose your dialect to generate tailored drivers and connection code:
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-1">
+          {/* PostgreSQL */}
+          <button
+            type="button"
+            onClick={() => handleSwitchDbType('postgresql')}
+            className={`flex items-start gap-3 p-3 rounded-xl border text-left transition-all ${
+              dbConfig.dbType === 'postgresql'
+                ? 'bg-emerald-50/70 dark:bg-emerald-950/40 border-emerald-500 ring-2 ring-emerald-500/30 shadow-xs'
+                : 'bg-slate-50/70 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+            }`}
+          >
+            <div className={`p-2 rounded-lg ${dbConfig.dbType === 'postgresql' ? 'bg-emerald-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'}`}>
+              <Database className="w-4 h-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-xs text-slate-900 dark:text-white">PostgreSQL</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded font-bold uppercase bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">
+                  Default
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                Pure-Python <code className="font-mono text-emerald-600 dark:text-emerald-400">pg8000</code> driver (DB-API & native)
+              </p>
+            </div>
+          </button>
+
+          {/* Microsoft SQL Server */}
+          <button
+            type="button"
+            onClick={() => handleSwitchDbType('sqlserver')}
+            className={`flex items-start gap-3 p-3 rounded-xl border text-left transition-all ${
+              dbConfig.dbType === 'sqlserver'
+                ? 'bg-sky-50/70 dark:bg-sky-950/40 border-sky-500 ring-2 ring-sky-500/30 shadow-xs'
+                : 'bg-slate-50/70 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+            }`}
+          >
+            <div className={`p-2 rounded-lg ${dbConfig.dbType === 'sqlserver' ? 'bg-sky-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'}`}>
+              <Server className="w-4 h-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-xs text-slate-900 dark:text-white">SQL Server (MSSQL)</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded font-bold uppercase bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300">
+                  T-SQL
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                DB-API with <code className="font-mono text-sky-600 dark:text-sky-400">pymssql</code> or <code className="font-mono text-sky-600 dark:text-sky-400">pyodbc</code>
+              </p>
+            </div>
+          </button>
+
+          {/* Oracle Database */}
+          <button
+            type="button"
+            onClick={() => handleSwitchDbType('oracle')}
+            className={`flex items-start gap-3 p-3 rounded-xl border text-left transition-all ${
+              dbConfig.dbType === 'oracle'
+                ? 'bg-amber-50/70 dark:bg-amber-950/40 border-amber-500 ring-2 ring-amber-500/30 shadow-xs'
+                : 'bg-slate-50/70 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+            }`}
+          >
+            <div className={`p-2 rounded-lg ${dbConfig.dbType === 'oracle' ? 'bg-amber-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'}`}>
+              <HardDrive className="w-4 h-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-xs text-slate-900 dark:text-white">Oracle Database</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded font-bold uppercase bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300">
+                  Thin Mode
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                Official <code className="font-mono text-amber-600 dark:text-amber-400">oracledb</code> zero-client driver
+              </p>
+            </div>
+          </button>
+        </div>
+      </div>
+
       {/* Preset Selector */}
       <div className="flex flex-col gap-2 p-4 rounded-xl bg-slate-100/70 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800">
         <div className="flex items-center justify-between">
@@ -505,7 +786,7 @@ export const CurlDbChainConverterTool: React.FC = () => {
           </span>
           <span className="text-[11px] text-slate-500">Pick a pre-configured template or customize steps below</span>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
           {PRESETS.map((p) => {
             const isSelected = selectedPresetId === p.id;
             return (
@@ -600,35 +881,40 @@ export const CurlDbChainConverterTool: React.FC = () => {
                         setIsCustomResponseToken(true);
                       } else {
                         setIsCustomResponseToken(false);
-                        setExtraction({ ...extraction, keyPath: e.target.value, variableName: e.target.value.replace(/[^a-zA-Z0-9_]/g, '_') });
+                        const match = COMMON_RESPONSE_TOKENS.find((t) => t.value === e.target.value);
+                        setExtraction({
+                          ...extraction,
+                          keyPath: e.target.value,
+                          variableName: match?.value?.replace('.', '_') || 'token',
+                        });
                       }
                     }}
-                    className="flex-1 p-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs"
+                    className="p-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs flex-1"
                   >
                     {COMMON_RESPONSE_TOKENS.map((t) => (
                       <option key={t.value} value={t.value}>
-                        {t.label} ({t.description})
+                        {t.label}
                       </option>
                     ))}
-                    <option value="custom">-- Custom Property Path --</option>
+                    <option value="custom">Custom JSON Key Path...</option>
                   </select>
                 </div>
                 {isCustomResponseToken && (
                   <input
                     type="text"
                     value={extraction.keyPath}
-                    onChange={(e) => setExtraction({ ...extraction, keyPath: e.target.value, variableName: e.target.value.replace(/[^a-zA-Z0-9_]/g, '_') })}
-                    placeholder="e.g. data.auth.token"
-                    className="p-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 font-mono text-xs text-slate-800 dark:text-slate-200"
+                    onChange={(e) => setExtraction({ ...extraction, keyPath: e.target.value })}
+                    placeholder="e.g. data.auth.jwt_token"
+                    className="p-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 font-mono text-xs"
                   />
                 )}
               </div>
 
-              {/* Inject Config */}
+              {/* Injection Config */}
               <div className="flex flex-col gap-1.5">
                 <span className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                  <Globe className="w-3.5 h-3.5 text-indigo-500" />
-                  Inject Header in Subsequent Requests:
+                  <Shield className="w-3.5 h-3.5 text-indigo-500" />
+                  Inject Token Into Subsequent Calls:
                 </span>
                 <select
                   value={isCustomTokenHeader ? 'custom' : injection.headerName}
@@ -637,7 +923,7 @@ export const CurlDbChainConverterTool: React.FC = () => {
                       setIsCustomTokenHeader(true);
                     } else {
                       setIsCustomTokenHeader(false);
-                      const match = COMMON_TOKEN_HEADERS.find((h) => h.header.toLowerCase() === e.target.value.toLowerCase());
+                      const match = COMMON_TOKEN_HEADERS.find((h) => h.header === e.target.value);
                       if (match) {
                         setInjection({
                           ...injection,
@@ -647,15 +933,16 @@ export const CurlDbChainConverterTool: React.FC = () => {
                       }
                     }
                   }}
-                  className="p-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs"
+                  className="p-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
                 >
                   {COMMON_TOKEN_HEADERS.map((h) => (
                     <option key={h.header} value={h.header}>
                       {h.label}
                     </option>
                   ))}
-                  <option value="custom">-- Custom Header Name --</option>
+                  <option value="custom">Custom Header / Placement...</option>
                 </select>
+
                 {isCustomTokenHeader && (
                   <div className="grid grid-cols-2 gap-2">
                     <input
@@ -678,7 +965,7 @@ export const CurlDbChainConverterTool: React.FC = () => {
             </div>
           </div>
 
-          {/* STEP 2: POSTGRESQL CONNECTION CONFIGURATION (pg8000) */}
+          {/* STEP 2: DATABASE CONNECTION CONFIGURATION */}
           <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col gap-4">
             <div className="flex items-center justify-between cursor-pointer" onClick={() => setShowDbConfig(!showDbConfig)}>
               <div className="flex items-center gap-2.5">
@@ -687,13 +974,16 @@ export const CurlDbChainConverterTool: React.FC = () => {
                 </div>
                 <div>
                   <h2 className="font-bold text-slate-900 dark:text-slate-100 text-sm flex items-center gap-2">
-                    PostgreSQL Database Configuration
+                    {currentDbMeta.name} Configuration
                     <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-bold uppercase">
-                      pg8000 pure-python
+                      {currentDbMeta.driverPackage}
                     </span>
                   </h2>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Target host: <code className="font-mono text-emerald-600 dark:text-emerald-400">{pgConfig.host}:{pgConfig.port}</code> / <code className="font-mono text-indigo-600 dark:text-indigo-400">{pgConfig.database}</code>
+                    Host: <code className="font-mono text-emerald-600 dark:text-emerald-400">{dbConfig.host}:{dbConfig.port}</code> / Database:{' '}
+                    <code className="font-mono text-indigo-600 dark:text-indigo-400">
+                      {dbConfig.dbType === 'oracle' ? dbConfig.oracleServiceName || dbConfig.database : dbConfig.database}
+                    </code>
                   </p>
                 </div>
               </div>
@@ -714,11 +1004,11 @@ export const CurlDbChainConverterTool: React.FC = () => {
                 {/* Host, Port, DB, User, Password Grid */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Host</label>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Host / Server</label>
                     <input
                       type="text"
-                      value={pgConfig.host}
-                      onChange={(e) => setPgConfig({ ...pgConfig, host: e.target.value })}
+                      value={dbConfig.host}
+                      onChange={(e) => setDbConfig({ ...dbConfig, host: e.target.value })}
                       placeholder="localhost"
                       className="w-full p-2 font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
                     />
@@ -728,31 +1018,40 @@ export const CurlDbChainConverterTool: React.FC = () => {
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Port</label>
                     <input
                       type="number"
-                      value={pgConfig.port}
-                      onChange={(e) => setPgConfig({ ...pgConfig, port: parseInt(e.target.value, 10) || 5432 })}
-                      placeholder="5432"
+                      value={dbConfig.port}
+                      onChange={(e) => setDbConfig({ ...dbConfig, port: parseInt(e.target.value, 10) || currentDbMeta.defaultPort })}
+                      placeholder={String(currentDbMeta.defaultPort)}
                       className="w-full p-2 font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Database Name</label>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      {dbConfig.dbType === 'oracle' ? 'Service Name / SID' : 'Database Name'}
+                    </label>
                     <input
                       type="text"
-                      value={pgConfig.database}
-                      onChange={(e) => setPgConfig({ ...pgConfig, database: e.target.value })}
-                      placeholder="postgres"
+                      value={dbConfig.dbType === 'oracle' ? dbConfig.oracleServiceName || dbConfig.database : dbConfig.database}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDbConfig({
+                          ...dbConfig,
+                          database: val,
+                          oracleServiceName: val,
+                        });
+                      }}
+                      placeholder={currentDbMeta.defaultDb}
                       className="w-full p-2 font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Username</label>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Username / User</label>
                     <input
                       type="text"
-                      value={pgConfig.user}
-                      onChange={(e) => setPgConfig({ ...pgConfig, user: e.target.value })}
-                      placeholder="postgres"
+                      value={dbConfig.user}
+                      onChange={(e) => setDbConfig({ ...dbConfig, user: e.target.value })}
+                      placeholder={currentDbMeta.defaultUser}
                       className="w-full p-2 font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
                     />
                   </div>
@@ -761,43 +1060,97 @@ export const CurlDbChainConverterTool: React.FC = () => {
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Password</label>
                     <input
                       type="password"
-                      value={pgConfig.password}
-                      onChange={(e) => setPgConfig({ ...pgConfig, password: e.target.value })}
+                      value={dbConfig.password}
+                      onChange={(e) => setDbConfig({ ...dbConfig, password: e.target.value })}
                       placeholder="(empty or env var)"
                       className="w-full p-2 font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
                     />
                   </div>
 
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Driver API Mode</label>
-                    <select
-                      value={pgConfig.interfaceStyle}
-                      onChange={(e) => setPgConfig({ ...pgConfig, interfaceStyle: e.target.value as any })}
-                      className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
-                    >
-                      <option value="dbapi">pg8000.dbapi (Standard DB-API 2.0)</option>
-                      <option value="native">pg8000.native (High-performance Connection)</option>
-                    </select>
-                  </div>
+                  {/* Dialect-specific driver selectors */}
+                  {dbConfig.dbType === 'postgresql' && (
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">pg8000 Driver Mode</label>
+                      <select
+                        value={dbConfig.interfaceStyle}
+                        onChange={(e) => setDbConfig({ ...dbConfig, interfaceStyle: e.target.value as any })}
+                        className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
+                      >
+                        <option value="dbapi">pg8000.dbapi (Standard DB-API 2.0)</option>
+                        <option value="native">pg8000.native (High-performance Connection)</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {dbConfig.dbType === 'sqlserver' && (
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">SQL Server Library</label>
+                      <select
+                        value={dbConfig.sqlServerDriver}
+                        onChange={(e) => setDbConfig({ ...dbConfig, sqlServerDriver: e.target.value as SqlServerDriver })}
+                        className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
+                      >
+                        <option value="pymssql">pymssql (Recommended - Pure Python)</option>
+                        <option value="pyodbc">pyodbc (ODBC Driver Environment)</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {dbConfig.dbType === 'oracle' && (
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Oracle Driver Mode</label>
+                      <div className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/60 text-slate-800 dark:text-slate-200 text-xs flex items-center gap-1.5 font-mono">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                        <span>oracledb Thin Mode</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
+
+                {/* SQL Server ODBC driver custom name */}
+                {dbConfig.dbType === 'sqlserver' && dbConfig.sqlServerDriver === 'pyodbc' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">ODBC Driver Name</label>
+                      <input
+                        type="text"
+                        value={dbConfig.sqlServerOdbcDriverName}
+                        onChange={(e) => setDbConfig({ ...dbConfig, sqlServerOdbcDriverName: e.target.value })}
+                        placeholder="ODBC Driver 18 for SQL Server"
+                        className="w-full p-2 font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center pt-5">
+                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={dbConfig.trustServerCertificate}
+                          onChange={(e) => setDbConfig({ ...dbConfig, trustServerCertificate: e.target.checked })}
+                          className="rounded text-sky-600 focus:ring-sky-500"
+                        />
+                        <span>TrustServerCertificate=yes (Dev/Test SSL)</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
 
                 {/* Advanced Database Switches */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800/80 text-xs">
                   <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
                     <input
                       type="checkbox"
-                      checked={pgConfig.useEnvVars}
-                      onChange={(e) => setPgConfig({ ...pgConfig, useEnvVars: e.target.checked })}
+                      checked={dbConfig.useEnvVars}
+                      onChange={(e) => setDbConfig({ ...dbConfig, useEnvVars: e.target.checked })}
                       className="rounded text-emerald-600 focus:ring-emerald-500"
                     />
-                    <span>Extract Env Vars (PGHOST)</span>
+                    <span>Extract Env Vars ({currentDbMeta.envPrefix}_HOST)</span>
                   </label>
 
                   <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
                     <input
                       type="checkbox"
-                      checked={pgConfig.autoCommit}
-                      onChange={(e) => setPgConfig({ ...pgConfig, autoCommit: e.target.checked })}
+                      checked={dbConfig.autoCommit}
+                      onChange={(e) => setDbConfig({ ...dbConfig, autoCommit: e.target.checked })}
                       className="rounded text-emerald-600 focus:ring-emerald-500"
                     />
                     <span>Auto-commit DML queries</span>
@@ -806,22 +1159,24 @@ export const CurlDbChainConverterTool: React.FC = () => {
                   <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
                     <input
                       type="checkbox"
-                      checked={pgConfig.returnAsDict}
-                      onChange={(e) => setPgConfig({ ...pgConfig, returnAsDict: e.target.checked })}
+                      checked={dbConfig.returnAsDict}
+                      onChange={(e) => setDbConfig({ ...dbConfig, returnAsDict: e.target.checked })}
                       className="rounded text-emerald-600 focus:ring-emerald-500"
                     />
                     <span>Dict rows (named columns)</span>
                   </label>
 
-                  <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
-                    <input
-                      type="checkbox"
-                      checked={pgConfig.ssl}
-                      onChange={(e) => setPgConfig({ ...pgConfig, ssl: e.target.checked })}
-                      className="rounded text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <span>SSL Context (cloud DBs)</span>
-                  </label>
+                  {dbConfig.dbType === 'postgresql' && (
+                    <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={dbConfig.ssl}
+                        onChange={(e) => setDbConfig({ ...dbConfig, ssl: e.target.checked })}
+                        className="rounded text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span>SSL Context (cloud DBs)</span>
+                    </label>
+                  )}
                 </div>
               </div>
             )}
@@ -838,7 +1193,7 @@ export const CurlDbChainConverterTool: React.FC = () => {
                   Post-Login Operations ({steps.length} steps)
                 </h2>
                 <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Mix cURL API calls & PostgreSQL queries in sequence
+                  Mix cURL API calls & {currentDbMeta.shortName} queries in sequence
                 </span>
               </div>
 
@@ -856,7 +1211,7 @@ export const CurlDbChainConverterTool: React.FC = () => {
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/80 transition-colors shadow-2xs"
                 >
                   <Database className="w-3.5 h-3.5" />
-                  Add PostgreSQL Query
+                  Add {currentDbMeta.shortName} Query
                 </button>
               </div>
             </div>
@@ -896,14 +1251,14 @@ export const CurlDbChainConverterTool: React.FC = () => {
                               : 'bg-indigo-100 dark:bg-indigo-950/70 text-indigo-800 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-800'
                           }`}
                         >
-                          {isDb ? 'PostgreSQL (pg8000)' : 'HTTP cURL'}
+                          {isDb ? `${currentDbMeta.shortName} (${currentDbMeta.driverPackage})` : 'HTTP cURL'}
                         </span>
 
                         <input
                           type="text"
                           value={step.name}
                           onChange={(e) => handleUpdateStep(step.id, { name: e.target.value })}
-                          placeholder={isDb ? 'Database query description' : 'Request description'}
+                          placeholder={isDb ? `${currentDbMeta.shortName} query description` : 'Request description'}
                           className="font-bold text-xs text-slate-800 dark:text-slate-100 bg-transparent border-b border-dashed border-slate-300 dark:border-slate-700 hover:border-slate-400 focus:outline-none focus:border-indigo-500 px-1 py-0.5 flex-1 min-w-[120px]"
                         />
                       </div>
@@ -953,100 +1308,86 @@ export const CurlDbChainConverterTool: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Step Content: Conditional based on Type */}
+                    {/* Step Body */}
                     {isDb ? (
-                      /* DATABASE OPERATION EDITOR */
-                      <div className="flex flex-col gap-3">
-                        <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center justify-between">
-                            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
-                              <span>PostgreSQL Query (SQL):</span>
-                            </label>
-                            <div className="flex items-center gap-2">
-                              <span className="text-[10px] text-slate-400">Execution Mode:</span>
-                              <select
-                                value={(step as DatabaseChainStep).fetchMode}
-                                onChange={(e) =>
-                                  handleUpdateStep(step.id, {
-                                    fetchMode: e.target.value as any,
-                                  })
-                                }
-                                className="text-[11px] p-1 rounded border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200"
-                              >
-                                <option value="fetchall">Fetch All (fetchall)</option>
-                                <option value="fetchone">Fetch Single Row (fetchone)</option>
-                                <option value="execute">Execute / DML (commit)</option>
-                              </select>
-                            </div>
+                      /* Database Step Editor */
+                      <div className="flex flex-col gap-2.5">
+                        <div className="flex items-center justify-between text-xs">
+                          <label className="font-semibold text-slate-700 dark:text-slate-300">
+                            SQL Query ({currentDbMeta.name}):
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] text-slate-500">Execution Mode:</span>
+                            <select
+                              value={(step as DatabaseChainStep).fetchMode}
+                              onChange={(e) =>
+                                handleUpdateStep(step.id, {
+                                  fetchMode: e.target.value as any,
+                                })
+                              }
+                              className="p-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-xs font-medium"
+                            >
+                              <option value="fetchall">fetchall() → Multiple Rows</option>
+                              <option value="fetchone">fetchone() → Single Row</option>
+                              <option value="execute">execute() → Mutation (INSERT/UPDATE/DELETE)</option>
+                            </select>
                           </div>
-                          <textarea
-                            value={(step as DatabaseChainStep).query}
-                            onChange={(e) => handleUpdateStep(step.id, { query: e.target.value })}
-                            rows={3}
-                            placeholder="SELECT * FROM table WHERE condition;"
-                            className="w-full p-2.5 font-mono text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
-                          />
                         </div>
 
-                        {/* Parameter binding & Assertion Check */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                        <textarea
+                          value={(step as DatabaseChainStep).query}
+                          onChange={(e) => handleUpdateStep(step.id, { query: e.target.value })}
+                          rows={3}
+                          placeholder="SELECT id, name FROM users WHERE is_active = true;"
+                          className="w-full p-2.5 font-mono text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 leading-relaxed"
+                        />
+
+                        {/* Query Parameters and Assertions */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                           <div>
-                            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                              Query Parameters (%s bindings):
+                            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-0.5">
+                              Query Parameters (Python tuple / dict):
                             </label>
                             <input
                               type="text"
                               value={(step as DatabaseChainStep).params}
                               onChange={(e) => handleUpdateStep(step.id, { params: e.target.value })}
-                              placeholder={`e.g. (${extraction.variableName || 'token'},) or 'active', 100`}
-                              className="w-full p-2 font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
+                              placeholder={`e.g. (${extraction.variableName || 'token'},) or {'email': 'test@org.com'}`}
+                              className="w-full p-1.5 font-mono text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200"
                             />
-                            <span className="text-[10px] text-slate-400 mt-0.5 block">
-                              Tip: Pass <code className="font-mono text-emerald-600">{extraction.variableName || 'token'}</code> to inject the auth credential!
-                            </span>
                           </div>
 
-                          <div>
-                            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                              Validation Assertion:
+                          <div className="flex flex-col justify-end">
+                            <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300 pt-1">
+                              <input
+                                type="checkbox"
+                                checked={(step as DatabaseChainStep).assertRowCount ?? true}
+                                onChange={(e) => handleUpdateStep(step.id, { assertRowCount: e.target.checked })}
+                                className="rounded text-emerald-600 focus:ring-emerald-500"
+                              />
+                              <span className="font-semibold text-[11px]">Include Python Test Assertion</span>
                             </label>
-                            <div className="flex items-center gap-2">
+                            {(step as DatabaseChainStep).assertRowCount && (
                               <input
                                 type="text"
                                 value={(step as DatabaseChainStep).assertCondition || ''}
-                                onChange={(e) =>
-                                  handleUpdateStep(step.id, {
-                                    assertCondition: e.target.value,
-                                    assertRowCount: true,
-                                  })
-                                }
-                                placeholder="e.g. len(rows) > 0 or row['is_active']"
-                                className="w-full p-2 font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs"
+                                onChange={(e) => handleUpdateStep(step.id, { assertCondition: e.target.value })}
+                                placeholder="(step as DatabaseChainStep).fetchMode === 'fetchone' ? 'row is not None' : 'len(rows) > 0'"
+                                className="w-full mt-1 p-1 font-mono text-[11px] rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200"
                               />
-                            </div>
-                            <span className="text-[10px] text-slate-400 mt-0.5 block">
-                              Automatically tests database output in Python using <code className="font-mono text-indigo-600">assert</code>
-                            </span>
+                            )}
                           </div>
                         </div>
                       </div>
                     ) : (
-                      /* HTTP CURL OPERATION EDITOR */
+                      /* cURL Step Editor */
                       <div className="flex flex-col gap-2">
-                        <div className="flex items-center justify-between">
-                          <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-400">
-                            cURL Command:
-                          </label>
-                          <span className="text-[10px] text-slate-400 font-mono">
-                            Auto-injects <code className="text-indigo-600">{injection.headerName}</code>
-                          </span>
-                        </div>
                         <textarea
                           value={(step as CurlChainStep).curl}
                           onChange={(e) => handleUpdateStep(step.id, { curl: e.target.value })}
                           rows={3}
-                          placeholder="curl -X GET https://api.example.com/v1/orders -H 'Authorization: Bearer <token>'"
-                          className="w-full p-2.5 font-mono text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                          placeholder="curl -X GET https://api.example.com/v1/resource -H 'Authorization: Bearer <token>'"
+                          className="w-full p-2.5 font-mono text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 leading-relaxed"
                         />
                       </div>
                     )}
@@ -1227,8 +1568,10 @@ export const CurlDbChainConverterTool: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-mono pr-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              pg8000
+              <span className={`w-2 h-2 rounded-full ${
+                dbConfig.dbType === 'postgresql' ? 'bg-emerald-500' : dbConfig.dbType === 'sqlserver' ? 'bg-sky-500' : 'bg-amber-500'
+              }`}></span>
+              {currentDbMeta.driverPackage}
             </div>
           </div>
 
@@ -1240,7 +1583,7 @@ export const CurlDbChainConverterTool: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="text-[11px] font-mono text-emerald-400 font-bold flex items-center gap-1.5">
                     <FileCode className="w-3.5 h-3.5" />
-                    curl_database_chain_test.py
+                    curl_{dbConfig.dbType}_chain_test.py
                   </span>
                   <span className="text-[10px] font-mono text-slate-500">
                     ({generatedPythonCode.split('\n').length} lines)
@@ -1261,7 +1604,9 @@ export const CurlDbChainConverterTool: React.FC = () => {
               {/* Dependencies Installation Helper */}
               <div className="px-4 py-2 bg-slate-950/40 border-b border-slate-800/80 flex items-center justify-between text-[11px] font-mono text-slate-400">
                 <span>Run command:</span>
-                <code className="text-emerald-400 select-all">pip install {options.httpLibrary === 'requests' ? 'requests' : options.httpLibrary.startsWith('httpx') ? 'httpx' : 'aiohttp'} pg8000</code>
+                <code className="text-emerald-400 select-all">
+                  pip install {options.httpLibrary === 'requests' ? 'requests' : options.httpLibrary.startsWith('httpx') ? 'httpx' : 'aiohttp'} {currentDbMeta.pipPackage}
+                </code>
               </div>
 
               {/* Code Display */}
@@ -1278,7 +1623,7 @@ export const CurlDbChainConverterTool: React.FC = () => {
             <div className="p-5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
               <h3 className="font-bold text-xs uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
                 <Workflow className="w-4 h-4 text-emerald-500" />
-                Execution Topology
+                Execution Topology ({currentDbMeta.name})
               </h3>
 
               <div className="flex flex-col gap-3">
@@ -1317,13 +1662,23 @@ export const CurlDbChainConverterTool: React.FC = () => {
                       <div
                         className={`p-3.5 rounded-xl border flex items-start gap-3 ${
                           isDb
-                            ? 'border-emerald-300 dark:border-emerald-800 bg-emerald-50/30 dark:bg-emerald-950/20'
+                            ? dbConfig.dbType === 'postgresql'
+                              ? 'border-emerald-300 dark:border-emerald-800 bg-emerald-50/30 dark:bg-emerald-950/20'
+                              : dbConfig.dbType === 'sqlserver'
+                              ? 'border-sky-300 dark:border-sky-800 bg-sky-50/30 dark:bg-sky-950/20'
+                              : 'border-amber-300 dark:border-amber-800 bg-amber-50/30 dark:bg-amber-950/20'
                             : 'border-indigo-300 dark:border-indigo-800 bg-indigo-50/30 dark:bg-indigo-950/20'
                         }`}
                       >
                         <div
                           className={`w-7 h-7 rounded-lg text-white font-bold text-xs flex items-center justify-center shrink-0 ${
-                            isDb ? 'bg-emerald-600' : 'bg-indigo-600'
+                            isDb
+                              ? dbConfig.dbType === 'postgresql'
+                                ? 'bg-emerald-600'
+                                : dbConfig.dbType === 'sqlserver'
+                                ? 'bg-sky-600'
+                                : 'bg-amber-600'
+                              : 'bg-indigo-600'
                           }`}
                         >
                           {idx + 2}
@@ -1338,7 +1693,7 @@ export const CurlDbChainConverterTool: React.FC = () => {
                                   : 'bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300'
                               }`}
                             >
-                              {isDb ? `PostgreSQL (${(s as DatabaseChainStep).fetchMode})` : 'HTTP API Call'}
+                              {isDb ? `${currentDbMeta.shortName} (${(s as DatabaseChainStep).fetchMode})` : 'HTTP API Call'}
                             </span>
                           </div>
                           {isDb ? (
@@ -1369,34 +1724,84 @@ export const CurlDbChainConverterTool: React.FC = () => {
             <div className="p-5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4 text-xs">
               <h3 className="font-bold text-xs uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-2">
                 <Terminal className="w-4 h-4 text-emerald-500" />
-                How to Run & Configure pg8000
+                Setup Guide: {currentDbMeta.name} ({currentDbMeta.driverPackage})
               </h3>
 
               <div className="flex flex-col gap-3 leading-relaxed text-slate-600 dark:text-slate-400">
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
-                  <span className="font-bold text-slate-800 dark:text-slate-200 block mb-1">1. Install Dependencies</span>
-                  <code className="block p-2 rounded bg-slate-900 text-emerald-400 font-mono text-[11px]">
-                    pip install requests pg8000
-                  </code>
+                  <span className="font-bold text-slate-800 dark:text-slate-200 block mb-1">
+                    1. Install Driver & HTTP Client
+                  </span>
+                  {dbConfig.dbType === 'postgresql' && (
+                    <code className="block p-2 rounded bg-slate-900 text-emerald-400 font-mono text-[11px]">
+                      pip install requests pg8000
+                    </code>
+                  )}
+                  {dbConfig.dbType === 'sqlserver' && (
+                    <code className="block p-2 rounded bg-slate-900 text-sky-400 font-mono text-[11px]">
+                      pip install requests {dbConfig.sqlServerDriver === 'pyodbc' ? 'pyodbc' : 'pymssql'}
+                    </code>
+                  )}
+                  {dbConfig.dbType === 'oracle' && (
+                    <code className="block p-2 rounded bg-slate-900 text-amber-400 font-mono text-[11px]">
+                      pip install requests oracledb
+                    </code>
+                  )}
                 </div>
 
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
-                  <span className="font-bold text-slate-800 dark:text-slate-200 block mb-1">2. Environment Variables</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200 block mb-1">
+                    2. Recommended Environment Variables
+                  </span>
                   <p className="text-[11px] mb-2">Configure credentials safely without committing passwords:</p>
-                  <pre className="p-2 rounded bg-slate-900 text-slate-300 font-mono text-[10px] overflow-x-auto">
-                    {`export PGHOST="localhost"
-export PGPORT="5432"
-export PGDATABASE="production_db"
-export PGUSER="postgres"
-export PGPASSWORD="mysecretpassword"`}
-                  </pre>
+                  {dbConfig.dbType === 'postgresql' && (
+                    <pre className="p-2 rounded bg-slate-900 text-slate-300 font-mono text-[10px] overflow-x-auto">
+{`export PGHOST="${dbConfig.host || 'localhost'}"
+export PGPORT="${dbConfig.port || 5432}"
+export PGDATABASE="${dbConfig.database || 'postgres'}"
+export PGUSER="${dbConfig.user || 'postgres'}"
+export PGPASSWORD="your_secret_password"`}
+                    </pre>
+                  )}
+                  {dbConfig.dbType === 'sqlserver' && (
+                    <pre className="p-2 rounded bg-slate-900 text-slate-300 font-mono text-[10px] overflow-x-auto">
+{`export MSSQL_HOST="${dbConfig.host || 'localhost'}"
+export MSSQL_PORT="${dbConfig.port || 1433}"
+export MSSQL_DATABASE="${dbConfig.database || 'master'}"
+export MSSQL_USER="${dbConfig.user || 'sa'}"
+export MSSQL_PASSWORD="your_secret_password"`}
+                    </pre>
+                  )}
+                  {dbConfig.dbType === 'oracle' && (
+                    <pre className="p-2 rounded bg-slate-900 text-slate-300 font-mono text-[10px] overflow-x-auto">
+{`export ORACLE_HOST="${dbConfig.host || 'localhost'}"
+export ORACLE_PORT="${dbConfig.port || 1521}"
+export ORACLE_SERVICE_NAME="${dbConfig.oracleServiceName || dbConfig.database || 'XEPDB1'}"
+export ORACLE_USER="${dbConfig.user || 'SYSTEM'}"
+export ORACLE_PASSWORD="your_secret_password"`}
+                    </pre>
+                  )}
                 </div>
 
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
-                  <span className="font-bold text-slate-800 dark:text-slate-200 block mb-1">3. Modular Step Execution</span>
-                  <p className="text-[11px]">
-                    Every API request and database query is generated into an isolated method. In the <code className="font-mono text-emerald-600">run_chain()</code> function at the bottom of the script, you can easily comment out any line with a single <code className="font-mono font-bold">#</code> to skip that operation during testing!
-                  </p>
+                  <span className="font-bold text-slate-800 dark:text-slate-200 block mb-1">
+                    3. Dialect Details & Driver Highlights
+                  </span>
+                  {dbConfig.dbType === 'postgresql' && (
+                    <p className="text-[11px]">
+                      Uses <code className="font-mono text-emerald-600">pg8000</code>, a pure-Python driver with zero C library dependencies. Supports both standard DB-API 2.0 cursor modes and native high-performance connection calls.
+                    </p>
+                  )}
+                  {dbConfig.dbType === 'sqlserver' && (
+                    <p className="text-[11px]">
+                      Uses <code className="font-mono text-sky-600">pymssql</code> (recommended pure-Python DB-API driver with <code className="font-mono">as_dict=True</code> cursor support) or <code className="font-mono text-sky-600">pyodbc</code> for environments configured with Microsoft ODBC Driver 18.
+                    </p>
+                  )}
+                  {dbConfig.dbType === 'oracle' && (
+                    <p className="text-[11px]">
+                      Uses the modern <code className="font-mono text-amber-600">oracledb</code> library in <strong>Thin Mode</strong>. No Oracle Instant Client installation or external binaries are required!
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
