@@ -261,7 +261,27 @@ export const CurlChainConverterTool: React.FC = () => {
 
       {/* Advanced Options Bar (Collapsible) */}
       {showAdvancedOptions && (
-        <div className="p-4 bg-slate-50/80 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+        <div className="p-4 bg-slate-50/80 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+          <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
+            <input
+              type="checkbox"
+              checked={options.baseUrlVariable ?? true}
+              onChange={(e) => setOptions({ ...options, baseUrlVariable: e.target.checked })}
+              className="rounded text-indigo-600 focus:ring-indigo-500"
+            />
+            <span className="font-medium text-indigo-600 dark:text-indigo-400">Extract Base URL Constant (BASE_URL)</span>
+          </label>
+
+          <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
+            <input
+              type="checkbox"
+              checked={options.modularMethods ?? true}
+              onChange={(e) => setOptions({ ...options, modularMethods: e.target.checked })}
+              className="rounded text-indigo-600 focus:ring-indigo-500"
+            />
+            <span className="font-medium text-indigo-600 dark:text-indigo-400">Modular methods per call (commentable)</span>
+          </label>
+
           <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
             <input
               type="checkbox"

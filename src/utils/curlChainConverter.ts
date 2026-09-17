@@ -38,6 +38,7 @@ export interface PythonChainGenOptions {
   printResponses: boolean;
   useTypeHints: boolean;
   baseUrlVariable: boolean;
+  modularMethods: boolean;
 }
 
 export const COMMON_RESPONSE_TOKENS: { label: string; value: string; description: string }[] = [
@@ -89,7 +90,8 @@ export const DEFAULT_OPTIONS: PythonChainGenOptions = {
   timeoutSeconds: 30,
   printResponses: true,
   useTypeHints: true,
-  baseUrlVariable: false,
+  baseUrlVariable: true,
+  modularMethods: true,
 };
 
 function pyEscape(str: string): string {
@@ -99,6 +101,131 @@ function pyEscape(str: string): string {
     .replace(/\n/g, '\\n')
     .replace(/\r/g, '\\r')
     .replace(/\t/g, '\\t');
+}
+
+export interface BaseUrlConstant {
+  name: string;
+  origin: string;
+}
+
+/**
+ * Parses raw URL into origin (root URL) and path
+ */
+export function getUrlOriginAndPath(rawUrl: string): { origin: string; path: string } {
+  if (!rawUrl) return { origin: '', path: '' };
+  try {
+    let toParse = rawUrl.trim();
+    if (!toParse.startsWith('http://') && !toParse.startsWith('https://')) {
+      toParse = 'https://' + toParse;
+    }
+    const parsed = new URL(toParse);
+    const origin = parsed.origin;
+    const path = parsed.pathname + (parsed.search || '');
+    return { origin, path };
+  } catch {
+    const match = rawUrl.match(/^(https?:\/\/[^\/?#]+)(.*)$/);
+    if (match) {
+      return { origin: match[1], path: match[2] || '/' };
+    }
+    return { origin: '', path: rawUrl };
+  }
+}
+
+/**
+ * Extracts unique root URLs across all cURL commands into clean Python constants (e.g. BASE_URL = "https://api.example.com")
+ */
+export function extractBaseUrls(
+  loginReq: ParsedCurlRequest,
+  subsequent: { parsed: ParsedCurlRequest }[]
+): {
+  constants: BaseUrlConstant[];
+  originToConstantMap: Map<string, string>;
+} {
+  const originToConstantMap = new Map<string, string>();
+  const constants: BaseUrlConstant[] = [];
+  const originsSeen = new Set<string>();
+
+  const allReqs = [loginReq, ...subsequent.map((s) => s.parsed)];
+  const validOrigins: string[] = [];
+
+  for (const req of allReqs) {
+    const rawUrl = req.baseUrl || req.url;
+    if (!rawUrl) continue;
+    const { origin } = getUrlOriginAndPath(rawUrl);
+    if (origin && !originsSeen.has(origin)) {
+      originsSeen.add(origin);
+      validOrigins.push(origin);
+    }
+  }
+
+  if (validOrigins.length === 1) {
+    const origin = validOrigins[0];
+    const name = 'BASE_URL';
+    originToConstantMap.set(origin, name);
+    constants.push({ name, origin });
+  } else if (validOrigins.length > 1) {
+    validOrigins.forEach((origin, idx) => {
+      let name = 'BASE_URL';
+      try {
+        const hostname = new URL(origin).hostname.toLowerCase();
+        if (hostname.includes('auth') || hostname.includes('login') || hostname.includes('oauth') || hostname.includes('idp')) {
+          name = 'AUTH_BASE_URL';
+        } else if (hostname.includes('api') && !constants.some((c) => c.name === 'API_BASE_URL')) {
+          name = 'API_BASE_URL';
+        } else {
+          name = idx === 0 ? 'BASE_URL' : `BASE_URL_${idx + 1}`;
+        }
+      } catch {
+        name = idx === 0 ? 'BASE_URL' : `BASE_URL_${idx + 1}`;
+      }
+
+      let uniqueName = name;
+      let counter = 2;
+      while (constants.some((c) => c.name === uniqueName)) {
+        uniqueName = `${name}_${counter++}`;
+      }
+
+      originToConstantMap.set(origin, uniqueName);
+      constants.push({ name: uniqueName, origin });
+    });
+  }
+
+  return { constants, originToConstantMap };
+}
+
+/**
+ * Formats a URL into a Python expression, utilizing BASE_URL constant if available
+ */
+export function formatPythonUrl(
+  rawUrl: string,
+  originToConstantMap?: Map<string, string>
+): string {
+  if (!originToConstantMap || originToConstantMap.size === 0) {
+    return `"${pyEscape(rawUrl)}"`;
+  }
+  const { origin, path } = getUrlOriginAndPath(rawUrl);
+  const constName = originToConstantMap.get(origin);
+  if (!constName) {
+    return `"${pyEscape(rawUrl)}"`;
+  }
+  if (!path || path === '/') {
+    return constName;
+  }
+  const cleanPath = path.startsWith('/') ? path : '/' + path;
+  return `f"{${constName}}${pyEscape(cleanPath)}"`;
+}
+
+/**
+ * Sanitizes step name into a valid, descriptive Python function/method name
+ */
+export function sanitizeMethodName(name: string, stepIndex: number): string {
+  const clean = name
+    .toLowerCase()
+    .replace(/^step\s*\d+\s*[:\-]?\s*/i, '')
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+  return `step_${stepIndex}_${clean || 'request'}`;
 }
 
 /**
@@ -245,7 +372,8 @@ function generateSingleCallSnippet(
   tokenVar: string,
   applyTokenDirectly: boolean,
   options: PythonChainGenOptions,
-  indent: string
+  indent: string,
+  originToConstantMap?: Map<string, string>
 ): string {
   const method = req.method.toUpperCase();
   const prep = prepareSubsequentRequest(req, injection, tokenVar);
@@ -254,7 +382,8 @@ function generateSingleCallSnippet(
   // URL
   const url = req.baseUrl || req.url || 'https://api.example.com';
   const urlVar = `url_${stepIndex}`;
-  lines.push(`${indent}${urlVar} = "${pyEscape(url)}"`);
+  const formattedUrl = formatPythonUrl(url, originToConstantMap);
+  lines.push(`${indent}${urlVar} = ${formattedUrl}`);
 
   // Headers
   const headersDict = { ...prep.headers };
@@ -382,22 +511,80 @@ export function generateChainedPythonScript(
   const isAsync = options.library === 'httpx_async' || options.library === 'aiohttp';
   const tokenVar = extraction.variableName || 'token';
 
+  const { constants: baseUrlConstants, originToConstantMap } = options.baseUrlVariable
+    ? extractBaseUrls(parsedLogin, parsedSubsequent)
+    : { constants: [], originToConstantMap: new Map<string, string>() };
+
   switch (options.structure) {
     case 'session':
-      return generateSessionScript(parsedLogin, parsedSubsequent, extraction, injection, options, isAsync, tokenVar);
+      return generateSessionScript(
+        parsedLogin,
+        parsedSubsequent,
+        extraction,
+        injection,
+        options,
+        isAsync,
+        tokenVar,
+        baseUrlConstants,
+        originToConstantMap
+      );
     case 'functions':
-      return generateFunctionsScript(parsedLogin, parsedSubsequent, extraction, injection, options, isAsync, tokenVar);
+      return generateFunctionsScript(
+        parsedLogin,
+        parsedSubsequent,
+        extraction,
+        injection,
+        options,
+        isAsync,
+        tokenVar,
+        baseUrlConstants,
+        originToConstantMap
+      );
     case 'class_client':
-      return generateClassClientScript(parsedLogin, parsedSubsequent, extraction, injection, options, isAsync, tokenVar);
+      return generateClassClientScript(
+        parsedLogin,
+        parsedSubsequent,
+        extraction,
+        injection,
+        options,
+        isAsync,
+        tokenVar,
+        baseUrlConstants,
+        originToConstantMap
+      );
     case 'sequential':
     default:
-      return generateSequentialScript(parsedLogin, parsedSubsequent, extraction, injection, options, isAsync, tokenVar);
+      return generateSequentialScript(
+        parsedLogin,
+        parsedSubsequent,
+        extraction,
+        injection,
+        options,
+        isAsync,
+        tokenVar,
+        baseUrlConstants,
+        originToConstantMap
+      );
   }
+}
+
+function renderBaseUrlConstantsBlock(constants: BaseUrlConstant[]): string[] {
+  if (!constants || constants.length === 0) return [];
+  const lines: string[] = [];
+  lines.push('# ==============================================================================');
+  lines.push('# Base URL Configuration (Extracted from cURL commands)');
+  lines.push('# ==============================================================================');
+  for (const c of constants) {
+    lines.push(`${c.name} = "${pyEscape(c.origin)}"`);
+  }
+  lines.push('');
+  return lines;
 }
 
 /**
  * 1. SESSION-BASED SCRIPT (requests.Session / httpx.Client)
- * Authenticates, stores the token on the session headers/cookies, and runs subsequent calls
+ * Authenticates, stores the token on the session headers/cookies, and runs subsequent calls.
+ * Supports modular individual methods for each API call so calls can be easily toggled/commented.
  */
 function generateSessionScript(
   loginReq: ParsedCurlRequest,
@@ -406,9 +593,12 @@ function generateSessionScript(
   injection: TokenInjectionConfig,
   options: PythonChainGenOptions,
   isAsync: boolean,
-  tokenVar: string
+  tokenVar: string,
+  baseUrlConstants: BaseUrlConstant[],
+  originToConstantMap: Map<string, string>
 ): string {
   const lines: string[] = [];
+  const ind = '    ';
 
   // Imports
   lines.push('import json');
@@ -426,125 +616,272 @@ function generateSessionScript(
   } else if (options.library === 'aiohttp') {
     lines.push('import aiohttp');
   }
-
   lines.push('');
+
+  // Base URL Constants
+  const baseBlock = renderBaseUrlConstantsBlock(baseUrlConstants);
+  if (baseBlock.length > 0) {
+    lines.push(...baseBlock);
+  }
+
   lines.push('# ==============================================================================');
   lines.push('# Authenticated API Execution Chain (Session-Based)');
   lines.push(`# Generated with Token: '${extraction.keyPath}' -> Injected into '${injection.headerName}'`);
   lines.push('# ==============================================================================\n');
 
-  const mainFunc = isAsync ? 'async def run_api_chain():' : 'def run_api_chain():';
-  lines.push(mainFunc);
-  const ind = '    ';
-
-  // Initialize session
-  if (options.library === 'requests') {
-    lines.push(`${ind}session = requests.Session()`);
-  } else if (options.library === 'httpx_sync') {
-    lines.push(`${ind}session = httpx.Client()`);
-  } else if (options.library === 'httpx_async') {
-    lines.push(`${ind}async with httpx.AsyncClient() as session:`);
-  } else if (options.library === 'aiohttp') {
-    lines.push(`${ind}async with aiohttp.ClientSession() as session:`);
-  }
-
-  const blockInd = (options.library === 'httpx_async' || options.library === 'aiohttp') ? ind + ind : ind;
-
-  // Step 1: Login Request
-  lines.push(`\n${blockInd}# ----------------------------------------------------------------------`);
-  lines.push(`${blockInd}# Step 1: Authentication & Token Retrieval`);
-  lines.push(`${blockInd}# ----------------------------------------------------------------------`);
-
-  const loginUrl = loginReq.baseUrl || loginReq.url || 'https://api.example.com/login';
-  lines.push(`${blockInd}login_url = "${pyEscape(loginUrl)}"`);
-
-  // Headers for login
-  const loginHeaders = { ...loginReq.headers };
-  delete loginHeaders['Host'];
-  delete loginHeaders['host'];
-  delete loginHeaders['Content-Length'];
-  delete loginHeaders['content-length'];
-
-  if (Object.keys(loginHeaders).length > 0) {
-    lines.push(`${blockInd}login_headers = {`);
-    for (const [k, v] of Object.entries(loginHeaders)) {
-      lines.push(`${blockInd}    "${pyEscape(k)}": "${pyEscape(v)}",`);
-    }
-    lines.push(`${blockInd}}`);
-  }
-
-  // Body for login
-  let loginBodyArg = '';
-  if (loginReq.body) {
-    if (loginReq.body.type === 'json' && loginReq.body.jsonData !== undefined) {
-      const jsonLit = toPythonLiteral(loginReq.body.jsonData, 4, Math.floor(blockInd.length / 4));
-      lines.push(`${blockInd}login_payload = ${jsonLit}`);
-      loginBodyArg = 'json=login_payload';
-    } else if (loginReq.body.type === 'form-urlencoded' && loginReq.body.formData) {
-      const formLit = toPythonLiteral(loginReq.body.formData, 4, Math.floor(blockInd.length / 4));
-      lines.push(`${blockInd}login_data = ${formLit}`);
-      loginBodyArg = 'data=login_data';
-    } else if (loginReq.body.rawText) {
-      lines.push(`${blockInd}login_data = """${pyEscape(loginReq.body.rawText)}"""`);
-      loginBodyArg = 'data=login_data';
-    }
-  }
-
-  const loginArgs = ['login_url'];
-  if (Object.keys(loginHeaders).length > 0) loginArgs.push('headers=login_headers');
-  if (loginBodyArg) loginArgs.push(loginBodyArg);
-  if (options.timeoutSeconds > 0) loginArgs.push(`timeout=${options.timeoutSeconds}`);
-
+  const asyncPrefix = isAsync ? 'async ' : '';
   const awaitPref = isAsync ? 'await ' : '';
-  const loginMethod = loginReq.method.toLowerCase();
-  lines.push(`${blockInd}print("[1/AUTH] Authenticating to login endpoint...")`);
-  lines.push(`${blockInd}login_res = ${awaitPref}session.${loginMethod}(${loginArgs.join(', ')})`);
 
-  if (options.includeErrorHandling) {
-    lines.push(`${blockInd}login_res.raise_for_status()`);
+  // Type hints for session
+  let sessionType = '';
+  if (options.useTypeHints) {
+    if (options.library === 'requests') sessionType = ': requests.Session';
+    else if (options.library === 'httpx_sync') sessionType = ': httpx.Client';
+    else if (options.library === 'httpx_async') sessionType = ': httpx.AsyncClient';
+    else if (options.library === 'aiohttp') sessionType = ': aiohttp.ClientSession';
   }
 
-  // Token extraction
-  lines.push('');
-  lines.push(generateTokenExtractionCode(extraction, 'login_res', blockInd));
-  lines.push(`${blockInd}print(f"✓ Authentication successful! Retrieved token: {${tokenVar}[:12]}... (len={len(${tokenVar})})")`);
+  // --- MODULAR METHODS MODE (Default) ---
+  if (options.modularMethods !== false) {
+    // 1. Modular Login Method
+    lines.push(`${asyncPrefix}def login(session${sessionType})${options.useTypeHints ? ' -> str' : ''}:`);
+    lines.push(`${ind}"""[Step 1] Authenticates to login endpoint and retrieves token"""`);
+    lines.push(`${ind}print("[1/AUTH] Authenticating to login endpoint...")`);
 
-  // Configure session headers / cookies with the extracted token
-  lines.push(`\n${blockInd}# Configure session defaults with the authentication token`);
-  if (injection.placement === 'header') {
-    const headerExpr = getHeaderValuePythonExpr(injection, tokenVar);
-    lines.push(`${blockInd}session.headers.update({`);
-    lines.push(`${blockInd}    "${pyEscape(injection.headerName)}": ${headerExpr}`);
-    lines.push(`${blockInd}})`);
-  } else if (injection.placement === 'cookie') {
-    lines.push(`${blockInd}session.cookies.set("${pyEscape(injection.headerName || 'token')}", ${tokenVar})`);
-  }
+    const loginUrl = loginReq.baseUrl || loginReq.url || 'https://api.example.com/login';
+    const formattedLoginUrl = formatPythonUrl(loginUrl, originToConstantMap);
+    lines.push(`${ind}login_url = ${formattedLoginUrl}`);
 
-  // Subsequent requests
-  subsequent.forEach((item, index) => {
-    const stepNum = index + 2;
+    const loginHeaders = { ...loginReq.headers };
+    delete loginHeaders['Host'];
+    delete loginHeaders['host'];
+    delete loginHeaders['Content-Length'];
+    delete loginHeaders['content-length'];
+
+    if (Object.keys(loginHeaders).length > 0) {
+      lines.push(`${ind}login_headers = {`);
+      for (const [k, v] of Object.entries(loginHeaders)) {
+        lines.push(`${ind}    "${pyEscape(k)}": "${pyEscape(v)}",`);
+      }
+      lines.push(`${ind}}`);
+    }
+
+    let loginBodyArg = '';
+    if (loginReq.body) {
+      if (loginReq.body.type === 'json' && loginReq.body.jsonData !== undefined) {
+        const jsonLit = toPythonLiteral(loginReq.body.jsonData, 4, 1);
+        lines.push(`${ind}login_payload = ${jsonLit}`);
+        loginBodyArg = 'json=login_payload';
+      } else if (loginReq.body.type === 'form-urlencoded' && loginReq.body.formData) {
+        const formLit = toPythonLiteral(loginReq.body.formData, 4, 1);
+        lines.push(`${ind}login_data = ${formLit}`);
+        loginBodyArg = 'data=login_data';
+      } else if (loginReq.body.rawText) {
+        lines.push(`${ind}login_data = """${pyEscape(loginReq.body.rawText)}"""`);
+        loginBodyArg = 'data=login_data';
+      }
+    }
+
+    const loginArgs = ['login_url'];
+    if (Object.keys(loginHeaders).length > 0) loginArgs.push('headers=login_headers');
+    if (loginBodyArg) loginArgs.push(loginBodyArg);
+    if (options.timeoutSeconds > 0) loginArgs.push(`timeout=${options.timeoutSeconds}`);
+
+    const loginMethod = loginReq.method.toLowerCase();
+    lines.push(`${ind}login_res = ${awaitPref}session.${loginMethod}(${loginArgs.join(', ')})`);
+
+    if (options.includeErrorHandling) {
+      lines.push(`${ind}login_res.raise_for_status()`);
+    }
+
+    lines.push('');
+    lines.push(generateTokenExtractionCode(extraction, 'login_res', ind));
+    lines.push(`${ind}print(f"✓ Authentication successful! Retrieved token: {${tokenVar}[:12]}... (len={len(${tokenVar})})")`);
+
+    lines.push(`\n${ind}# Configure session defaults with the authentication token`);
+    if (injection.placement === 'header') {
+      const headerExpr = getHeaderValuePythonExpr(injection, tokenVar);
+      lines.push(`${ind}session.headers.update({`);
+      lines.push(`${ind}    "${pyEscape(injection.headerName)}": ${headerExpr}`);
+      lines.push(`${ind}})`);
+    } else if (injection.placement === 'cookie') {
+      lines.push(`${ind}session.cookies.set("${pyEscape(injection.headerName || 'token')}", ${tokenVar})`);
+    }
+
+    lines.push(`${ind}return ${tokenVar}\n`);
+
+    // 2. Individual methods for each subsequent API call
+    subsequent.forEach((item, index) => {
+      const stepNum = index + 2;
+      const fnName = sanitizeMethodName(item.name || `request_${stepNum}`, stepNum);
+      const docName = item.name || `Subsequent Request ${stepNum}`;
+      const retType = options.useTypeHints ? ' -> dict' : '';
+
+      lines.push(`\n${asyncPrefix}def ${fnName}(session${sessionType})${retType}:`);
+      lines.push(`${ind}"""[Step ${stepNum}] ${docName}"""`);
+
+      const applyDirectly = injection.placement === 'query' || injection.placement === 'body_json';
+      const snippet = generateSingleCallSnippet(
+        item.parsed,
+        stepNum,
+        'session',
+        isAsync,
+        injection,
+        tokenVar,
+        applyDirectly,
+        options,
+        ind,
+        originToConstantMap
+      );
+      lines.push(snippet);
+
+      // Return response parsed JSON or text
+      lines.push(`${ind}try:`);
+      lines.push(`${ind}    return res_${stepNum}.json()`);
+      lines.push(`${ind}except Exception:`);
+      lines.push(`${ind}    return res_${stepNum}.text`);
+    });
+
+    // 3. Main runner function with commentable API calls
+    const mainFunc = isAsync ? 'async def run_api_chain():' : 'def run_api_chain():';
+    lines.push(`\n\n${mainFunc}`);
+
+    if (options.library === 'requests') {
+      lines.push(`${ind}session = requests.Session()`);
+    } else if (options.library === 'httpx_sync') {
+      lines.push(`${ind}session = httpx.Client()`);
+    } else if (options.library === 'httpx_async') {
+      lines.push(`${ind}async with httpx.AsyncClient() as session:`);
+    } else if (options.library === 'aiohttp') {
+      lines.push(`${ind}async with aiohttp.ClientSession() as session:`);
+    }
+
+    const runBlockInd = (options.library === 'httpx_async' || options.library === 'aiohttp') ? ind + ind : ind;
+
+    lines.push(`\n${runBlockInd}# ------------------------------------------------------------------`);
+    lines.push(`${runBlockInd}# Step 1: Authentication & Token Retrieval`);
+    lines.push(`${runBlockInd}# ------------------------------------------------------------------`);
+    lines.push(`${runBlockInd}${tokenVar} = ${awaitPref}login(session)`);
+
+    lines.push(`\n${runBlockInd}print("\\n--- Executing Subsequent API Requests ---")`);
+    lines.push(`${runBlockInd}# Tip: Comment out any line below with '#' to skip that specific API call:\n`);
+
+    subsequent.forEach((item, index) => {
+      const stepNum = index + 2;
+      const fnName = sanitizeMethodName(item.name || `request_${stepNum}`, stepNum);
+      lines.push(`${runBlockInd}# Step ${stepNum}: ${item.name || 'Subsequent Call'}`);
+      lines.push(`${runBlockInd}${awaitPref}${fnName}(session)`);
+      lines.push('');
+    });
+
+    lines.push(`${runBlockInd}print("\\nAll API requests in chain executed successfully!")`);
+  } else {
+    // --- MONOLITHIC / INLINE SCRIPT MODE (When modularMethods is false) ---
+    const mainFunc = isAsync ? 'async def run_api_chain():' : 'def run_api_chain():';
+    lines.push(mainFunc);
+
+    if (options.library === 'requests') {
+      lines.push(`${ind}session = requests.Session()`);
+    } else if (options.library === 'httpx_sync') {
+      lines.push(`${ind}session = httpx.Client()`);
+    } else if (options.library === 'httpx_async') {
+      lines.push(`${ind}async with httpx.AsyncClient() as session:`);
+    } else if (options.library === 'aiohttp') {
+      lines.push(`${ind}async with aiohttp.ClientSession() as session:`);
+    }
+
+    const blockInd = (options.library === 'httpx_async' || options.library === 'aiohttp') ? ind + ind : ind;
+
+    // Step 1: Login Request
     lines.push(`\n${blockInd}# ----------------------------------------------------------------------`);
-    lines.push(`${blockInd}# Step ${stepNum}: ${item.name || 'Subsequent Request ' + (index + 1)}`);
+    lines.push(`${blockInd}# Step 1: Authentication & Token Retrieval`);
     lines.push(`${blockInd}# ----------------------------------------------------------------------`);
 
-    // In session mode with headers, session already carries the token header,
-    // but if placement is query or custom override, apply directly.
-    const applyDirectly = injection.placement === 'query' || injection.placement === 'body_json';
-    const snippet = generateSingleCallSnippet(
-      item.parsed,
-      stepNum,
-      'session',
-      isAsync,
-      injection,
-      tokenVar,
-      applyDirectly,
-      options,
-      blockInd
-    );
-    lines.push(snippet);
-  });
+    const loginUrl = loginReq.baseUrl || loginReq.url || 'https://api.example.com/login';
+    const formattedLoginUrl = formatPythonUrl(loginUrl, originToConstantMap);
+    lines.push(`${blockInd}login_url = ${formattedLoginUrl}`);
 
-  lines.push(`\n${blockInd}print("\\nAll API requests in chain executed successfully!")`);
+    const loginHeaders = { ...loginReq.headers };
+    delete loginHeaders['Host'];
+    delete loginHeaders['host'];
+    delete loginHeaders['Content-Length'];
+    delete loginHeaders['content-length'];
+
+    if (Object.keys(loginHeaders).length > 0) {
+      lines.push(`${blockInd}login_headers = {`);
+      for (const [k, v] of Object.entries(loginHeaders)) {
+        lines.push(`${blockInd}    "${pyEscape(k)}": "${pyEscape(v)}",`);
+      }
+      lines.push(`${blockInd}}`);
+    }
+
+    let loginBodyArg = '';
+    if (loginReq.body) {
+      if (loginReq.body.type === 'json' && loginReq.body.jsonData !== undefined) {
+        const jsonLit = toPythonLiteral(loginReq.body.jsonData, 4, Math.floor(blockInd.length / 4));
+        lines.push(`${blockInd}login_payload = ${jsonLit}`);
+        loginBodyArg = 'json=login_payload';
+      } else if (loginReq.body.type === 'form-urlencoded' && loginReq.body.formData) {
+        const formLit = toPythonLiteral(loginReq.body.formData, 4, Math.floor(blockInd.length / 4));
+        lines.push(`${blockInd}login_data = ${formLit}`);
+        loginBodyArg = 'data=login_data';
+      } else if (loginReq.body.rawText) {
+        lines.push(`${blockInd}login_data = """${pyEscape(loginReq.body.rawText)}"""`);
+        loginBodyArg = 'data=login_data';
+      }
+    }
+
+    const loginArgs = ['login_url'];
+    if (Object.keys(loginHeaders).length > 0) loginArgs.push('headers=login_headers');
+    if (loginBodyArg) loginArgs.push(loginBodyArg);
+    if (options.timeoutSeconds > 0) loginArgs.push(`timeout=${options.timeoutSeconds}`);
+
+    const loginMethod = loginReq.method.toLowerCase();
+    lines.push(`${blockInd}print("[1/AUTH] Authenticating to login endpoint...")`);
+    lines.push(`${blockInd}login_res = ${awaitPref}session.${loginMethod}(${loginArgs.join(', ')})`);
+
+    if (options.includeErrorHandling) {
+      lines.push(`${blockInd}login_res.raise_for_status()`);
+    }
+
+    lines.push('');
+    lines.push(generateTokenExtractionCode(extraction, 'login_res', blockInd));
+    lines.push(`${blockInd}print(f"✓ Authentication successful! Retrieved token: {${tokenVar}[:12]}... (len={len(${tokenVar})})")`);
+
+    lines.push(`\n${blockInd}# Configure session defaults with the authentication token`);
+    if (injection.placement === 'header') {
+      const headerExpr = getHeaderValuePythonExpr(injection, tokenVar);
+      lines.push(`${blockInd}session.headers.update({`);
+      lines.push(`${blockInd}    "${pyEscape(injection.headerName)}": ${headerExpr}`);
+      lines.push(`${blockInd}})`);
+    } else if (injection.placement === 'cookie') {
+      lines.push(`${blockInd}session.cookies.set("${pyEscape(injection.headerName || 'token')}", ${tokenVar})`);
+    }
+
+    subsequent.forEach((item, index) => {
+      const stepNum = index + 2;
+      lines.push(`\n${blockInd}# ----------------------------------------------------------------------`);
+      lines.push(`${blockInd}# Step ${stepNum}: ${item.name || 'Subsequent Request ' + (index + 1)}`);
+      lines.push(`${blockInd}# ----------------------------------------------------------------------`);
+
+      const applyDirectly = injection.placement === 'query' || injection.placement === 'body_json';
+      const snippet = generateSingleCallSnippet(
+        item.parsed,
+        stepNum,
+        'session',
+        isAsync,
+        injection,
+        tokenVar,
+        applyDirectly,
+        options,
+        blockInd,
+        originToConstantMap
+      );
+      lines.push(snippet);
+    });
+
+    lines.push(`\n${blockInd}print("\\nAll API requests in chain executed successfully!")`);
+  }
 
   // Runner block
   lines.push('\n\nif __name__ == "__main__":');
@@ -568,7 +905,9 @@ function generateFunctionsScript(
   injection: TokenInjectionConfig,
   options: PythonChainGenOptions,
   isAsync: boolean,
-  tokenVar: string
+  tokenVar: string,
+  baseUrlConstants: BaseUrlConstant[],
+  originToConstantMap: Map<string, string>
 ): string {
   const lines: string[] = [];
   const ind = '    ';
@@ -579,8 +918,13 @@ function generateFunctionsScript(
   if (options.library === 'requests') lines.push('import requests');
   else if (options.library === 'httpx_sync' || options.library === 'httpx_async') lines.push('import httpx');
   else if (options.library === 'aiohttp') lines.push('import aiohttp');
-
   lines.push('');
+
+  const baseBlock = renderBaseUrlConstantsBlock(baseUrlConstants);
+  if (baseBlock.length > 0) {
+    lines.push(...baseBlock);
+  }
+
   lines.push('# ==============================================================================');
   lines.push('# Modular Authenticated Functions');
   lines.push('# ==============================================================================\n');
@@ -592,7 +936,8 @@ function generateFunctionsScript(
   lines.push(`${ind}"""Authenticates against the login endpoint and returns the extracted ${tokenVar}"""`);
 
   const loginUrl = loginReq.baseUrl || loginReq.url || 'https://api.example.com/login';
-  lines.push(`${ind}url = "${pyEscape(loginUrl)}"`);
+  const formattedLoginUrl = formatPythonUrl(loginUrl, originToConstantMap);
+  lines.push(`${ind}url = ${formattedLoginUrl}`);
 
   // Headers
   const loginHeaders = { ...loginReq.headers };
@@ -649,7 +994,7 @@ function generateFunctionsScript(
 
   // Subsequent functions
   subsequent.forEach((item, index) => {
-    const fnName = `step_${index + 1}_${sanitizeIdentifier(item.name || 'request')}`;
+    const fnName = sanitizeMethodName(item.name || `request_${index + 1}`, index + 1);
     const tokenParam = options.useTypeHints ? `${tokenVar}: str` : `${tokenVar}`;
     const retType = options.useTypeHints ? ' -> dict' : '';
 
@@ -665,16 +1010,23 @@ function generateFunctionsScript(
       tokenVar,
       true,
       options,
-      options.library === 'httpx_async' ? ind + ind : ind
+      options.library === 'httpx_async' ? ind + ind : ind,
+      originToConstantMap
     );
 
     if (options.library === 'httpx_async') {
       lines.push(`${ind}async with httpx.AsyncClient() as client:`);
       lines.push(snippet);
-      lines.push(`${ind}    return res_${index + 1}.json()`);
+      lines.push(`${ind}    try:`);
+      lines.push(`${ind}        return res_${index + 1}.json()`);
+      lines.push(`${ind}    except Exception:`);
+      lines.push(`${ind}        return res_${index + 1}.text`);
     } else {
       lines.push(snippet);
-      lines.push(`${ind}return res_${index + 1}.json()`);
+      lines.push(`${ind}try:`);
+      lines.push(`${ind}    return res_${index + 1}.json()`);
+      lines.push(`${ind}except Exception:`);
+      lines.push(`${ind}    return res_${index + 1}.text`);
     }
   });
 
@@ -682,15 +1034,19 @@ function generateFunctionsScript(
   lines.push(`\n\n${asyncPrefix}def main():`);
   lines.push(`${ind}print("[*] Starting authenticated execution chain...")`);
   lines.push(`${ind}${tokenVar} = ${awaitPrefix}login()`);
-  lines.push(`${ind}print(f"✓ Retrieved token: {${tokenVar}[:10]}...")\n`);
+  lines.push(`${ind}print(f"✓ Retrieved token: {${tokenVar}[:10]}...\\n")`);
+
+  lines.push(`\n${ind}print("\\n--- Executing Subsequent API Requests ---")`);
+  lines.push(`${ind}# Tip: Comment out any line below with '#' to skip that specific API call:\n`);
 
   subsequent.forEach((item, index) => {
-    const fnName = `step_${index + 1}_${sanitizeIdentifier(item.name || 'request')}`;
-    lines.push(`${ind}print(f"\\n--- Executing ${item.name || 'Step ' + (index + 1)} ---")`);
+    const fnName = sanitizeMethodName(item.name || `request_${index + 1}`, index + 1);
+    lines.push(`${ind}# Step ${index + 2}: ${item.name || 'API Call'}`);
     lines.push(`${ind}${awaitPrefix}${fnName}(${tokenVar})`);
+    lines.push('');
   });
 
-  lines.push(`\n${ind}print("\\nAll steps completed successfully!")`);
+  lines.push(`${ind}print("\\nAll steps completed successfully!")`);
 
   lines.push('\n\nif __name__ == "__main__":');
   if (isAsync) lines.push('    asyncio.run(main())');
@@ -701,7 +1057,8 @@ function generateFunctionsScript(
 
 /**
  * 3. SEQUENTIAL PROCEDURAL SCRIPT
- * Linear, easy to read and copy/paste into a notebook or standalone runner
+ * Linear, easy to read and copy/paste into a notebook or standalone runner.
+ * Supports modular methods when options.modularMethods is true.
  */
 function generateSequentialScript(
   loginReq: ParsedCurlRequest,
@@ -710,8 +1067,25 @@ function generateSequentialScript(
   injection: TokenInjectionConfig,
   options: PythonChainGenOptions,
   isAsync: boolean,
-  tokenVar: string
+  tokenVar: string,
+  baseUrlConstants: BaseUrlConstant[],
+  originToConstantMap: Map<string, string>
 ): string {
+  if (options.modularMethods !== false) {
+    // If modular methods requested, delegate to functions script which creates clean standalone methods
+    return generateFunctionsScript(
+      loginReq,
+      subsequent,
+      extraction,
+      injection,
+      options,
+      isAsync,
+      tokenVar,
+      baseUrlConstants,
+      originToConstantMap
+    );
+  }
+
   const lines: string[] = [];
 
   lines.push('import json');
@@ -720,8 +1094,13 @@ function generateSequentialScript(
   if (options.library === 'requests') lines.push('import requests');
   else if (options.library === 'httpx_sync' || options.library === 'httpx_async') lines.push('import httpx');
   else if (options.library === 'aiohttp') lines.push('import aiohttp');
-
   lines.push('');
+
+  const baseBlock = renderBaseUrlConstantsBlock(baseUrlConstants);
+  if (baseBlock.length > 0) {
+    lines.push(...baseBlock);
+  }
+
   lines.push('# ==============================================================================');
   lines.push('# Sequential cURL Chain to Python Script');
   lines.push('# ==============================================================================\n');
@@ -736,7 +1115,8 @@ function generateSequentialScript(
   lines.push(`${ind}# ==========================================`);
 
   const loginUrl = loginReq.baseUrl || loginReq.url || 'https://api.example.com/login';
-  lines.push(`${ind}login_url = "${pyEscape(loginUrl)}"`);
+  const formattedLoginUrl = formatPythonUrl(loginUrl, originToConstantMap);
+  lines.push(`${ind}login_url = ${formattedLoginUrl}`);
 
   const loginHeaders = { ...loginReq.headers };
   delete loginHeaders['Host'];
@@ -800,7 +1180,8 @@ function generateSequentialScript(
       tokenVar,
       true,
       options,
-      ind
+      ind,
+      originToConstantMap
     );
     lines.push(snippet);
     lines.push('');
@@ -824,7 +1205,9 @@ function generateClassClientScript(
   injection: TokenInjectionConfig,
   options: PythonChainGenOptions,
   isAsync: boolean,
-  tokenVar: string
+  tokenVar: string,
+  baseUrlConstants: BaseUrlConstant[],
+  originToConstantMap: Map<string, string>
 ): string {
   const lines: string[] = [];
   const ind = '    ';
@@ -835,13 +1218,19 @@ function generateClassClientScript(
   if (options.library === 'requests') lines.push('import requests');
   else if (options.library === 'httpx_sync' || options.library === 'httpx_async') lines.push('import httpx');
   else if (options.library === 'aiohttp') lines.push('import aiohttp');
-
   lines.push('');
+
+  const baseBlock = renderBaseUrlConstantsBlock(baseUrlConstants);
+  if (baseBlock.length > 0) {
+    lines.push(...baseBlock);
+  }
+
   lines.push('class AuthenticatedApiClient:');
   lines.push(`${ind}"""Production-ready API client managing login auth token & subsequent requests"""\n`);
 
   // __init__
-  lines.push(`${ind}def __init__(self, base_url: str = ""):`);
+  const defaultBaseUrlArg = baseUrlConstants.length > 0 ? baseUrlConstants[0].name : '""';
+  lines.push(`${ind}def __init__(self, base_url: str = ${defaultBaseUrlArg}):`);
   lines.push(`${ind}${ind}self.base_url = base_url`);
   lines.push(`${ind}${ind}self.${tokenVar} = None`);
   if (options.library === 'requests') {
@@ -857,7 +1246,8 @@ function generateClassClientScript(
   lines.push(`${ind}${ind}"""Executes login request and caches extracted token"""`);
 
   const loginUrl = loginReq.baseUrl || loginReq.url || 'https://api.example.com/login';
-  lines.push(`${ind}${ind}url = f"{self.base_url}${pyEscape(loginUrl)}" if self.base_url else "${pyEscape(loginUrl)}"`);
+  const formattedLoginUrl = formatPythonUrl(loginUrl, originToConstantMap);
+  lines.push(`${ind}${ind}url = ${formattedLoginUrl}`);
 
   const loginHeaders = { ...loginReq.headers };
   delete loginHeaders['Host'];
@@ -912,43 +1302,46 @@ function generateClassClientScript(
 
   // Methods for each subsequent request
   subsequent.forEach((item, index) => {
-    const methodName = sanitizeIdentifier(item.name || `request_${index + 1}`);
+    const stepNum = index + 2;
+    const methodName = sanitizeMethodName(item.name || `request_${stepNum}`, stepNum);
     lines.push(`${ind}${asyncPref}def ${methodName}(self)${options.useTypeHints ? ' -> dict' : ''}:`);
-    lines.push(`${ind}${ind}"""${item.name || 'Request ' + (index + 1)}"""`);
+    lines.push(`${ind}${ind}"""[Step ${stepNum}] ${item.name || 'Request ' + (index + 1)}"""`);
     lines.push(`${ind}${ind}if not self.${tokenVar}:`);
     lines.push(`${ind}${ind}    ${awaitPrefix}self.authenticate()`);
 
     const snippet = generateSingleCallSnippet(
       item.parsed,
-      index + 1,
+      stepNum,
       'self.session',
       isAsync,
       injection,
       `self.${tokenVar}`,
       injection.placement !== 'header',
       options,
-      ind + ind
+      ind + ind,
+      originToConstantMap
     );
     lines.push(snippet);
-    lines.push(`${ind}${ind}return res_${index + 1}.json()\n`);
+    lines.push(`${ind}${ind}try:`);
+    lines.push(`${ind}${ind}    return res_${stepNum}.json()`);
+    lines.push(`${ind}${ind}except Exception:`);
+    lines.push(`${ind}${ind}    return res_${stepNum}.text\n`);
   });
 
   // Runner
   lines.push('if __name__ == "__main__":');
   lines.push('    client = AuthenticatedApiClient()');
   lines.push('    client.authenticate()');
+  lines.push('');
+  lines.push('    print("\\n--- Executing Subsequent API Requests ---")');
+  lines.push('    # Tip: Comment out any line below with \'#\' to skip that specific API call:');
   subsequent.forEach((item, index) => {
-    const methodName = sanitizeIdentifier(item.name || `request_${index + 1}`);
+    const stepNum = index + 2;
+    const methodName = sanitizeMethodName(item.name || `request_${stepNum}`, stepNum);
+    lines.push(`    # Step ${stepNum}: ${item.name || 'API Call'}`);
     lines.push(`    client.${methodName}()`);
+    lines.push('');
   });
 
   return lines.join('\n');
-}
-
-function sanitizeIdentifier(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9_]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_|_$/g, '') || 'step';
 }
