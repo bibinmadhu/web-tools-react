@@ -28,6 +28,7 @@ export const ToolGrid: React.FC<ToolGridProps> = ({
     generators: 'GENERATORS & UTILITIES',
     network: 'NETWORK & WEB TOOLS',
     documents: 'DOCUMENTS & PDF UTILITIES',
+    testing: 'TESTING TOOLS',
     all: 'ALL DEVELOPER TOOLS',
   };
 

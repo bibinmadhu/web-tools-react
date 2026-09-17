@@ -363,7 +363,7 @@ export function getHeaderValuePythonExpr(injection: TokenInjectionConfig, tokenV
 /**
  * Converts a parsed cURL into Python request invocation snippet
  */
-function generateSingleCallSnippet(
+export function generateSingleCallSnippet(
   req: ParsedCurlRequest,
   stepIndex: number,
   clientVar: string, // e.g. 'session' or 'requests' or 'client'

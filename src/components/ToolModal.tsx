@@ -25,6 +25,7 @@ import { PdfToMarkdownTool } from './tools/PdfToMarkdownTool';
 import { AgreementGeneratorTool } from './tools/AgreementGeneratorTool';
 import { QrCodeGeneratorTool } from './tools/QrCodeGeneratorTool';
 import { CurlChainConverterTool } from './tools/CurlChainConverterTool';
+import { CurlDbChainConverterTool } from './tools/CurlDbChainConverterTool';
 import { GenericTool } from './tools/GenericTool';
 
 interface ToolModalProps {
@@ -92,12 +93,14 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return <QrCodeGeneratorTool />;
       case 'curl-chain-to-python':
         return <CurlChainConverterTool />;
+      case 'curl-db-chain-to-python':
+        return <CurlDbChainConverterTool />;
       default:
         return <GenericTool tool={tool} />;
     }
   };
 
-  const isWideModal = ['pdf-signer', 'pdf-converter', 'pdf-to-markdown', 'invoice-generator', 'agreement-generator', 'curl-converter', 'curl-chain-to-python', 'java-formatter', 'multi-obfuscator', 'qr-generator'].includes(tool.id);
+  const isWideModal = ['pdf-signer', 'pdf-converter', 'pdf-to-markdown', 'invoice-generator', 'agreement-generator', 'curl-converter', 'curl-chain-to-python', 'curl-db-chain-to-python', 'java-formatter', 'multi-obfuscator', 'qr-generator'].includes(tool.id);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6">
