@@ -25,7 +25,9 @@ import {
   GitCompare,
   TestTube2,
   HelpCircle,
-  Code2
+  Code2,
+  WrapText,
+  AlignLeft
 } from 'lucide-react';
 import JSZip from 'jszip';
 import {
@@ -38,11 +40,13 @@ import {
 } from '../../utils/javaDualObfuscator';
 import { JAVA_DUAL_PRESETS, JavaDualPreset } from '../../utils/javaDualPresets';
 import { JavaObfuscationMapping, DEFAULT_EXCLUDED_PACKAGES } from '../../utils/javaObfuscator';
+import { formatJavaCode } from '../../utils/javaFormatter';
 
 export const DualJavaObfuscatorTool: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'obfuscate' | 'deobfuscate' | 'mapping' | 'diff' | 'settings'>('obfuscate');
   const [selectedFileTab, setSelectedFileTab] = useState<'both' | 'main' | 'test'>('both');
   const [viewMode, setViewMode] = useState<'split' | 'code'>('split');
+  const [wrapLines, setWrapLines] = useState<boolean>(false);
 
   // Input states
   const [selectedPresetId, setSelectedPresetId] = useState<string>(JAVA_DUAL_PRESETS[0].id);
@@ -94,6 +98,91 @@ export const DualJavaObfuscatorTool: React.FC = () => {
     setCopiedKey(key);
     showStatus('Copied to clipboard!');
     setTimeout(() => setCopiedKey(null), 2000);
+  };
+
+  // Code Formatting Helpers
+  const handleFormatMainInput = () => {
+    try {
+      const formatted = formatJavaCode(mainCode, { indentSize: 4 });
+      setMainCode(formatted);
+      showStatus('Main class formatted with clean 4-space indentation!');
+    } catch {
+      showStatus('Could not auto-format main class code.');
+    }
+  };
+
+  const handleFormatTestInput = () => {
+    try {
+      const formatted = formatJavaCode(testCode, { indentSize: 4 });
+      setTestCode(formatted);
+      showStatus('Test class formatted with clean 4-space indentation!');
+    } catch {
+      showStatus('Could not auto-format test class code.');
+    }
+  };
+
+  const handleFormatBothInputs = () => {
+    try {
+      const formattedMain = formatJavaCode(mainCode, { indentSize: 4 });
+      const formattedTest = formatJavaCode(testCode, { indentSize: 4 });
+      setMainCode(formattedMain);
+      setTestCode(formattedTest);
+      showStatus('Both Java files formatted with clean 4-space indentation!');
+    } catch {
+      showStatus('Could not auto-format Java files.');
+    }
+  };
+
+  const handleFormatObfuscatedMain = () => {
+    try {
+      const formatted = formatJavaCode(result.mainClassFile.obfuscatedCode, { indentSize: 4 });
+      setResult((prev) => ({
+        ...prev,
+        mainClassFile: {
+          ...prev.mainClassFile,
+          obfuscatedCode: formatted,
+        },
+      }));
+      showStatus('Obfuscated main class reformatted with clean indentation!');
+    } catch {
+      showStatus('Could not format obfuscated code.');
+    }
+  };
+
+  const handleFormatObfuscatedTest = () => {
+    try {
+      const formatted = formatJavaCode(result.testClassFile.obfuscatedCode, { indentSize: 4 });
+      setResult((prev) => ({
+        ...prev,
+        testClassFile: {
+          ...prev.testClassFile,
+          obfuscatedCode: formatted,
+        },
+      }));
+      showStatus('Obfuscated test class reformatted with clean indentation!');
+    } catch {
+      showStatus('Could not format obfuscated code.');
+    }
+  };
+
+  const handleFormatRestoredMain = () => {
+    try {
+      const formatted = formatJavaCode(restoredMainCode, { indentSize: 4 });
+      setRestoredMainCode(formatted);
+      showStatus('Restored main class reformatted with clean indentation!');
+    } catch {
+      showStatus('Could not format restored code.');
+    }
+  };
+
+  const handleFormatRestoredTest = () => {
+    try {
+      const formatted = formatJavaCode(restoredTestCode, { indentSize: 4 });
+      setRestoredTestCode(formatted);
+      showStatus('Restored test class reformatted with clean indentation!');
+    } catch {
+      showStatus('Could not format restored code.');
+    }
   };
 
   // Run Obfuscation
@@ -453,33 +542,59 @@ How to De-obfuscate:
           </button>
         </div>
 
-        {/* View Layout Filter (Both files vs Main vs Test) */}
+        {/* View Layout Filter (Both files vs Main vs Test) + Format & Wrap Controls */}
         {(activeTab === 'obfuscate' || activeTab === 'deobfuscate') && (
-          <div className="flex items-center gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-800 text-xs">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-800 text-xs">
+              <button
+                onClick={() => setSelectedFileTab('both')}
+                className={`px-2.5 py-1 rounded-lg transition-colors ${
+                  selectedFileTab === 'both' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Side-by-Side (Both)
+              </button>
+              <button
+                onClick={() => setSelectedFileTab('main')}
+                className={`px-2.5 py-1 rounded-lg transition-colors ${
+                  selectedFileTab === 'main' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Class Only
+              </button>
+              <button
+                onClick={() => setSelectedFileTab('test')}
+                className={`px-2.5 py-1 rounded-lg transition-colors ${
+                  selectedFileTab === 'test' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Test Only
+              </button>
+            </div>
+
             <button
-              onClick={() => setSelectedFileTab('both')}
-              className={`px-2.5 py-1 rounded-lg transition-colors ${
-                selectedFileTab === 'both' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
+              onClick={() => setWrapLines(!wrapLines)}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 border ${
+                wrapLines
+                  ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/40'
+                  : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:bg-slate-800'
               }`}
+              title={wrapLines ? 'Word wrap is ON. Click to disable wrapping and maintain exact horizontal indentation.' : 'Word wrap is OFF (Horizontal scroll enabled). Indentation and layout are exact.'}
             >
-              Side-by-Side (Both)
+              <WrapText className="w-3.5 h-3.5" />
+              <span>{wrapLines ? 'Wrap: On' : 'Wrap: Off (Exact Format)'}</span>
             </button>
-            <button
-              onClick={() => setSelectedFileTab('main')}
-              className={`px-2.5 py-1 rounded-lg transition-colors ${
-                selectedFileTab === 'main' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Class Only
-            </button>
-            <button
-              onClick={() => setSelectedFileTab('test')}
-              className={`px-2.5 py-1 rounded-lg transition-colors ${
-                selectedFileTab === 'test' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Test Only
-            </button>
+
+            {activeTab === 'obfuscate' && (
+              <button
+                onClick={handleFormatBothInputs}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-900/80 text-slate-300 border border-slate-800 hover:bg-slate-800 hover:text-white transition-colors flex items-center gap-1.5"
+                title="Format both source classes with standard 4-space Java indentation"
+              >
+                <AlignLeft className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Format Both</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -556,13 +671,25 @@ How to De-obfuscate:
                   <div>
                     <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
                       <span>Source Code (Original):</span>
-                      <span>{mainCode.split('\n').length} lines • {mainCode.length} chars</span>
+                      <div className="flex items-center gap-2">
+                        <span>{mainCode.split('\n').length} lines • {mainCode.length} chars</span>
+                        <button
+                          onClick={handleFormatMainInput}
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                          title="Format Java class code with clean 4-space indentation"
+                        >
+                          <AlignLeft className="w-3 h-3 text-blue-400" />
+                          <span>Format</span>
+                        </button>
+                      </div>
                     </div>
                     <textarea
                       value={mainCode}
                       onChange={(e) => setMainCode(e.target.value)}
                       rows={11}
-                      className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y"
+                      wrap={wrapLines ? 'soft' : 'off'}
+                      spellCheck={false}
+                      className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y whitespace-pre overflow-x-auto leading-relaxed"
                       placeholder="Paste Java production class here..."
                     />
                   </div>
@@ -574,13 +701,25 @@ How to De-obfuscate:
                         <Sparkles className="w-3.5 h-3.5" />
                         Obfuscated Output:
                       </span>
-                      <span>{result.mainClassFile.obfuscatedCode.split('\n').length} lines • {result.mainClassFile.obfuscatedCode.length} chars</span>
+                      <div className="flex items-center gap-2">
+                        <span>{result.mainClassFile.obfuscatedCode.split('\n').length} lines • {result.mainClassFile.obfuscatedCode.length} chars</span>
+                        <button
+                          onClick={handleFormatObfuscatedMain}
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                          title="Re-indent obfuscated output with clean Java indentation"
+                        >
+                          <AlignLeft className="w-3 h-3 text-emerald-400" />
+                          <span>Re-Indent</span>
+                        </button>
+                      </div>
                     </div>
                     <textarea
                       readOnly
                       value={result.mainClassFile.obfuscatedCode}
                       rows={11}
-                      className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y"
+                      wrap={wrapLines ? 'soft' : 'off'}
+                      spellCheck={false}
+                      className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
                     />
                   </div>
                 </div>
@@ -635,13 +774,25 @@ How to De-obfuscate:
                   <div>
                     <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
                       <span>Test Source Code (Original):</span>
-                      <span>{testCode.split('\n').length} lines • {testCode.length} chars</span>
+                      <div className="flex items-center gap-2">
+                        <span>{testCode.split('\n').length} lines • {testCode.length} chars</span>
+                        <button
+                          onClick={handleFormatTestInput}
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                          title="Format Java test code with clean 4-space indentation"
+                        >
+                          <AlignLeft className="w-3 h-3 text-purple-400" />
+                          <span>Format</span>
+                        </button>
+                      </div>
                     </div>
                     <textarea
                       value={testCode}
                       onChange={(e) => setTestCode(e.target.value)}
                       rows={11}
-                      className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y"
+                      wrap={wrapLines ? 'soft' : 'off'}
+                      spellCheck={false}
+                      className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y whitespace-pre overflow-x-auto leading-relaxed"
                       placeholder="Paste Java companion test class here..."
                     />
                   </div>
@@ -653,13 +804,25 @@ How to De-obfuscate:
                         <Sparkles className="w-3.5 h-3.5" />
                         Obfuscated Test Output:
                       </span>
-                      <span>{result.testClassFile.obfuscatedCode.split('\n').length} lines • {result.testClassFile.obfuscatedCode.length} chars</span>
+                      <div className="flex items-center gap-2">
+                        <span>{result.testClassFile.obfuscatedCode.split('\n').length} lines • {result.testClassFile.obfuscatedCode.length} chars</span>
+                        <button
+                          onClick={handleFormatObfuscatedTest}
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                          title="Re-indent obfuscated test output with clean Java indentation"
+                        >
+                          <AlignLeft className="w-3 h-3 text-emerald-400" />
+                          <span>Re-Indent</span>
+                        </button>
+                      </div>
                     </div>
                     <textarea
                       readOnly
                       value={result.testClassFile.obfuscatedCode}
                       rows={11}
-                      className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y"
+                      wrap={wrapLines ? 'soft' : 'off'}
+                      spellCheck={false}
+                      className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
                     />
                   </div>
                 </div>
@@ -779,7 +942,7 @@ How to De-obfuscate:
 
               <div className="p-4 flex-1 flex flex-col gap-4">
                 <div>
-                  <div className="text-xs text-slate-400 mb-1.5 flex justify-between">
+                  <div className="text-xs text-slate-400 mb-1.5 flex justify-between items-center">
                     <span>Input (Obfuscated & Modified):</span>
                     <span>{deobfMainCode.split('\n').length} lines</span>
                   </div>
@@ -787,24 +950,38 @@ How to De-obfuscate:
                     value={deobfMainCode}
                     onChange={(e) => setDeobfMainCode(e.target.value)}
                     rows={10}
-                    className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y"
+                    wrap={wrapLines ? 'soft' : 'off'}
+                    spellCheck={false}
+                    className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y whitespace-pre overflow-x-auto leading-relaxed"
                     placeholder="Paste obfuscated/modified Java class code here..."
                   />
                 </div>
 
                 <div>
-                  <div className="text-xs text-emerald-400 font-semibold mb-1.5 flex justify-between">
+                  <div className="text-xs text-emerald-400 font-semibold mb-1.5 flex justify-between items-center">
                     <span className="flex items-center gap-1">
                       <Sparkles className="w-3.5 h-3.5" />
                       De-Obfuscated Restored Output:
                     </span>
-                    <span className="text-slate-400 font-normal">{restoredMainCode.split('\n').length} lines</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400 font-normal">{restoredMainCode.split('\n').length} lines</span>
+                      <button
+                        onClick={handleFormatRestoredMain}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                        title="Re-indent restored class code with clean 4-space indentation"
+                      >
+                        <AlignLeft className="w-3 h-3 text-emerald-400" />
+                        <span>Re-Indent</span>
+                      </button>
+                    </div>
                   </div>
                   <textarea
                     readOnly
                     value={restoredMainCode}
                     rows={10}
-                    className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y"
+                    wrap={wrapLines ? 'soft' : 'off'}
+                    spellCheck={false}
+                    className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
                   />
                 </div>
               </div>
@@ -837,7 +1014,7 @@ How to De-obfuscate:
 
               <div className="p-4 flex-1 flex flex-col gap-4">
                 <div>
-                  <div className="text-xs text-slate-400 mb-1.5 flex justify-between">
+                  <div className="text-xs text-slate-400 mb-1.5 flex justify-between items-center">
                     <span>Input (Obfuscated & Modified):</span>
                     <span>{deobfTestCode.split('\n').length} lines</span>
                   </div>
@@ -845,24 +1022,38 @@ How to De-obfuscate:
                     value={deobfTestCode}
                     onChange={(e) => setDeobfTestCode(e.target.value)}
                     rows={10}
-                    className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y"
+                    wrap={wrapLines ? 'soft' : 'off'}
+                    spellCheck={false}
+                    className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y whitespace-pre overflow-x-auto leading-relaxed"
                     placeholder="Paste obfuscated/modified Java test code here..."
                   />
                 </div>
 
                 <div>
-                  <div className="text-xs text-purple-400 font-semibold mb-1.5 flex justify-between">
+                  <div className="text-xs text-purple-400 font-semibold mb-1.5 flex justify-between items-center">
                     <span className="flex items-center gap-1">
                       <Sparkles className="w-3.5 h-3.5" />
                       De-Obfuscated Restored Test Output:
                     </span>
-                    <span className="text-slate-400 font-normal">{restoredTestCode.split('\n').length} lines</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400 font-normal">{restoredTestCode.split('\n').length} lines</span>
+                      <button
+                        onClick={handleFormatRestoredTest}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                        title="Re-indent restored test code with clean 4-space indentation"
+                      >
+                        <AlignLeft className="w-3 h-3 text-emerald-400" />
+                        <span>Re-Indent</span>
+                      </button>
+                    </div>
                   </div>
                   <textarea
                     readOnly
                     value={restoredTestCode}
                     rows={10}
-                    className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y"
+                    wrap={wrapLines ? 'soft' : 'off'}
+                    spellCheck={false}
+                    className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
                   />
                 </div>
               </div>
@@ -1211,14 +1402,16 @@ How to De-obfuscate:
 
           {/* Standard Java Obfuscator Rules */}
           <div className="space-y-3 pt-3 border-t border-slate-800">
-            <span className="text-xs font-bold text-slate-300 block">Standard Obfuscation Rules</span>
+            <span className="text-xs font-bold text-slate-300 block">Formatting & Obfuscation Rules</span>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
               {[
+                { key: 'preserveFormatting', label: 'Keep Formatting Intact', desc: 'Preserves original indentation, blank lines, braces, and file layout' },
+                { key: 'autoFormatOutput', label: 'Auto-Format Output', desc: 'Run clean 4-space Java indentation beautifier on obfuscated code' },
                 { key: 'obfuscateClasses', label: 'Obfuscate Classes & Types', desc: 'Rename custom class & type tokens' },
                 { key: 'obfuscateMethods', label: 'Obfuscate Methods', desc: 'Rename non-excluded method signatures' },
                 { key: 'obfuscateVariables', label: 'Obfuscate Variables', desc: 'Rename fields, locals, and parameters' },
                 { key: 'obfuscatePackages', label: 'Obfuscate Packages', desc: 'Mangle custom package path segments' },
-                { key: 'stripComments', label: 'Strip All Comments', desc: 'Remove JavaDoc & line comments' },
+                { key: 'stripComments', label: 'Strip All Comments', desc: 'Remove JavaDoc & line comments (off preserves comments intact)' },
                 { key: 'encryptStrings', label: 'Encrypt String Literals', desc: 'Base64 encode and wrap string constants' },
                 { key: 'preserveMain', label: 'Preserve main() Entry', desc: 'Keep public static void main signatures' },
                 { key: 'preserveGettersSetters', label: 'Preserve Getters & Setters', desc: 'Keep getX(), setX(), isX() methods' },

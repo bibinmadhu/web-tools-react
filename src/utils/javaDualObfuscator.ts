@@ -6,6 +6,7 @@ import {
   DEFAULT_JAVA_KEYWORDS,
   deobfuscateJavaCode,
 } from './javaObfuscator';
+import { formatJavaCode } from './javaFormatter';
 
 export interface DualJavaFile {
   fileName: string;
@@ -21,6 +22,8 @@ export interface DualJavaObfuscatorOptions extends ObfuscatorOptions {
   preserveTestMethods: boolean;
   preserveAssertionCalls: boolean;
   syncClassFileNames: boolean;
+  preserveFormatting: boolean;
+  autoFormatOutput: boolean;
 }
 
 export const DEFAULT_DUAL_OBFUSCATOR_OPTIONS: DualJavaObfuscatorOptions = {
@@ -33,13 +36,15 @@ export const DEFAULT_DUAL_OBFUSCATOR_OPTIONS: DualJavaObfuscatorOptions = {
   obfuscateMethods: true,
   obfuscatePackages: true,
   encryptStrings: false,
-  stripComments: true,
+  stripComments: false, // Default false to keep comments & documentation formatting intact
   preserveMain: true,
   preserveGettersSetters: true,
   preserveAnnotated: true,
   preserveTestMethods: true,
   preserveAssertionCalls: true,
   syncClassFileNames: true,
+  preserveFormatting: true,
+  autoFormatOutput: false,
   excludedPackages: [...DEFAULT_EXCLUDED_PACKAGES],
   customExclusions: ['toString', 'equals', 'hashCode'],
 };
@@ -199,10 +204,36 @@ export function obfuscateDualJavaFiles(
   let mainCode = input.mainClassFile.code;
   let testCode = input.testClassFile.code;
 
-  // 1. Strip comments if configured
+  // 1. Comments: Preserve formatting & documentation or strip cleanly
+  const mainComments: string[] = [];
+  const testComments: string[] = [];
+  const mainCommentPrefix = '___CMT_MAIN_';
+  const testCommentPrefix = '___CMT_TEST_';
+
   if (opts.stripComments) {
-    mainCode = mainCode.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-    testCode = testCode.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    // Strip block comments
+    mainCode = mainCode.replace(/\/\*[\s\S]*?\*\//g, '');
+    testCode = testCode.replace(/\/\*[\s\S]*?\*\//g, '');
+    // Strip single-line comments
+    mainCode = mainCode.replace(/\/\/.*$/gm, '');
+    testCode = testCode.replace(/\/\/.*$/gm, '');
+    // Clean up empty lines that only contained comments without destroying indentation
+    mainCode = mainCode.replace(/^[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n');
+    testCode = testCode.replace(/^[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n');
+  } else {
+    // Mask comments completely so token replacements never alter or distort comments,
+    // and all comment blocks, JavaDocs, indentation, and blank lines are kept 100% intact
+    mainCode = mainCode.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, (match) => {
+      const placeholder = `${mainCommentPrefix}${mainComments.length}___`;
+      mainComments.push(match);
+      return placeholder;
+    });
+
+    testCode = testCode.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, (match) => {
+      const placeholder = `${testCommentPrefix}${testComments.length}___`;
+      testComments.push(match);
+      return placeholder;
+    });
   }
 
   // 2. Mask string literals in both files
@@ -423,38 +454,47 @@ export function obfuscateDualJavaFiles(
   const applyReplacements = (codeToTransform: string) => {
     let result = codeToTransform;
 
-    // 8a. Replace Classes (longest token first)
-    Object.entries(mapping.classes)
-      .sort((a, b) => b[0].length - a[0].length)
-      .forEach(([orig, obfuscated]) => {
-        const regex = new RegExp(`\\b${orig}\\b`, 'g');
-        result = result.replace(regex, obfuscated);
+    // 8a. Scoped Package Obfuscation (ONLY in package and import declarations to protect code tokens)
+    if (opts.obfuscatePackages && Object.keys(mapping.packages).length > 0) {
+      result = result.replace(/(package\s+)([\w.]+)(;)/g, (match, prefix, pkgName, suffix) => {
+        const isExcluded = opts.excludedPackages.some((p) => pkgName.startsWith(p));
+        if (isExcluded) return match;
+        const parts = pkgName.split('.');
+        const obfParts = parts.map((part) => mapping.packages[part] || part);
+        return `${prefix}${obfParts.join('.')}${suffix}`;
       });
 
-    // 8b. Replace Methods (longest token first)
-    Object.entries(mapping.methods)
-      .sort((a, b) => b[0].length - a[0].length)
-      .forEach(([orig, obfuscated]) => {
-        const regex = new RegExp(`\\b${orig}\\b`, 'g');
-        result = result.replace(regex, obfuscated);
+      result = result.replace(/(import\s+(?:static\s+)?)([\w.]+)(\.[A-Za-z0-9_*]+;)/g, (match, prefix, pkgPath, suffix) => {
+        const isExcluded = opts.excludedPackages.some((p) => pkgPath.startsWith(p));
+        if (isExcluded) return match;
+        const parts = pkgPath.split('.');
+        const obfParts = parts.map((part) => mapping.packages[part] || part);
+        return `${prefix}${obfParts.join('.')}${suffix}`;
       });
+    }
 
-    // 8c. Replace Variables (longest token first)
-    Object.entries(mapping.variables)
-      .sort((a, b) => b[0].length - a[0].length)
-      .forEach(([orig, obfuscated]) => {
-        const regex = new RegExp(`\\b${orig}\\b`, 'g');
-        result = result.replace(regex, obfuscated);
-      });
+    // 8b. Unified Single-Pass Identifier Replacement (Classes, Methods, Variables)
+    // Combining into a single dictionary sorted longest-first guarantees exact preservation
+    // of whitespace/formatting and completely prevents re-replacement collisions.
+    const identifierMap: Record<string, string> = {};
+    if (opts.obfuscateClasses) {
+      Object.assign(identifierMap, mapping.classes);
+    }
+    if (opts.obfuscateMethods) {
+      Object.assign(identifierMap, mapping.methods);
+    }
+    if (opts.obfuscateVariables) {
+      Object.assign(identifierMap, mapping.variables);
+    }
 
-    // 8d. Replace Packages
-    if (opts.obfuscatePackages) {
-      Object.entries(mapping.packages)
-        .sort((a, b) => b[0].length - a[0].length)
-        .forEach(([orig, obfuscated]) => {
-          const regex = new RegExp(`\\b${orig}\\b`, 'g');
-          result = result.replace(regex, obfuscated);
-        });
+    const validKeys = Object.keys(identifierMap)
+      .filter((k) => k && identifierMap[k] && k !== identifierMap[k])
+      .sort((a, b) => b.length - a.length);
+
+    if (validKeys.length > 0) {
+      const escapedKeys = validKeys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      const regex = new RegExp(`(?<![a-zA-Z0-9_$])(?:${escapedKeys.join('|')})(?![a-zA-Z0-9_$])`, 'g');
+      result = result.replace(regex, (matched) => identifierMap[matched] || matched);
     }
 
     return result;
@@ -472,9 +512,9 @@ export function obfuscateDualJavaFiles(
         const rawString = literal.substring(1, literal.length - 1);
         const b64 = btoa(rawString);
         const encryptedExpr = `new String(java.util.Base64.getDecoder().decode("${b64}"))`;
-        result = result.replace(placeholder, encryptedExpr);
+        result = result.replace(placeholder, () => encryptedExpr);
       } else {
-        result = result.replace(placeholder, literal);
+        result = result.replace(placeholder, () => literal);
       }
     });
     return result;
@@ -482,6 +522,26 @@ export function obfuscateDualJavaFiles(
 
   mainCode = restoreStrings(mainCode, mainStringLiterals, mainPlaceholderPrefix);
   testCode = restoreStrings(testCode, testStringLiterals, testPlaceholderPrefix);
+
+  // 10. UNMASK COMMENTS (Keeps original formatting, indentation & documentation intact)
+  if (!opts.stripComments) {
+    mainComments.forEach((cmt, idx) => {
+      mainCode = mainCode.replace(`${mainCommentPrefix}${idx}___`, () => cmt);
+    });
+    testComments.forEach((cmt, idx) => {
+      testCode = testCode.replace(`${testCommentPrefix}${idx}___`, () => cmt);
+    });
+  }
+
+  // 11. AUTO-FORMAT OUTPUT IF REQUESTED
+  if (opts.autoFormatOutput) {
+    try {
+      mainCode = formatJavaCode(mainCode, { indentSize: 4 });
+      testCode = formatJavaCode(testCode, { indentSize: 4 });
+    } catch {
+      // Retain formatted code if parser encounters non-standard syntax
+    }
+  }
 
   // 10. SYNCHRONIZED FILE NAMES & CROSS-FILE SHARED TOKENS
   const mainOriginalClassName = extractPrimaryClassName(input.mainClassFile.code, input.mainClassFile.fileName);

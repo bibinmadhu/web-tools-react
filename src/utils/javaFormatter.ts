@@ -426,10 +426,11 @@ function isMethodOrMemberDeclaration(line: string): boolean {
  */
 export function formatJavaCode(
   sourceCode: string,
-  options: JavaFormatterOptions = defaultJavaFormatterOptions
+  userOptions?: Partial<JavaFormatterOptions>
 ): string {
   if (!sourceCode.trim()) return '';
 
+  const options: JavaFormatterOptions = { ...defaultJavaFormatterOptions, ...userOptions };
   const singleIndent =
     options.indentType === 'tabs' ? '\t' : ' '.repeat(options.indentSize);
 
