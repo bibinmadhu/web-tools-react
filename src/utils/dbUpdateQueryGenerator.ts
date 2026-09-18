@@ -16,6 +16,10 @@ export type ColumnType =
   | 'uuid'
   | 'raw';
 
+export type ValueMode = 'list' | 'single';
+
+export type QueryExecutionMode = 'batch' | 'individual';
+
 export type UpdateStrategy =
   | 'batch_values' // UPDATE ... FROM (VALUES (...), (...)) AS v(...) WHERE ...
   | 'individual'   // Multiple individual UPDATE ... SET ... WHERE ...;
@@ -28,7 +32,9 @@ export interface MatchColumn {
   id: string;
   name: string;
   type: ColumnType;
-  values: string[];
+  valueMode?: ValueMode; // 'single' (constant filter for all rows) or 'list' (per-row matched values)
+  singleValue?: string;  // value used when valueMode === 'single'
+  values: string[];      // list of values used when valueMode === 'list'
 }
 
 export interface UpdateColumn {
@@ -43,21 +49,40 @@ export interface UpdateQueryOptions {
   schema?: string;
   matchColumns: MatchColumn[];
   updateColumns: UpdateColumn[];
+  executionMode?: QueryExecutionMode; // 'batch' (single atomic query) or 'individual' (separate statements)
   strategy: UpdateStrategy;
   transactionMode: TransactionMode;
   returningClause?: string;
   includeTypeCasts?: boolean;
   tableAlias?: string;
   valuesAlias?: string;
+  includeRowComments?: boolean; // include '-- Row N' comments in individual statements
 }
 
 export interface UpdateQueryResult {
   sql: string;
   rowCount: number;
   columnCount: number;
+  matchColumnCount: number;
+  singleMatchCount: number;
+  listMatchCount: number;
   warnings: string[];
+  executionMode: QueryExecutionMode;
   strategy: UpdateStrategy;
   pythonSnippet: string;
+}
+
+/**
+ * Helper to retrieve the effective value of a match column for a given row
+ */
+export function getMatchColumnValue(col: MatchColumn, rowIndex = 0): string {
+  if (col.valueMode === 'single') {
+    if (col.singleValue !== undefined && col.singleValue !== null) {
+      return col.singleValue;
+    }
+    return col.values && col.values.length > 0 ? col.values[0] : '';
+  }
+  return col.values && col.values[rowIndex] !== undefined ? col.values[rowIndex] : '';
 }
 
 /**
@@ -269,13 +294,28 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
   const warnings: string[] = [];
   const rawTable = options.tableName.trim();
 
+  // Execution mode: batch (single query) vs individual (separate queries)
+  const executionMode: QueryExecutionMode =
+    options.executionMode || (options.strategy === 'individual' ? 'individual' : 'batch');
+
+  const effectiveStrategy: UpdateStrategy =
+    executionMode === 'individual'
+      ? 'individual'
+      : options.strategy === 'individual'
+      ? 'batch_values'
+      : options.strategy;
+
   if (!rawTable) {
     return {
       sql: '-- Error: Target table name is required.',
       rowCount: 0,
       columnCount: 0,
+      matchColumnCount: 0,
+      singleMatchCount: 0,
+      listMatchCount: 0,
       warnings: ['Target table name is required.'],
-      strategy: options.strategy,
+      executionMode,
+      strategy: effectiveStrategy,
       pythonSnippet: '',
     };
   }
@@ -283,16 +323,24 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
   const tableName = sanitizeIdentifier(rawTable);
   const tableAlias = options.tableAlias?.trim() || 't';
   const valuesAlias = options.valuesAlias?.trim() || 'v';
+
   const matchCols = options.matchColumns.filter((c) => c.name.trim().length > 0);
   const updateCols = options.updateColumns.filter((c) => c.name.trim().length > 0);
+
+  const singleMatchCols = matchCols.filter((c) => c.valueMode === 'single');
+  const listMatchCols = matchCols.filter((c) => c.valueMode !== 'single');
 
   if (matchCols.length === 0) {
     return {
       sql: '-- Error: At least one match column (WHERE condition) is required.',
       rowCount: 0,
       columnCount: updateCols.length,
+      matchColumnCount: 0,
+      singleMatchCount: 0,
+      listMatchCount: 0,
       warnings: ['At least one match column (WHERE condition) is required.'],
-      strategy: options.strategy,
+      executionMode,
+      strategy: effectiveStrategy,
       pythonSnippet: '',
     };
   }
@@ -302,49 +350,85 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
       sql: '-- Error: At least one column to update (SET condition) is required.',
       rowCount: 0,
       columnCount: 0,
+      matchColumnCount: matchCols.length,
+      singleMatchCount: singleMatchCols.length,
+      listMatchCount: listMatchCols.length,
       warnings: ['At least one column to update is required.'],
-      strategy: options.strategy,
+      executionMode,
+      strategy: effectiveStrategy,
       pythonSnippet: '',
     };
   }
 
-  // Determine total row count from longest match or update column list
+  // Determine total row count from longest list match column or update column list
   let maxRowCount = 0;
-  matchCols.forEach((col) => {
+  listMatchCols.forEach((col) => {
     if (col.values.length > maxRowCount) maxRowCount = col.values.length;
   });
   updateCols.forEach((col) => {
     if (col.values.length > maxRowCount) maxRowCount = col.values.length;
   });
+
+  // If there are no list match columns, check if updateCols or singleMatchCols provide rows
+  if (listMatchCols.length === 0) {
+    if (maxRowCount === 0) {
+      const hasAnySingleVal = singleMatchCols.some((c) => getMatchColumnValue(c, 0).trim().length > 0);
+      if (hasAnySingleVal) {
+        maxRowCount = 1;
+      }
+    }
+  }
 
   if (maxRowCount === 0) {
     return {
       sql: '-- Warning: No row values provided to update.',
       rowCount: 0,
       columnCount: updateCols.length,
+      matchColumnCount: matchCols.length,
+      singleMatchCount: singleMatchCols.length,
+      listMatchCount: listMatchCols.length,
       warnings: ['No row values were provided.'],
-      strategy: options.strategy,
+      executionMode,
+      strategy: effectiveStrategy,
       pythonSnippet: '',
     };
   }
 
-  // Check for value count mismatches
-  matchCols.forEach((col) => {
-    if (col.values.length < maxRowCount) {
-      warnings.push(`Match column "${col.name}" has ${col.values.length} values, but total rows is ${maxRowCount}. Remaining rows will default to NULL.`);
-    }
-  });
-  updateCols.forEach((col) => {
-    if (col.values.length < maxRowCount) {
-      warnings.push(`Update column "${col.name}" has ${col.values.length} values, but total rows is ${maxRowCount}. Remaining rows will default to NULL.`);
+  // Check warnings
+  singleMatchCols.forEach((col) => {
+    const val = getMatchColumnValue(col, 0);
+    if (!val || val.trim().length === 0) {
+      warnings.push(`Match column "${col.name}" is set to "Single Value" mode, but no value has been specified.`);
     }
   });
 
-  // Check for duplicate match keys if single match column
-  if (matchCols.length === 1) {
+  listMatchCols.forEach((col) => {
+    if (col.values.length < maxRowCount) {
+      warnings.push(
+        `Match column "${col.name}" (List mode) has ${col.values.length} values, but total rows is ${maxRowCount}. Remaining rows will default to NULL.`
+      );
+    }
+  });
+
+  updateCols.forEach((col) => {
+    if (col.values.length < maxRowCount) {
+      warnings.push(
+        `Update column "${col.name}" has ${col.values.length} values, but total rows is ${maxRowCount}. Remaining rows will default to NULL.`
+      );
+    }
+  });
+
+  if (listMatchCols.length === 0 && maxRowCount > 1) {
+    warnings.push(
+      `All match columns (${singleMatchCols.map((c) => c.name).join(', ')}) are in "Single Value" mode with ${maxRowCount} update rows. Every row will target the same record(s). Switch at least one match key (e.g. ID, SKU) to "List of Values" mode to update separate records.`
+    );
+  }
+
+  // Duplicate match check for list match columns
+  if (listMatchCols.length === 1) {
     const seen = new Set<string>();
     const duplicates = new Set<string>();
-    matchCols[0].values.forEach((v) => {
+    listMatchCols[0].values.forEach((v) => {
       const trimmed = v.trim();
       if (trimmed && seen.has(trimmed)) {
         duplicates.add(trimmed);
@@ -352,68 +436,122 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
       seen.add(trimmed);
     });
     if (duplicates.size > 0) {
-      warnings.push(`Found duplicate match key(s) in "${matchCols[0].name}": ${Array.from(duplicates).slice(0, 5).join(', ')}${duplicates.size > 5 ? '...' : ''}. In batch updates, duplicate keys will overwrite each other.`);
+      warnings.push(
+        `Found duplicate match key(s) in "${listMatchCols[0].name}": ${Array.from(duplicates).slice(0, 5).join(', ')}${duplicates.size > 5 ? '...' : ''}. In batch updates, duplicate keys will overwrite each other.`
+      );
     }
   }
 
   let generatedSql = '';
 
-  // 1. STRATEGY: BATCH VALUES (UPDATE ... FROM (VALUES ...) AS v(...) WHERE ...)
-  if (options.strategy === 'batch_values') {
-    // All columns in the VALUES list: Match columns first, then Update columns
-    const allCols = [...matchCols, ...updateCols];
-
-    const setClauses = updateCols
-      .map((col) => {
-        const sanitizedCol = sanitizeIdentifier(col.name);
-        const castStr = options.includeTypeCasts && col.type !== 'raw' ? `::${getPostgresTypeCast(col.type)}` : '';
-        return `  ${sanitizedCol} = ${valuesAlias}.${sanitizedCol}${castStr}`;
-      })
-      .join(',\n');
-
-    const whereClauses = matchCols
-      .map((col) => {
-        const sanitizedCol = sanitizeIdentifier(col.name);
-        return `${tableAlias}.${sanitizedCol} = ${valuesAlias}.${sanitizedCol}`;
-      })
-      .join(' AND ');
-
-    const valueColNames = allCols.map((col) => sanitizeIdentifier(col.name)).join(', ');
-
-    // Build rows of VALUES (...), (...)
-    const valueTuples: string[] = [];
-    for (let r = 0; r < maxRowCount; r++) {
-      const rowValues = allCols.map((col, idx) => {
-        const raw = col.values[r];
-        // In the first row of PostgreSQL VALUES, type casting is often necessary to avoid "unknown" type errors
-        const isFirstRow = r === 0;
-        const forceCast = isFirstRow || (options.includeTypeCasts && (col.type === 'timestamp' || col.type === 'date' || col.type === 'jsonb' || col.type === 'uuid'));
-        return formatPostgresValue(raw, col.type, forceCast);
-      });
-      valueTuples.push(`    (${rowValues.join(', ')})`);
-    }
-
-    const returningStr = options.returningClause && options.returningClause.trim()
+  const returningStr =
+    options.returningClause && options.returningClause.trim()
       ? `\nRETURNING ${options.returningClause.trim().replace(/^RETURNING\s+/i, '')};`
       : ';';
 
-    generatedSql = [
-      `-- Batch UPDATE for PostgreSQL using FROM (VALUES ...)`,
-      `-- Total Rows: ${maxRowCount} | Target Table: ${tableName}`,
-      `UPDATE ${tableName} AS ${tableAlias}`,
-      `SET`,
-      setClauses,
-      `FROM (`,
-      `  VALUES`,
-      valueTuples.join(',\n'),
-      `) AS ${valuesAlias}(${valueColNames})`,
-      `WHERE ${whereClauses}${returningStr}`,
-    ].join('\n');
+  // Format single match column WHERE clauses: e.g. "tableAlias.col = 'val'" or "col = 'val'"
+  const formatSingleMatchClauses = (aliasPrefix?: string) => {
+    return singleMatchCols.map((col) => {
+      const sanitizedCol = sanitizeIdentifier(col.name);
+      const prefix = aliasPrefix ? `${aliasPrefix}.` : '';
+      const formattedVal = formatPostgresValue(getMatchColumnValue(col, 0), col.type, false);
+      return `${prefix}${sanitizedCol} = ${formattedVal}`;
+    });
+  };
+
+  // 1. STRATEGY: BATCH VALUES (UPDATE ... FROM (VALUES ...) AS v(...) WHERE ...)
+  if (effectiveStrategy === 'batch_values') {
+    if (listMatchCols.length > 0) {
+      const allCols = [...listMatchCols, ...updateCols];
+
+      const setClauses = updateCols
+        .map((col) => {
+          const sanitizedCol = sanitizeIdentifier(col.name);
+          const castStr =
+            options.includeTypeCasts && col.type !== 'raw'
+              ? `::${getPostgresTypeCast(col.type)}`
+              : '';
+          return `  ${sanitizedCol} = ${valuesAlias}.${sanitizedCol}${castStr}`;
+        })
+        .join(',\n');
+
+      const joinClauses = listMatchCols
+        .map((col) => {
+          const sanitizedCol = sanitizeIdentifier(col.name);
+          return `${tableAlias}.${sanitizedCol} = ${valuesAlias}.${sanitizedCol}`;
+        })
+        .join(' AND ');
+
+      const constantClauses = formatSingleMatchClauses(tableAlias);
+      const allWhereConditions = [joinClauses, ...constantClauses].filter(Boolean).join('\n  AND ');
+      const valueColNames = allCols.map((col) => sanitizeIdentifier(col.name)).join(', ');
+
+      const valueTuples: string[] = [];
+      for (let r = 0; r < maxRowCount; r++) {
+        const rowValues = allCols.map((col) => {
+          const raw = col.values[r];
+          const isFirstRow = r === 0;
+          const forceCast =
+            isFirstRow ||
+            (options.includeTypeCasts &&
+              (col.type === 'timestamp' ||
+                col.type === 'date' ||
+                col.type === 'jsonb' ||
+                col.type === 'uuid'));
+          return formatPostgresValue(raw, col.type, forceCast);
+        });
+        valueTuples.push(`    (${rowValues.join(', ')})`);
+      }
+
+      const matchDesc = [
+        listMatchCols.length > 0 ? `${listMatchCols.length} list key(s)` : '',
+        singleMatchCols.length > 0 ? `${singleMatchCols.length} constant filter(s)` : '',
+      ]
+        .filter(Boolean)
+        .join(', ');
+
+      generatedSql = [
+        `-- Batch UPDATE for PostgreSQL using FROM (VALUES ...)`,
+        `-- Total Rows: ${maxRowCount} | Target Table: ${tableName} | Match: ${matchDesc}`,
+        `UPDATE ${tableName} AS ${tableAlias}`,
+        `SET`,
+        setClauses,
+        `FROM (`,
+        `  VALUES`,
+        valueTuples.join(',\n'),
+        `) AS ${valuesAlias}(${valueColNames})`,
+        `WHERE ${allWhereConditions}${returningStr}`,
+      ].join('\n');
+    } else {
+      // All match columns are single values
+      const setClauses = updateCols
+        .map((col) => {
+          const sanitizedCol = sanitizeIdentifier(col.name);
+          const val = formatPostgresValue(col.values[0], col.type, options.includeTypeCasts);
+          return `  ${sanitizedCol} = ${val}`;
+        })
+        .join(',\n');
+
+      const whereClauses = formatSingleMatchClauses().join(' AND ');
+
+      generatedSql = [
+        `-- Targeted Single UPDATE for PostgreSQL (All Match Keys Constant)`,
+        `-- Target Table: ${tableName} | Match Columns: ${singleMatchCols.length}`,
+        `UPDATE ${tableName}`,
+        `SET`,
+        setClauses,
+        `WHERE ${whereClauses}${returningStr}`,
+      ].join('\n');
+    }
   }
 
   // 2. STRATEGY: INDIVIDUAL UPDATE STATEMENTS
-  else if (options.strategy === 'individual') {
+  else if (effectiveStrategy === 'individual') {
     const statements: string[] = [];
+    const inlineReturning =
+      options.returningClause && options.returningClause.trim()
+        ? ` RETURNING ${options.returningClause.trim().replace(/^RETURNING\s+/i, '')}`
+        : '';
 
     for (let r = 0; r < maxRowCount; r++) {
       const setParts = updateCols.map((col) => {
@@ -421,126 +559,187 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
         return `${sanitizeIdentifier(col.name)} = ${valStr}`;
       });
 
-      const whereParts = matchCols.map((col) => {
-        const valStr = formatPostgresValue(col.values[r], col.type, false);
-        return `${sanitizeIdentifier(col.name)} = ${valStr}`;
-      });
+      const whereParts = [
+        ...listMatchCols.map((col) => {
+          const valStr = formatPostgresValue(col.values[r], col.type, false);
+          return `${sanitizeIdentifier(col.name)} = ${valStr}`;
+        }),
+        ...singleMatchCols.map((col) => {
+          const valStr = formatPostgresValue(getMatchColumnValue(col, r), col.type, false);
+          return `${sanitizeIdentifier(col.name)} = ${valStr}`;
+        }),
+      ];
 
-      const returningStr = options.returningClause && options.returningClause.trim()
-        ? ` RETURNING ${options.returningClause.trim().replace(/^RETURNING\s+/i, '')}`
-        : '';
+      if (options.includeRowComments) {
+        const keyParts = [
+          ...listMatchCols.map((c) => `${c.name}=${c.values[r] || 'NULL'}`),
+          ...singleMatchCols.map((c) => `${c.name}=${getMatchColumnValue(c, r)}`),
+        ];
+        statements.push(`-- Row ${r + 1}: ${keyParts.join(', ')}`);
+      }
 
       statements.push(
-        `UPDATE ${tableName} SET ${setParts.join(', ')} WHERE ${whereParts.join(' AND ')}${returningStr};`
+        `UPDATE ${tableName} SET ${setParts.join(', ')} WHERE ${whereParts.join(' AND ')}${inlineReturning};`
       );
     }
 
     generatedSql = [
       `-- Individual UPDATE Statements for PostgreSQL`,
-      `-- Total Rows: ${maxRowCount} | Target Table: ${tableName}`,
+      `-- Total Queries: ${maxRowCount} | Target Table: ${tableName} | Match Columns: ${matchCols.length}`,
       statements.join('\n'),
     ].join('\n');
   }
 
   // 3. STRATEGY: CASE-WHEN CONDITIONAL UPDATE
-  else if (options.strategy === 'case_when') {
-    const primaryMatch = matchCols[0];
-    const sanitizedPrimaryMatch = sanitizeIdentifier(primaryMatch.name);
+  else if (effectiveStrategy === 'case_when') {
+    if (listMatchCols.length > 0) {
+      const primaryMatch = listMatchCols[0];
+      const sanitizedPrimaryMatch = sanitizeIdentifier(primaryMatch.name);
 
-    const setClauses = updateCols
-      .map((col) => {
-        const sanitizedCol = sanitizeIdentifier(col.name);
-        const whenClauses = [];
+      const setClauses = updateCols
+        .map((col) => {
+          const sanitizedCol = sanitizeIdentifier(col.name);
+          const whenClauses = [];
 
-        for (let r = 0; r < maxRowCount; r++) {
-          const matchVal = formatPostgresValue(primaryMatch.values[r], primaryMatch.type, false);
-          const updateVal = formatPostgresValue(col.values[r], col.type, options.includeTypeCasts);
-          whenClauses.push(`      WHEN ${matchVal} THEN ${updateVal}`);
-        }
+          for (let r = 0; r < maxRowCount; r++) {
+            const matchVal = formatPostgresValue(primaryMatch.values[r], primaryMatch.type, false);
+            const updateVal = formatPostgresValue(col.values[r], col.type, options.includeTypeCasts);
+            whenClauses.push(`      WHEN ${matchVal} THEN ${updateVal}`);
+          }
 
-        return [
-          `  ${sanitizedCol} = CASE ${sanitizedPrimaryMatch}`,
-          ...whenClauses,
-          `      ELSE ${sanitizedCol}`,
-          `    END`,
-        ].join('\n');
-      })
-      .join(',\n');
+          return [
+            `  ${sanitizedCol} = CASE ${sanitizedPrimaryMatch}`,
+            ...whenClauses,
+            `      ELSE ${sanitizedCol}`,
+            `    END`,
+          ].join('\n');
+        })
+        .join(',\n');
 
-    // Build IN (...) list for primary match
-    const inValues = primaryMatch.values
-      .slice(0, maxRowCount)
-      .map((v) => formatPostgresValue(v, primaryMatch.type, false));
+      const inValues = primaryMatch.values
+        .slice(0, maxRowCount)
+        .map((v) => formatPostgresValue(v, primaryMatch.type, false));
 
-    const extraWhere = matchCols.slice(1).map((col) => {
-      // For composite keys with CASE-WHEN, note in warning
-      warnings.push(`Note: CASE-WHEN strategy primarily pivots on first match column "${primaryMatch.name}".`);
-      return '';
-    });
+      const whereConditions: string[] = [
+        `${sanitizedPrimaryMatch} IN (\n  ${inValues.join(', ')}\n)`,
+      ];
 
-    const returningStr = options.returningClause && options.returningClause.trim()
-      ? `\nRETURNING ${options.returningClause.trim().replace(/^RETURNING\s+/i, '')};`
-      : ';';
+      listMatchCols.slice(1).forEach((col) => {
+        warnings.push(
+          `Note: CASE-WHEN strategy primarily pivots on first list match column "${primaryMatch.name}". Secondary list match column "${col.name}" is filtered via IN clause.`
+        );
+        const colInVals = col.values.slice(0, maxRowCount).map((v) => formatPostgresValue(v, col.type, false));
+        whereConditions.push(`${sanitizeIdentifier(col.name)} IN (${colInVals.join(', ')})`);
+      });
 
-    generatedSql = [
-      `-- Single UPDATE with CASE-WHEN for PostgreSQL`,
-      `-- Total Rows: ${maxRowCount} | Target Table: ${tableName}`,
-      `UPDATE ${tableName}`,
-      `SET`,
-      setClauses,
-      `WHERE ${sanitizedPrimaryMatch} IN (`,
-      `  ${inValues.join(', ')}`,
-      `)${returningStr}`,
-    ].join('\n');
+      singleMatchCols.forEach((col) => {
+        const formattedVal = formatPostgresValue(getMatchColumnValue(col, 0), col.type, false);
+        whereConditions.push(`${sanitizeIdentifier(col.name)} = ${formattedVal}`);
+      });
+
+      generatedSql = [
+        `-- Single UPDATE with CASE-WHEN for PostgreSQL`,
+        `-- Total Rows: ${maxRowCount} | Target Table: ${tableName}`,
+        `UPDATE ${tableName}`,
+        `SET`,
+        setClauses,
+        `WHERE ${whereConditions.join('\n  AND ')}${returningStr}`,
+      ].join('\n');
+    } else {
+      const setClauses = updateCols
+        .map((col) => {
+          const sanitizedCol = sanitizeIdentifier(col.name);
+          const val = formatPostgresValue(col.values[0], col.type, options.includeTypeCasts);
+          return `  ${sanitizedCol} = ${val}`;
+        })
+        .join(',\n');
+
+      const whereClauses = formatSingleMatchClauses().join(' AND ');
+
+      generatedSql = [
+        `-- Targeted Single UPDATE with CASE-WHEN for PostgreSQL`,
+        `-- Target Table: ${tableName}`,
+        `UPDATE ${tableName}`,
+        `SET`,
+        setClauses,
+        `WHERE ${whereClauses}${returningStr}`,
+      ].join('\n');
+    }
   }
 
   // 4. STRATEGY: CTE (WITH updates AS ...)
-  else if (options.strategy === 'cte') {
-    const allCols = [...matchCols, ...updateCols];
-    const valueColNames = allCols.map((col) => sanitizeIdentifier(col.name)).join(', ');
+  else if (effectiveStrategy === 'cte') {
+    if (listMatchCols.length > 0) {
+      const allCols = [...listMatchCols, ...updateCols];
+      const valueColNames = allCols.map((col) => sanitizeIdentifier(col.name)).join(', ');
 
-    const setClauses = updateCols
-      .map((col) => {
-        const sanitizedCol = sanitizeIdentifier(col.name);
-        return `  ${sanitizedCol} = updates.${sanitizedCol}`;
-      })
-      .join(',\n');
+      const setClauses = updateCols
+        .map((col) => {
+          const sanitizedCol = sanitizeIdentifier(col.name);
+          return `  ${sanitizedCol} = updates.${sanitizedCol}`;
+        })
+        .join(',\n');
 
-    const whereClauses = matchCols
-      .map((col) => {
-        const sanitizedCol = sanitizeIdentifier(col.name);
-        return `${tableAlias}.${sanitizedCol} = updates.${sanitizedCol}`;
-      })
-      .join(' AND ');
+      const joinClauses = listMatchCols
+        .map((col) => {
+          const sanitizedCol = sanitizeIdentifier(col.name);
+          return `${tableAlias}.${sanitizedCol} = updates.${sanitizedCol}`;
+        })
+        .join(' AND ');
 
-    const valueTuples: string[] = [];
-    for (let r = 0; r < maxRowCount; r++) {
-      const rowValues = allCols.map((col, idx) => {
-        const raw = col.values[r];
-        const isFirstRow = r === 0;
-        const forceCast = isFirstRow || (options.includeTypeCasts && (col.type === 'timestamp' || col.type === 'date' || col.type === 'jsonb' || col.type === 'uuid'));
-        return formatPostgresValue(raw, col.type, forceCast);
-      });
-      valueTuples.push(`    (${rowValues.join(', ')})`);
+      const constantClauses = formatSingleMatchClauses(tableAlias);
+      const allWhereConditions = [joinClauses, ...constantClauses].filter(Boolean).join('\n  AND ');
+
+      const valueTuples: string[] = [];
+      for (let r = 0; r < maxRowCount; r++) {
+        const rowValues = allCols.map((col) => {
+          const raw = col.values[r];
+          const isFirstRow = r === 0;
+          const forceCast =
+            isFirstRow ||
+            (options.includeTypeCasts &&
+              (col.type === 'timestamp' ||
+                col.type === 'date' ||
+                col.type === 'jsonb' ||
+                col.type === 'uuid'));
+          return formatPostgresValue(raw, col.type, forceCast);
+        });
+        valueTuples.push(`    (${rowValues.join(', ')})`);
+      }
+
+      generatedSql = [
+        `-- CTE (WITH updates AS ...) for PostgreSQL`,
+        `-- Total Rows: ${maxRowCount} | Target Table: ${tableName}`,
+        `WITH updates (${valueColNames}) AS (`,
+        `  VALUES`,
+        valueTuples.join(',\n'),
+        `)`,
+        `UPDATE ${tableName} AS ${tableAlias}`,
+        `SET`,
+        setClauses,
+        `FROM updates`,
+        `WHERE ${allWhereConditions}${returningStr}`,
+      ].join('\n');
+    } else {
+      const setClauses = updateCols
+        .map((col) => {
+          const sanitizedCol = sanitizeIdentifier(col.name);
+          const val = formatPostgresValue(col.values[0], col.type, options.includeTypeCasts);
+          return `  ${sanitizedCol} = ${val}`;
+        })
+        .join(',\n');
+
+      const whereClauses = formatSingleMatchClauses().join(' AND ');
+
+      generatedSql = [
+        `-- Targeted Single UPDATE with CTE for PostgreSQL`,
+        `-- Target Table: ${tableName}`,
+        `UPDATE ${tableName}`,
+        `SET`,
+        setClauses,
+        `WHERE ${whereClauses}${returningStr}`,
+      ].join('\n');
     }
-
-    const returningStr = options.returningClause && options.returningClause.trim()
-      ? `\nRETURNING ${options.returningClause.trim().replace(/^RETURNING\s+/i, '')};`
-      : ';';
-
-    generatedSql = [
-      `-- CTE (WITH updates AS ...) for PostgreSQL`,
-      `-- Total Rows: ${maxRowCount} | Target Table: ${tableName}`,
-      `WITH updates (${valueColNames}) AS (`,
-      `  VALUES`,
-      valueTuples.join(',\n'),
-      `)`,
-      `UPDATE ${tableName} AS ${tableAlias}`,
-      `SET`,
-      setClauses,
-      `FROM updates`,
-      `WHERE ${whereClauses}${returningStr}`,
-    ].join('\n');
   }
 
   // Wrap in transaction if requested
@@ -557,8 +756,12 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
     sql: generatedSql,
     rowCount: maxRowCount,
     columnCount: updateCols.length,
+    matchColumnCount: matchCols.length,
+    singleMatchCount: singleMatchCols.length,
+    listMatchCount: listMatchCols.length,
     warnings,
-    strategy: options.strategy,
+    executionMode,
+    strategy: effectiveStrategy,
     pythonSnippet,
   };
 }
@@ -597,7 +800,7 @@ def run_update():
             database=DB_NAME,
             password=DB_PASSWORD
         )
-        print(f"Executing batch update on '{tableName}' (${rowCount} rows)...")
+        print(f"Executing update on '{tableName}' (${rowCount} rows)...")
         result = con.run(UPDATE_SQL)
         con.close()
         print("Update executed successfully!")
@@ -682,17 +885,20 @@ export interface DbUpdatePreset {
   tableName: string;
   matchColumns: MatchColumn[];
   updateColumns: UpdateColumn[];
+  executionMode?: QueryExecutionMode;
   strategy: UpdateStrategy;
   transactionMode: TransactionMode;
   returningClause?: string;
+  includeRowComments?: boolean;
 }
 
 export const DB_UPDATE_PRESETS: DbUpdatePreset[] = [
   {
     id: 'users-status-role',
-    name: 'User Accounts Status & Roles Batch',
-    description: 'Bulk update user status, assigned role, and updated_at timestamp matching by user ID',
+    name: 'User Accounts Status & Roles (Batch VALUES)',
+    description: 'Bulk update user status, assigned role, and updated_at timestamp matching by user ID in batch mode',
     tableName: 'users',
+    executionMode: 'batch',
     strategy: 'batch_values',
     transactionMode: 'commit',
     returningClause: 'id, status, role, updated_at',
@@ -701,6 +907,7 @@ export const DB_UPDATE_PRESETS: DbUpdatePreset[] = [
         id: 'match-1',
         name: 'id',
         type: 'integer',
+        valueMode: 'list',
         values: ['101', '102', '103', '104', '105'],
       },
     ],
@@ -732,47 +939,107 @@ export const DB_UPDATE_PRESETS: DbUpdatePreset[] = [
     ],
   },
   {
-    id: 'product-price-stock',
-    name: 'Product Catalog Prices & Inventory Adjustment',
-    description: 'Update e-commerce product unit price, stock quantity, and availability matching by SKU',
-    tableName: 'products',
+    id: 'tenant-multi-match-catalog',
+    name: 'Multi-Match Columns: Tenant & Store Catalog (Mixed Single & List)',
+    description: 'Multiple match columns: single-value constant tenant_id & store_id combined with list of SKUs',
+    tableName: 'store_inventory',
+    executionMode: 'batch',
     strategy: 'batch_values',
-    transactionMode: 'none',
-    returningClause: 'sku, price, stock_quantity',
+    transactionMode: 'commit',
+    returningClause: 'sku, stock_quantity, reorder_threshold',
     matchColumns: [
+      {
+        id: 'match-tenant',
+        name: 'tenant_id',
+        type: 'text',
+        valueMode: 'single',
+        singleValue: 'tenant_us_east',
+        values: ['tenant_us_east'],
+      },
+      {
+        id: 'match-store',
+        name: 'store_id',
+        type: 'text',
+        valueMode: 'single',
+        singleValue: 'STORE-882',
+        values: ['STORE-882'],
+      },
       {
         id: 'match-sku',
         name: 'sku',
         type: 'text',
-        values: ['PROD-A100', 'PROD-B200', 'PROD-C300', 'PROD-D400'],
+        valueMode: 'list',
+        values: ['SKU-1001', 'SKU-1002', 'SKU-1003', 'SKU-1004'],
       },
     ],
     updateColumns: [
       {
-        id: 'upd-price',
-        name: 'price',
-        type: 'numeric',
-        values: ['29.99', '49.50', '119.00', '14.25'],
-      },
-      {
         id: 'upd-stock',
         name: 'stock_quantity',
         type: 'integer',
-        values: ['150', '0', '42', '800'],
+        values: ['120', '45', '0', '350'],
       },
       {
-        id: 'upd-avail',
-        name: 'is_in_stock',
-        type: 'boolean',
-        values: ['true', 'false', 'true', 'true'],
+        id: 'upd-reorder',
+        name: 'reorder_threshold',
+        type: 'integer',
+        values: ['25', '10', '15', '50'],
+      },
+      {
+        id: 'upd-audit',
+        name: 'last_audit_date',
+        type: 'date',
+        values: ['2026-09-18', '2026-09-18', '2026-09-18', '2026-09-18'],
+      },
+    ],
+  },
+  {
+    id: 'individual-order-items',
+    name: 'Individual UPDATE Queries: Order Line Items',
+    description: 'Generates separate discrete UPDATE statements with multi-match columns (order_id + line_number) and transaction safety',
+    tableName: 'order_line_items',
+    executionMode: 'individual',
+    strategy: 'individual',
+    transactionMode: 'commit',
+    returningClause: 'order_id, line_number, fulfillment_status',
+    includeRowComments: true,
+    matchColumns: [
+      {
+        id: 'match-order',
+        name: 'order_id',
+        type: 'integer',
+        valueMode: 'list',
+        values: ['5001', '5001', '5002', '5003'],
+      },
+      {
+        id: 'match-line',
+        name: 'line_number',
+        type: 'integer',
+        valueMode: 'list',
+        values: ['1', '2', '1', '1'],
+      },
+    ],
+    updateColumns: [
+      {
+        id: 'upd-status',
+        name: 'fulfillment_status',
+        type: 'text',
+        values: ['shipped', 'cancelled', 'processing', 'delivered'],
+      },
+      {
+        id: 'upd-tracking',
+        name: 'tracking_code',
+        type: 'text',
+        values: ['TRK-8812', 'NULL', 'TRK-9921', 'TRK-1104'],
       },
     ],
   },
   {
     id: 'subscription-tier-expiry',
-    name: 'Subscription Plan Tier & Quota Upgrade',
-    description: 'Migrate customer subscription plans, monthly quota, and expiration dates matching account ID',
+    name: 'Subscription Plan Upgrade (CTE with UUIDs)',
+    description: 'Migrate customer subscription plans, monthly quota, and expiration dates matching account UUIDs',
     tableName: 'subscriptions',
+    executionMode: 'batch',
     strategy: 'cte',
     transactionMode: 'commit',
     returningClause: '*',
@@ -781,6 +1048,7 @@ export const DB_UPDATE_PRESETS: DbUpdatePreset[] = [
         id: 'match-acc',
         name: 'account_id',
         type: 'uuid',
+        valueMode: 'list',
         values: [
           'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
           'b1ffcd00-ad1c-4ef9-cc7e-7cc0ce491b22',

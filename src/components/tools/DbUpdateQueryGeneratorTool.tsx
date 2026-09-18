@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Database,
   Plus,
@@ -12,17 +12,19 @@ import {
   Layers,
   Code,
   Sparkles,
-  CheckCircle2,
   Maximize2,
   Minimize2,
   Sliders,
   Play,
-  RotateCcw,
-  FileCode,
-  HelpCircle,
+  Zap,
+  FileText,
+  Info,
+  Filter,
 } from 'lucide-react';
 import {
   ColumnType,
+  ValueMode,
+  QueryExecutionMode,
   UpdateStrategy,
   TransactionMode,
   MatchColumn,
@@ -54,6 +56,8 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
       id: 'match-1',
       name: 'id',
       type: 'integer',
+      valueMode: 'list',
+      singleValue: '',
       values: ['101', '102', '103', '104', '105'],
     },
   ]);
@@ -84,29 +88,34 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
     },
   ]);
 
-  // Query Options
+  // Query Execution & Format Mode ('batch' vs 'individual')
+  const [executionMode, setExecutionMode] = useState<QueryExecutionMode>('batch');
   const [strategy, setStrategy] = useState<UpdateStrategy>('batch_values');
+  const [includeRowComments, setIncludeRowComments] = useState<boolean>(true);
   const [transactionMode, setTransactionMode] = useState<TransactionMode>('commit');
   const [returningClause, setReturningClause] = useState<string>('id, status, role, updated_at');
   const [includeTypeCasts, setIncludeTypeCasts] = useState<boolean>(true);
 
   // UI state
   const [inputViewMode, setInputViewMode] = useState<'lists' | 'grid' | 'csv'>('lists');
-  const [outputTab, setOutputTab] = useState<'sql' | 'python' | 'summary'>('sql');
+  const [outputTab, setOutputTab] = useState<'sql' | 'python'>('sql');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [csvRawInput, setCsvRawInput] = useState<string>('');
-  const [csvFirstColIsMatch, setCsvFirstColIsMatch] = useState<boolean>(true);
+  const [csvLeadingMatchCount, setCsvLeadingMatchCount] = useState<number>(1);
 
   // Load preset handler
   const handleLoadPreset = (presetId: string) => {
     setSelectedPresetId(presetId);
     if (presetId === 'custom-blank') {
       setTableName('my_table');
+      setExecutionMode('batch');
       setMatchColumns([
         {
           id: 'match-' + Date.now(),
           name: 'id',
           type: 'integer',
+          valueMode: 'list',
+          singleValue: '',
           values: ['1', '2', '3'],
         },
       ]);
@@ -125,11 +134,15 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
     const preset = DB_UPDATE_PRESETS.find((p) => p.id === presetId);
     if (preset) {
       setTableName(preset.tableName);
+      setExecutionMode(preset.executionMode || (preset.strategy === 'individual' ? 'individual' : 'batch'));
       setMatchColumns(JSON.parse(JSON.stringify(preset.matchColumns)));
       setUpdateColumns(JSON.parse(JSON.stringify(preset.updateColumns)));
       setStrategy(preset.strategy);
       setTransactionMode(preset.transactionMode);
       setReturningClause(preset.returningClause || '');
+      if (preset.includeRowComments !== undefined) {
+        setIncludeRowComments(preset.includeRowComments);
+      }
     }
   };
 
@@ -137,11 +150,19 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
   const maxRowCount = useMemo(() => {
     let max = 0;
     matchColumns.forEach((c) => {
-      if (c.values.length > max) max = c.values.length;
+      if (c.valueMode !== 'single' && c.values.length > max) {
+        max = c.values.length;
+      }
     });
     updateColumns.forEach((c) => {
       if (c.values.length > max) max = c.values.length;
     });
+    if (max === 0) {
+      const hasSingle = matchColumns.some(
+        (c) => c.valueMode === 'single' && (c.singleValue || (c.values && c.values[0]))
+      );
+      if (hasSingle) max = 1;
+    }
     return max;
   }, [matchColumns, updateColumns]);
 
@@ -151,13 +172,25 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
       tableName,
       matchColumns,
       updateColumns,
+      executionMode,
       strategy,
       transactionMode,
       returningClause,
       includeTypeCasts,
+      includeRowComments,
     };
     return generatePostgresUpdateQuery(options);
-  }, [tableName, matchColumns, updateColumns, strategy, transactionMode, returningClause, includeTypeCasts]);
+  }, [
+    tableName,
+    matchColumns,
+    updateColumns,
+    executionMode,
+    strategy,
+    transactionMode,
+    returningClause,
+    includeTypeCasts,
+    includeRowComments,
+  ]);
 
   // Copy to clipboard helper
   const copyToClipboard = (text: string, key: string) => {
@@ -172,7 +205,7 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${tableName || 'query'}_update_${Date.now()}.sql`;
+    link.download = `${tableName || 'query'}_${executionMode}_update_${Date.now()}.sql`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -224,6 +257,75 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
     );
   };
 
+  // Add a match column (defaults to list mode or single mode)
+  const handleAddMatchColumn = (mode: ValueMode = 'list') => {
+    const newId = 'match-' + Date.now();
+    const newCol: MatchColumn = {
+      id: newId,
+      name: `key_${matchColumns.length + 1}`,
+      type: 'text',
+      valueMode: mode,
+      singleValue: '',
+      values: mode === 'list' ? new Array(maxRowCount).fill('') : [],
+    };
+    setMatchColumns([...matchColumns, newCol]);
+  };
+
+  // Remove a match column
+  const handleRemoveMatchColumn = (id: string) => {
+    if (matchColumns.length <= 1) {
+      alert('At least one match column is required for the WHERE clause.');
+      return;
+    }
+    setMatchColumns(matchColumns.filter((col) => col.id !== id));
+  };
+
+  // Toggle match column value mode (Single Value vs List of Values)
+  const handleToggleMatchColMode = (id: string, mode: ValueMode) => {
+    setMatchColumns(
+      matchColumns.map((col) => {
+        if (col.id === id) {
+          if (mode === 'single') {
+            const initialSingle = col.singleValue || (col.values && col.values[0]) || '';
+            return {
+              ...col,
+              valueMode: 'single',
+              singleValue: initialSingle,
+            };
+          } else {
+            const initialList =
+              col.values && col.values.length > 0
+                ? col.values
+                : col.singleValue
+                ? [col.singleValue]
+                : [];
+            return {
+              ...col,
+              valueMode: 'list',
+              values: initialList,
+            };
+          }
+        }
+        return col;
+      })
+    );
+  };
+
+  // Update single value for a match column
+  const handleMatchColSingleValue = (id: string, singleValue: string) => {
+    setMatchColumns(
+      matchColumns.map((col) =>
+        col.id === id
+          ? {
+              ...col,
+              singleValue,
+              values: [singleValue],
+            }
+          : col
+      )
+    );
+  };
+
   // Update raw values for a match column from textarea
   const handleMatchColRawValues = (id: string, rawText: string) => {
     const parsed = parseDelimitedValues(rawText);
@@ -237,28 +339,7 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
     );
   };
 
-  // Add a composite match column
-  const handleAddMatchColumn = () => {
-    const newId = 'match-' + Date.now();
-    const newCol: MatchColumn = {
-      id: newId,
-      name: `key_${matchColumns.length + 1}`,
-      type: 'integer',
-      values: new Array(maxRowCount).fill(''),
-    };
-    setMatchColumns([...matchColumns, newCol]);
-  };
-
-  // Remove a composite match column
-  const handleRemoveMatchColumn = (id: string) => {
-    if (matchColumns.length <= 1) {
-      alert('At least one match column is required for the WHERE clause.');
-      return;
-    }
-    setMatchColumns(matchColumns.filter((col) => col.id !== id));
-  };
-
-  // Grid editing: update a specific cell in match or update columns
+  // Grid editing: update a cell in match or update columns
   const handleGridCellChange = (
     isMatch: boolean,
     colId: string,
@@ -269,6 +350,9 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
       setMatchColumns((prev) =>
         prev.map((c) => {
           if (c.id === colId) {
+            if (c.valueMode === 'single') {
+              return { ...c, singleValue: newValue, values: [newValue] };
+            }
             const nextVals = [...c.values];
             while (nextVals.length <= rowIndex) nextVals.push('');
             nextVals[rowIndex] = newValue;
@@ -292,23 +376,24 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
     }
   };
 
-  // Grid editing: Add a new row to all columns
+  // Grid editing: Add a new row to list columns
   const handleAddGridRow = () => {
     setMatchColumns((prev) =>
-      prev.map((c) => ({ ...c, values: [...c.values, ''] }))
+      prev.map((c) => (c.valueMode !== 'single' ? { ...c, values: [...c.values, ''] } : c))
     );
     setUpdateColumns((prev) =>
       prev.map((c) => ({ ...c, values: [...c.values, ''] }))
     );
   };
 
-  // Grid editing: Delete a specific row from all columns
+  // Grid editing: Delete a specific row
   const handleDeleteGridRow = (rowIndex: number) => {
     setMatchColumns((prev) =>
-      prev.map((c) => ({
-        ...c,
-        values: c.values.filter((_, idx) => idx !== rowIndex),
-      }))
+      prev.map((c) =>
+        c.valueMode !== 'single'
+          ? { ...c, values: c.values.filter((_, idx) => idx !== rowIndex) }
+          : c
+      )
     );
     setUpdateColumns((prev) =>
       prev.map((c) => ({
@@ -328,49 +413,39 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
       return;
     }
 
-    if (csvFirstColIsMatch) {
-      // First column is match column
-      const matchHeader = headers[0] || 'id';
-      const matchVals = rows.map((r) => r[0] || '');
+    const matchCount = Math.min(Math.max(1, csvLeadingMatchCount), headers.length - 1 || 1);
+
+    // Create match columns from leading columns
+    const newMatchCols: MatchColumn[] = [];
+    for (let c = 0; c < matchCount; c++) {
+      const matchHeader = headers[c] || `key_${c + 1}`;
+      const matchVals = rows.map((r) => r[c] || '');
       const matchType = inferColumnType(matchVals);
-
-      setMatchColumns([
-        {
-          id: 'match-' + Date.now(),
-          name: matchHeader,
-          type: matchType,
-          values: matchVals,
-        },
-      ]);
-
-      // Remaining columns are update columns
-      const newUpdCols: UpdateColumn[] = [];
-      for (let c = 1; c < headers.length; c++) {
-        const header = headers[c] || `col_${c}`;
-        const vals = rows.map((r) => r[c] || '');
-        const inferred = inferColumnType(vals);
-        newUpdCols.push({
-          id: `upd-${Date.now()}-${c}`,
-          name: header,
-          type: inferred,
-          values: vals,
-        });
-      }
-
-      if (newUpdCols.length > 0) {
-        setUpdateColumns(newUpdCols);
-      }
-    } else {
-      // All columns are update columns, keep current match column
-      const newUpdCols: UpdateColumn[] = headers.map((header, c) => {
-        const vals = rows.map((r) => r[c] || '');
-        return {
-          id: `upd-${Date.now()}-${c}`,
-          name: header || `col_${c}`,
-          type: inferColumnType(vals),
-          values: vals,
-        };
+      newMatchCols.push({
+        id: `match-${Date.now()}-${c}`,
+        name: matchHeader,
+        type: matchType,
+        valueMode: 'list',
+        values: matchVals,
       });
+    }
+    setMatchColumns(newMatchCols);
+
+    // Remaining columns are update columns
+    const newUpdCols: UpdateColumn[] = [];
+    for (let c = matchCount; c < headers.length; c++) {
+      const header = headers[c] || `col_${c}`;
+      const vals = rows.map((r) => r[c] || '');
+      const inferred = inferColumnType(vals);
+      newUpdCols.push({
+        id: `upd-${Date.now()}-${c}`,
+        name: header,
+        type: inferred,
+        values: vals,
+      });
+    }
+
+    if (newUpdCols.length > 0) {
       setUpdateColumns(newUpdCols);
     }
 
@@ -407,7 +482,7 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
               </span>
             </div>
             <p className="text-[11px] text-slate-400">
-              Bulk update generator with match keys, multi-column value lists, batch VALUES syntax & transactions
+              Multi-match columns (single or list values), batch query syntax (FROM VALUES, CTE, CASE-WHEN) & individual statements
             </p>
           </div>
         </div>
@@ -421,7 +496,7 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
             <select
               value={selectedPresetId}
               onChange={(e) => handleLoadPreset(e.target.value)}
-              className="bg-transparent text-slate-200 text-xs font-medium focus:outline-none cursor-pointer"
+              className="bg-transparent text-slate-200 text-xs font-medium focus:outline-none cursor-pointer max-w-[220px] truncate"
             >
               {DB_UPDATE_PRESETS.map((preset) => (
                 <option key={preset.id} value={preset.id} className="bg-slate-900 text-slate-200">
@@ -455,16 +530,16 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 mt-3 overflow-hidden min-h-0">
         {/* LEFT COLUMN: CONFIG & COLUMN VALUES INPUTS (7 Cols) */}
         <div className="lg:col-span-7 flex flex-col gap-3 overflow-y-auto pr-1 min-h-0">
-          {/* Top Config Row: Table Name & Input Mode Switcher */}
+          {/* Top Row: Target Table & Input Mode Tabs */}
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shrink-0">
-            <div className="flex items-center gap-2 flex-1 min-w-[240px]">
+            <div className="flex items-center gap-2 flex-1 min-w-[220px]">
               <label className="text-xs font-semibold text-slate-300 shrink-0">Target Table:</label>
               <div className="relative flex-1">
                 <input
                   type="text"
                   value={tableName}
                   onChange={(e) => setTableName(e.target.value)}
-                  placeholder="e.g. users, public.orders, inventory"
+                  placeholder="e.g. users, public.inventory, store_items"
                   className="w-full bg-slate-950 text-slate-100 font-mono text-xs border border-slate-700 rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-500"
                 />
               </div>
@@ -508,93 +583,205 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
             </div>
           </div>
 
+          {/* PROMINENT CONFIGURATION: QUERY EXECUTION FORMAT (BATCH vs INDIVIDUAL) */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-2">
+              <Sliders className="w-4 h-4 text-indigo-400 shrink-0" />
+              <div className="flex flex-col">
+                <span className="text-xs font-bold text-slate-200">Query Mode:</span>
+                <span className="text-[10px] text-slate-400">Choose single batch statement or discrete statements</span>
+              </div>
+            </div>
+
+            {/* Toggle Buttons */}
+            <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
+              <button
+                onClick={() => setExecutionMode('batch')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${
+                  executionMode === 'batch'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Generate a single atomic query using FROM (VALUES ...), CTE, or CASE-WHEN"
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                Batch Query (Single Atomic)
+              </button>
+              <button
+                onClick={() => setExecutionMode('individual')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${
+                  executionMode === 'individual'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Generate discrete individual UPDATE ... WHERE ...; statements for every row"
+              >
+                <FileText className="w-3.5 h-3.5 text-cyan-400" />
+                Individual Queries (Per Row)
+              </button>
+            </div>
+          </div>
+
           {/* VIEW MODE 1: COLUMN LISTS (DEFAULT) */}
           {inputViewMode === 'lists' && (
             <div className="flex flex-col gap-3 flex-1">
-              {/* SECTION A: MATCH COLUMN(S) (WHERE CLAUSE) */}
+              {/* SECTION A: MULTIPLE MATCH COLUMNS (WHERE CLAUSE) */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col gap-2.5">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-amber-400"></span>
                     <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
-                      Match Column (WHERE Clause)
+                      Match Columns (WHERE Clause)
                     </span>
                     <span className="text-[11px] text-slate-400">
-                      Row identifier key to match the correct record
+                      ({matchColumns.length} key{matchColumns.length > 1 ? 's' : ''} configured)
                     </span>
                   </div>
-                  <button
-                    onClick={handleAddMatchColumn}
-                    className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1 font-medium"
-                    title="Add composite match column (e.g. tenant_id + id)"
-                  >
-                    <Plus className="w-3 h-3" />
-                    Add Composite Key
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleAddMatchColumn('list')}
+                      className="px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-medium flex items-center gap-1 transition-colors"
+                      title="Add another match column with a list of per-row values"
+                    >
+                      <Plus className="w-3 h-3" />
+                      Add List Match Key
+                    </button>
+                    <button
+                      onClick={() => handleAddMatchColumn('single')}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700 text-xs font-medium flex items-center gap-1 transition-colors"
+                      title="Add a constant single-value match filter (e.g. tenant_id, store_id)"
+                    >
+                      <Filter className="w-3 h-3 text-amber-400" />
+                      Add Single Value Filter
+                    </button>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-2.5">
-                  {matchColumns.map((col, idx) => (
-                    <div key={col.id} className="bg-slate-950/70 border border-slate-800 rounded-lg p-2.5 flex flex-col gap-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 flex-1">
-                          <span className="text-[11px] text-slate-500 font-mono">Key #{idx + 1}</span>
-                          <input
-                            type="text"
-                            value={col.name}
-                            onChange={(e) => {
-                              const updated = matchColumns.map((c) =>
-                                c.id === col.id ? { ...c, name: e.target.value } : c
-                              );
-                              setMatchColumns(updated);
-                            }}
-                            placeholder="e.g. id, sku, uuid"
-                            className="bg-slate-900 text-slate-200 font-mono text-xs border border-slate-750 rounded px-2 py-1 w-36 focus:outline-none focus:border-amber-500"
-                          />
-                          <select
-                            value={col.type}
-                            onChange={(e) => {
-                              const updated = matchColumns.map((c) =>
-                                c.id === col.id ? { ...c, type: e.target.value as ColumnType } : c
-                              );
-                              setMatchColumns(updated);
-                            }}
-                            className="bg-slate-900 text-slate-300 font-mono text-xs border border-slate-750 rounded px-2 py-1 focus:outline-none focus:border-amber-500 cursor-pointer"
-                          >
-                            {columnTypes.map((t) => (
-                              <option key={t} value={t}>
-                                {t}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
-                            {col.values.length} values
-                          </span>
-                          {matchColumns.length > 1 && (
-                            <button
-                              onClick={() => handleRemoveMatchColumn(col.id)}
-                              className="text-slate-500 hover:text-red-400 p-1"
-                              title="Remove match key"
+                <div className="grid grid-cols-1 gap-3">
+                  {matchColumns.map((col, idx) => {
+                    const isSingle = col.valueMode === 'single';
+                    return (
+                      <div
+                        key={col.id}
+                        className="bg-slate-950/80 border border-slate-800 rounded-lg p-3 flex flex-col gap-2.5 shadow-sm"
+                      >
+                        {/* Header Row: Key index, Name, Type, Mode Toggle, Trash */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[280px]">
+                            <span className="text-[11px] text-amber-400/90 font-mono font-bold bg-amber-950/40 border border-amber-900/50 px-1.5 py-0.5 rounded">
+                              Match #{idx + 1}
+                            </span>
+                            <input
+                              type="text"
+                              value={col.name}
+                              onChange={(e) => {
+                                const updated = matchColumns.map((c) =>
+                                  c.id === col.id ? { ...c, name: e.target.value } : c
+                                );
+                                setMatchColumns(updated);
+                              }}
+                              placeholder="e.g. tenant_id, sku, id"
+                              className="bg-slate-900 text-slate-200 font-mono text-xs border border-slate-750 rounded px-2.5 py-1 w-36 focus:outline-none focus:border-amber-500 font-medium"
+                            />
+                            <select
+                              value={col.type}
+                              onChange={(e) => {
+                                const updated = matchColumns.map((c) =>
+                                  c.id === col.id
+                                    ? { ...c, type: e.target.value as ColumnType }
+                                    : c
+                                );
+                                setMatchColumns(updated);
+                              }}
+                              className="bg-slate-900 text-slate-300 font-mono text-xs border border-slate-750 rounded px-2 py-1 focus:outline-none focus:border-amber-500 cursor-pointer"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
+                              {columnTypes.map((t) => (
+                                <option key={t} value={t}>
+                                  {t}
+                                </option>
+                              ))}
+                            </select>
 
-                      {/* Values textarea */}
-                      <textarea
-                        value={col.values.join('\n')}
-                        onChange={(e) => handleMatchColRawValues(col.id, e.target.value)}
-                        rows={isFullScreen ? 4 : 3}
-                        placeholder="Paste list of match keys (one per line, comma-separated, or tab-separated)..."
-                        className="w-full font-mono text-xs bg-slate-900 text-amber-200/90 border border-slate-800 rounded p-2 focus:outline-none focus:border-amber-500 resize-y whitespace-pre overflow-x-auto leading-relaxed"
-                      />
-                    </div>
-                  ))}
+                            {/* Mode Toggle: Single Value vs List of Values */}
+                            <div className="flex items-center bg-slate-900 p-0.5 rounded border border-slate-750 text-[11px]">
+                              <button
+                                onClick={() => handleToggleMatchColMode(col.id, 'single')}
+                                className={`px-2 py-0.5 rounded transition-colors ${
+                                  isSingle
+                                    ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                                    : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                                title="Single Value: Fixed constant applied across all updated rows (e.g. tenant_id = 'org_1')"
+                              >
+                                🎯 Single Value
+                              </button>
+                              <button
+                                onClick={() => handleToggleMatchColMode(col.id, 'list')}
+                                className={`px-2 py-0.5 rounded transition-colors ${
+                                  !isSingle
+                                    ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                                    : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                                title="List of Values: Row-by-row match values mapped to each update row"
+                              >
+                                📋 List of Values
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 font-mono">
+                              {isSingle ? 'Constant Filter' : `${col.values.length} row values`}
+                            </span>
+                            {matchColumns.length > 1 && (
+                              <button
+                                onClick={() => handleRemoveMatchColumn(col.id)}
+                                className="text-slate-500 hover:text-red-400 p-1 transition-colors"
+                                title="Remove this match key"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Value Input Section depending on valueMode */}
+                        {isSingle ? (
+                          <div className="bg-slate-900/90 border border-amber-500/20 rounded-lg p-2.5 flex flex-col gap-1.5">
+                            <div className="flex items-center gap-2">
+                              <label className="text-[11px] font-semibold text-amber-300 shrink-0">
+                                Single Match Value:
+                              </label>
+                              <input
+                                type="text"
+                                value={col.singleValue ?? col.values[0] ?? ''}
+                                onChange={(e) => handleMatchColSingleValue(col.id, e.target.value)}
+                                placeholder="e.g. tenant_us_east, STORE-882, 1001, ACTIVE"
+                                className="flex-1 bg-slate-950 text-amber-200 font-mono text-xs border border-slate-700 rounded px-2.5 py-1 focus:outline-none focus:border-amber-500 font-medium"
+                              />
+                            </div>
+                            <p className="text-[10px] text-slate-400 flex items-center gap-1">
+                              <Info className="w-3 h-3 text-amber-400 shrink-0" />
+                              Constant WHERE filter: <code className="text-amber-300 font-mono">{col.name || 'key'} = {col.singleValue || col.values[0] || '...'}</code> is applied across all update records.
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-1">
+                            <textarea
+                              value={col.values.join('\n')}
+                              onChange={(e) => handleMatchColRawValues(col.id, e.target.value)}
+                              rows={isFullScreen ? 4 : 3}
+                              placeholder="Paste list of match keys (one per line, comma-separated, or tab-separated)..."
+                              className="w-full font-mono text-xs bg-slate-900 text-amber-200/90 border border-slate-800 rounded p-2 focus:outline-none focus:border-amber-500 resize-y whitespace-pre overflow-x-auto leading-relaxed"
+                            />
+                            <span className="text-[10px] text-slate-400">
+                              Row-specific keys joined per record (one value per updated entity)
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -709,11 +896,18 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
                     Add Row
                   </button>
                   <button
+                    onClick={() => handleAddMatchColumn('list')}
+                    className="px-2.5 py-1 rounded bg-amber-600/20 text-amber-300 border border-amber-500/30 hover:bg-amber-600/30 text-xs font-medium flex items-center gap-1 transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add Match Key
+                  </button>
+                  <button
                     onClick={handleAddUpdateColumn}
                     className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium flex items-center gap-1 transition-colors"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    Add Column
+                    Add Update Col
                   </button>
                 </div>
               </div>
@@ -725,10 +919,21 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
                     <tr>
                       <th className="px-2.5 py-2 text-center text-slate-500 w-10">#</th>
                       {matchColumns.map((col) => (
-                        <th key={col.id} className="px-3 py-2 border-r border-slate-800 bg-amber-950/20 text-amber-300">
-                          <div className="flex items-center gap-1.5">
-                            <span>🔑 {col.name}</span>
-                            <span className="text-[10px] text-amber-400/70 font-sans">({col.type})</span>
+                        <th key={col.id} className="px-3 py-2 border-r border-slate-800 bg-amber-950/30 text-amber-300">
+                          <div className="flex items-center justify-between gap-1.5">
+                            <div className="flex items-center gap-1">
+                              <span>🔑 {col.name}</span>
+                              <span className="text-[10px] text-amber-400/70 font-sans">
+                                ({col.valueMode === 'single' ? 'Single' : col.type})
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => handleToggleMatchColMode(col.id, col.valueMode === 'single' ? 'list' : 'single')}
+                              className="text-[9px] px-1 py-0.5 bg-slate-900 rounded border border-amber-500/30 hover:bg-amber-500 hover:text-slate-950"
+                              title="Toggle Single vs List mode"
+                            >
+                              {col.valueMode === 'single' ? '🎯' : '📋'}
+                            </button>
                           </div>
                         </th>
                       ))}
@@ -747,16 +952,25 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
                     {Array.from({ length: maxRowCount }).map((_, rIdx) => (
                       <tr key={rIdx} className="hover:bg-slate-900/50">
                         <td className="px-2.5 py-1.5 text-center text-slate-500 text-[11px]">{rIdx + 1}</td>
-                        {matchColumns.map((col) => (
-                          <td key={col.id} className="px-2 py-1 border-r border-slate-800/80 bg-amber-950/5">
-                            <input
-                              type="text"
-                              value={col.values[rIdx] || ''}
-                              onChange={(e) => handleGridCellChange(true, col.id, rIdx, e.target.value)}
-                              className="w-full bg-transparent text-amber-200 px-1 py-0.5 focus:outline-none focus:bg-slate-850 rounded"
-                            />
-                          </td>
-                        ))}
+                        {matchColumns.map((col) => {
+                          const isSingle = col.valueMode === 'single';
+                          const cellVal = isSingle
+                            ? col.singleValue ?? col.values[0] ?? ''
+                            : col.values[rIdx] || '';
+                          return (
+                            <td key={col.id} className="px-2 py-1 border-r border-slate-800/80 bg-amber-950/10">
+                              <input
+                                type="text"
+                                value={cellVal}
+                                onChange={(e) => handleGridCellChange(true, col.id, rIdx, e.target.value)}
+                                placeholder={isSingle ? 'Constant...' : 'Key...'}
+                                className={`w-full bg-transparent px-1 py-0.5 focus:outline-none focus:bg-slate-850 rounded ${
+                                  isSingle ? 'text-amber-300 font-semibold' : 'text-amber-200'
+                                }`}
+                              />
+                            </td>
+                          );
+                        })}
                         {updateColumns.map((col) => (
                           <td key={col.id} className="px-2 py-1 border-r border-slate-800/80">
                             <input
@@ -787,7 +1001,7 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
           {/* VIEW MODE 3: CSV/TSV IMPORT */}
           {inputViewMode === 'csv' && (
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-3 flex-1">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="text-xs font-bold text-slate-200">Import CSV, TSV, or Spreadsheet Data</h3>
                   <p className="text-[11px] text-slate-400">
@@ -795,15 +1009,16 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={csvFirstColIsMatch}
-                      onChange={(e) => setCsvFirstColIsMatch(e.target.checked)}
-                      className="rounded border-slate-700 bg-slate-800 text-indigo-600"
-                    />
-                    First column is Match Key (WHERE)
-                  </label>
+                  <label className="text-xs text-slate-300">Leading Match Columns:</label>
+                  <select
+                    value={csvLeadingMatchCount}
+                    onChange={(e) => setCsvLeadingMatchCount(parseInt(e.target.value, 10))}
+                    className="bg-slate-950 text-slate-200 font-mono text-xs border border-slate-700 rounded px-2 py-1"
+                  >
+                    <option value={1}>1 Column (First Column)</option>
+                    <option value={2}>2 Columns (Composite Key)</option>
+                    <option value={3}>3 Columns (Composite Key)</option>
+                  </select>
                 </div>
               </div>
 
@@ -811,7 +1026,7 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
                 value={csvRawInput}
                 onChange={(e) => setCsvRawInput(e.target.value)}
                 rows={isFullScreen ? 10 : 8}
-                placeholder={`id,status,role,updated_at\n101,active,admin,2026-09-18 10:00:00\n102,inactive,editor,2026-09-18 10:00:00\n103,suspended,viewer,2026-09-18 10:00:00`}
+                placeholder={`tenant_id,store_id,sku,stock_quantity,reorder_threshold\ntenant_us_east,STORE-882,SKU-1001,120,25\ntenant_us_east,STORE-882,SKU-1002,45,10\ntenant_us_east,STORE-882,SKU-1003,0,15`}
                 className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 whitespace-pre overflow-x-auto leading-relaxed"
               />
 
@@ -835,20 +1050,31 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
 
           {/* SECTION C: QUERY OPTIONS BAR */}
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shrink-0">
-            {/* Strategy selector */}
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-semibold text-slate-400">SQL Strategy:</label>
-              <select
-                value={strategy}
-                onChange={(e) => setStrategy(e.target.value as UpdateStrategy)}
-                className="bg-slate-950 text-slate-200 font-mono text-xs border border-slate-750 rounded-lg px-2.5 py-1 focus:outline-none focus:border-indigo-500 cursor-pointer"
-              >
-                <option value="batch_values">FROM (VALUES ...) (Fast Batch)</option>
-                <option value="individual">Multiple Individual UPDATEs</option>
-                <option value="case_when">Single UPDATE with CASE-WHEN</option>
-                <option value="cte">CTE (WITH updates AS ...)</option>
-              </select>
-            </div>
+            {/* Strategy selector for Batch Mode */}
+            {executionMode === 'batch' ? (
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-semibold text-slate-400">Batch Strategy:</label>
+                <select
+                  value={strategy}
+                  onChange={(e) => setStrategy(e.target.value as UpdateStrategy)}
+                  className="bg-slate-950 text-slate-200 font-mono text-xs border border-slate-750 rounded-lg px-2.5 py-1 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                >
+                  <option value="batch_values">FROM (VALUES ...) (Fast Batch)</option>
+                  <option value="case_when">Single UPDATE with CASE-WHEN</option>
+                  <option value="cte">CTE (WITH updates AS ...)</option>
+                </select>
+              </div>
+            ) : (
+              <label className="flex items-center gap-1.5 text-xs text-slate-300 hover:text-slate-100 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includeRowComments}
+                  onChange={(e) => setIncludeRowComments(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-800 text-indigo-600"
+                />
+                Include Row Comments (-- Row N: key=val)
+              </label>
+            )}
 
             {/* Transaction Mode */}
             <div className="flex items-center gap-2">
@@ -922,7 +1148,7 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
                 </div>
 
                 <span className="text-[11px] text-slate-400 hidden sm:inline">
-                  {maxRowCount} rows • {updateColumns.length} cols
+                  {queryResult.rowCount} rows • {queryResult.columnCount} cols
                 </span>
               </div>
 
@@ -980,18 +1206,23 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
                   Table: <strong className="text-slate-200">{tableName || 'None'}</strong>
                 </span>
                 <span>
-                  Match Key:{' '}
+                  Match Keys:{' '}
                   <strong className="text-amber-400">
-                    {matchColumns.map((m) => m.name).join(', ')}
+                    {matchColumns
+                      .map((m) => `${m.name} (${m.valueMode === 'single' ? 'single' : 'list'})`)
+                      .join(', ')}
                   </strong>
                 </span>
               </div>
               <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800/60 font-semibold">
+                  {executionMode === 'batch' ? '⚡ Batch Mode' : '📝 Individual Mode'}
+                </span>
                 <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                  {strategy === 'batch_values'
-                    ? 'PostgreSQL VALUES Batch'
-                    : strategy === 'individual'
+                  {executionMode === 'individual'
                     ? 'Individual Statements'
+                    : strategy === 'batch_values'
+                    ? 'PostgreSQL VALUES Batch'
                     : strategy === 'case_when'
                     ? 'CASE-WHEN'
                     : 'CTE Expression'}

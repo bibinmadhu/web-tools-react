@@ -432,6 +432,30 @@ How to De-obfuscate:
               <FolderArchive className="w-3.5 h-3.5" />
               <span>{isExportingZip ? 'Zipping...' : 'Export All (.ZIP)'}</span>
             </button>
+            {onToggleFullScreen && (
+              <button
+                id="dual-java-top-fullscreen-btn"
+                onClick={onToggleFullScreen}
+                className={`px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 border transition-colors ${
+                  isFullScreen
+                    ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 hover:bg-indigo-600/40'
+                    : 'bg-slate-800/90 text-slate-200 border-slate-700 hover:bg-slate-750'
+                }`}
+                title={isFullScreen ? 'Exit Full Viewport' : 'Expand to Full Viewport'}
+              >
+                {isFullScreen ? (
+                  <>
+                    <Minimize2 className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Exit Full Viewport</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Full Viewport</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
 

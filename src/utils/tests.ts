@@ -1627,6 +1627,68 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     assertTrue(inferredBool === 'boolean', `Expected boolean, got ${inferredBool}`);
   });
 
+  test('Database Update Query Generator', 'Multiple Match Columns with Single-Value and List-Value Modes', () => {
+    // Match column 1: tenant_id (single constant value 'org-123')
+    // Match column 2: user_id (list of IDs ['101', '102'])
+    const result = generatePostgresUpdateQuery({
+      tableName: 'tenant_members',
+      matchColumns: [
+        { id: 'm1', name: 'tenant_id', type: 'text', values: ['org-123'], valueMode: 'single' },
+        { id: 'm2', name: 'user_id', type: 'integer', values: ['101', '102'], valueMode: 'list' }
+      ],
+      updateColumns: [
+        { id: 'u1', name: 'role', type: 'text', values: ['admin', 'manager'] }
+      ],
+      strategy: 'batch_values',
+      executionMode: 'batch',
+      transactionMode: 'none',
+    });
+
+    assertTrue(result.rowCount === 2, `Expected 2 rows, got ${result.rowCount}`);
+    assertTrue(result.sql.includes("t.user_id = v.user_id"), 'Must join on list match key user_id');
+    assertTrue(result.sql.includes("t.tenant_id = 'org-123'"), 'Must filter on single match constant tenant_id');
+    assertTrue(result.sql.includes("(101::int, 'admin'::text)"), 'First VALUES tuple must contain user_id and role');
+    assertTrue(result.sql.includes("(102, 'manager')"), 'Second VALUES tuple must contain user_id and role');
+  });
+
+  test('Database Update Query Generator', 'Execution Mode: Batch vs Individual Queries', () => {
+    // When executionMode === 'individual'
+    const individualResult = generatePostgresUpdateQuery({
+      tableName: 'orders',
+      matchColumns: [
+        { id: 'm1', name: 'store_id', type: 'text', values: ['store-east'], valueMode: 'single' },
+        { id: 'm2', name: 'order_id', type: 'integer', values: ['5001', '5002'], valueMode: 'list' }
+      ],
+      updateColumns: [
+        { id: 'u1', name: 'status', type: 'text', values: ['shipped', 'delivered'] }
+      ],
+      strategy: 'individual',
+      executionMode: 'individual',
+      transactionMode: 'none',
+    });
+
+    assertTrue(individualResult.rowCount === 2, 'Expected 2 rows');
+    assertTrue(individualResult.sql.includes("UPDATE orders SET status = 'shipped' WHERE store_id = 'store-east' AND order_id = 5001;"), 'First individual statement must match');
+    assertTrue(individualResult.sql.includes("UPDATE orders SET status = 'delivered' WHERE store_id = 'store-east' AND order_id = 5002;"), 'Second individual statement must match');
+
+    // When executionMode === 'batch'
+    const batchResult = generatePostgresUpdateQuery({
+      tableName: 'orders',
+      matchColumns: [
+        { id: 'm1', name: 'order_id', type: 'integer', values: ['5001', '5002'], valueMode: 'list' }
+      ],
+      updateColumns: [
+        { id: 'u1', name: 'status', type: 'text', values: ['shipped', 'delivered'] }
+      ],
+      strategy: 'batch_values',
+      executionMode: 'batch',
+      transactionMode: 'none',
+    });
+
+    assertTrue(batchResult.sql.includes("UPDATE orders AS t SET"), 'Batch query should generate single UPDATE ... FROM (VALUES ...) statement');
+    assertTrue(batchResult.sql.includes("FROM (VALUES"), 'Batch query should use VALUES block');
+  });
+
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
   const passed = results.filter((r) => r.status === 'passed').length;
   const failed = results.filter((r) => r.status === 'failed').length;

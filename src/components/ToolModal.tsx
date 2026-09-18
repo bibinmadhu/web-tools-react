@@ -53,6 +53,14 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return true;
       }
     }
+    if (tool.id === 'java-obfuscator') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_java_single');
+        return saved !== null ? saved === 'true' : false;
+      } catch (e) {
+        return false;
+      }
+    }
     if (tool.id === 'db-update-query-generator') {
       try {
         const saved = localStorage.getItem('devhub_fullscreen_db_update');
@@ -72,6 +80,13 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       } catch (e) {
         setIsFullScreen(true);
       }
+    } else if (tool?.id === 'java-obfuscator') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_java_single');
+        setIsFullScreen(saved !== null ? saved === 'true' : false);
+      } catch (e) {
+        setIsFullScreen(false);
+      }
     } else if (tool?.id === 'db-update-query-generator') {
       try {
         const saved = localStorage.getItem('devhub_fullscreen_db_update');
@@ -90,6 +105,12 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       if (tool?.id === 'java-dual-obfuscator') {
         try {
           localStorage.setItem('devhub_fullscreen_java_dual', String(next));
+        } catch (e) {
+          // ignore
+        }
+      } else if (tool?.id === 'java-obfuscator') {
+        try {
+          localStorage.setItem('devhub_fullscreen_java_single', String(next));
         } catch (e) {
           // ignore
         }
@@ -113,7 +134,12 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       case 'code-obfuscator':
         return <CodeObfuscatorTool />;
       case 'java-obfuscator':
-        return <JavaObfuscatorTool />;
+        return (
+          <JavaObfuscatorTool
+            isFullScreen={isFullScreen}
+            onToggleFullScreen={handleToggleFullScreen}
+          />
+        );
       case 'java-dual-obfuscator':
         return (
           <DualJavaObfuscatorTool

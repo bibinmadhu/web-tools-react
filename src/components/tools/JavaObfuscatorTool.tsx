@@ -18,7 +18,9 @@ import {
   HelpCircle,
   Sparkles,
   Trash2,
-  Plus
+  Plus,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import {
   obfuscateJavaCode,
@@ -29,7 +31,15 @@ import {
 } from '../../utils/javaObfuscator';
 import { JAVA_PRESETS, JavaPreset } from '../../utils/javaPresets';
 
-export const JavaObfuscatorTool: React.FC = () => {
+export interface JavaObfuscatorToolProps {
+  isFullScreen?: boolean;
+  onToggleFullScreen?: () => void;
+}
+
+export const JavaObfuscatorTool: React.FC<JavaObfuscatorToolProps> = ({
+  isFullScreen = false,
+  onToggleFullScreen,
+}) => {
   const [mode, setMode] = useState<'obfuscate' | 'deobfuscate' | 'mapping' | 'settings'>('obfuscate');
 
   // Code states
@@ -258,22 +268,45 @@ export const JavaObfuscatorTool: React.FC = () => {
           </div>
         </div>
 
-        {/* Preset Selector */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-slate-400 hidden sm:inline">Presets:</span>
-          <div className="flex flex-wrap gap-1.5">
-            {JAVA_PRESETS.map((preset) => (
+          {/* Preset Selector & Full Viewport */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-mono text-slate-400 hidden sm:inline">Presets:</span>
+            <div className="flex flex-wrap gap-1.5">
+              {JAVA_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  onClick={() => handleSelectPreset(preset)}
+                  className="px-2.5 py-1 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60 transition-colors"
+                  title={preset.description}
+                >
+                  {preset.name.split(' ')[0]}
+                </button>
+              ))}
+            </div>
+            {onToggleFullScreen && (
               <button
-                key={preset.id}
-                onClick={() => handleSelectPreset(preset)}
-                className="px-2.5 py-1 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60 transition-colors"
-                title={preset.description}
+                onClick={onToggleFullScreen}
+                className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-colors flex items-center gap-1.5 ${
+                  isFullScreen
+                    ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 hover:bg-indigo-600/40'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                }`}
+                title={isFullScreen ? 'Exit full viewport' : 'Expand to full viewport'}
               >
-                {preset.name.split(' ')[0]}
+                {isFullScreen ? (
+                  <>
+                    <Minimize2 className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Exit Full Viewport</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Full Viewport</span>
+                  </>
+                )}
               </button>
-            ))}
+            )}
           </div>
-        </div>
       </div>
 
       {/* Navigation Tabs */}
@@ -410,7 +443,7 @@ export const JavaObfuscatorTool: React.FC = () => {
                 value={sourceCode}
                 onChange={(e) => setSourceCode(e.target.value)}
                 placeholder="Paste original Java code here..."
-                rows={18}
+                rows={isFullScreen ? 24 : 18}
                 className="w-full bg-[#0B0F1A] p-4 text-slate-200 font-mono text-xs focus:outline-none resize-y leading-relaxed"
                 spellCheck={false}
               />
@@ -428,7 +461,7 @@ export const JavaObfuscatorTool: React.FC = () => {
                 value={obfuscatedCode}
                 readOnly
                 placeholder="Obfuscated output will appear here..."
-                rows={18}
+                rows={isFullScreen ? 24 : 18}
                 className="w-full bg-[#0B0F1A] p-4 text-emerald-300 font-mono text-xs focus:outline-none resize-y leading-relaxed"
                 spellCheck={false}
               />
