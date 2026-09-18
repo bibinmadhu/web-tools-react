@@ -674,8 +674,16 @@ How to De-obfuscate:
                       <div className="flex items-center gap-2">
                         <span>{mainCode.split('\n').length} lines • {mainCode.length} chars</span>
                         <button
-                          onClick={handleFormatMainInput}
+                          onClick={() => copyToClipboard(mainCode, 'source-main')}
                           className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                          title="Copy source Java class code"
+                        >
+                          {copiedKey === 'source-main' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+                          <span>{copiedKey === 'source-main' ? 'Copied' : 'Copy'}</span>
+                        </button>
+                        <button
+                          onClick={handleFormatMainInput}
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
                           title="Format Java class code with clean 4-space indentation"
                         >
                           <AlignLeft className="w-3 h-3 text-blue-400" />
@@ -704,8 +712,16 @@ How to De-obfuscate:
                       <div className="flex items-center gap-2">
                         <span>{result.mainClassFile.obfuscatedCode.split('\n').length} lines • {result.mainClassFile.obfuscatedCode.length} chars</span>
                         <button
-                          onClick={handleFormatObfuscatedMain}
+                          onClick={() => copyToClipboard(result.mainClassFile.obfuscatedCode, 'main-obf-pane')}
                           className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                          title="Copy obfuscated Java class code"
+                        >
+                          {copiedKey === 'main-obf-pane' || copiedKey === 'main-obf' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+                          <span>{copiedKey === 'main-obf-pane' || copiedKey === 'main-obf' ? 'Copied' : 'Copy'}</span>
+                        </button>
+                        <button
+                          onClick={handleFormatObfuscatedMain}
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
                           title="Re-indent obfuscated output with clean Java indentation"
                         >
                           <AlignLeft className="w-3 h-3 text-emerald-400" />
@@ -777,8 +793,16 @@ How to De-obfuscate:
                       <div className="flex items-center gap-2">
                         <span>{testCode.split('\n').length} lines • {testCode.length} chars</span>
                         <button
-                          onClick={handleFormatTestInput}
+                          onClick={() => copyToClipboard(testCode, 'source-test')}
                           className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                          title="Copy source Java test code"
+                        >
+                          {copiedKey === 'source-test' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+                          <span>{copiedKey === 'source-test' ? 'Copied' : 'Copy'}</span>
+                        </button>
+                        <button
+                          onClick={handleFormatTestInput}
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
                           title="Format Java test code with clean 4-space indentation"
                         >
                           <AlignLeft className="w-3 h-3 text-purple-400" />
@@ -807,8 +831,16 @@ How to De-obfuscate:
                       <div className="flex items-center gap-2">
                         <span>{result.testClassFile.obfuscatedCode.split('\n').length} lines • {result.testClassFile.obfuscatedCode.length} chars</span>
                         <button
-                          onClick={handleFormatObfuscatedTest}
+                          onClick={() => copyToClipboard(result.testClassFile.obfuscatedCode, 'test-obf-pane')}
                           className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                          title="Copy obfuscated Java test code"
+                        >
+                          {copiedKey === 'test-obf-pane' || copiedKey === 'test-obf' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+                          <span>{copiedKey === 'test-obf-pane' || copiedKey === 'test-obf' ? 'Copied' : 'Copy'}</span>
+                        </button>
+                        <button
+                          onClick={handleFormatObfuscatedTest}
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
                           title="Re-indent obfuscated test output with clean Java indentation"
                         >
                           <AlignLeft className="w-3 h-3 text-emerald-400" />
@@ -902,6 +934,22 @@ How to De-obfuscate:
 
             {!useActiveSessionMapping && (
               <div className="pt-2">
+                <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
+                  <span>Mapping JSON (Input):</span>
+                  <div className="flex items-center gap-2">
+                    <span>{deobfMappingInput.split('\n').length} lines • {deobfMappingInput.length} chars</span>
+                    {deobfMappingInput.trim() && (
+                      <button
+                        onClick={() => copyToClipboard(deobfMappingInput, 'deobf-mapping')}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                        title="Copy Mapping JSON input"
+                      >
+                        {copiedKey === 'deobf-mapping' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+                        <span>{copiedKey === 'deobf-mapping' ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
                 <textarea
                   value={deobfMappingInput}
                   onChange={(e) => setDeobfMappingInput(e.target.value)}
@@ -944,7 +992,17 @@ How to De-obfuscate:
                 <div>
                   <div className="text-xs text-slate-400 mb-1.5 flex justify-between items-center">
                     <span>Input (Obfuscated & Modified):</span>
-                    <span>{deobfMainCode.split('\n').length} lines</span>
+                    <div className="flex items-center gap-2">
+                      <span>{deobfMainCode.split('\n').length} lines • {deobfMainCode.length} chars</span>
+                      <button
+                        onClick={() => copyToClipboard(deobfMainCode, 'deobf-main-input')}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                        title="Copy modified obfuscated class code"
+                      >
+                        {copiedKey === 'deobf-main-input' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+                        <span>{copiedKey === 'deobf-main-input' ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
                   </div>
                   <textarea
                     value={deobfMainCode}
@@ -964,10 +1022,18 @@ How to De-obfuscate:
                       De-Obfuscated Restored Output:
                     </span>
                     <div className="flex items-center gap-2">
-                      <span className="text-slate-400 font-normal">{restoredMainCode.split('\n').length} lines</span>
+                      <span className="text-slate-400 font-normal">{restoredMainCode.split('\n').length} lines • {restoredMainCode.length} chars</span>
+                      <button
+                        onClick={() => copyToClipboard(restoredMainCode, 'restored-main-pane')}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                        title="Copy restored class code"
+                      >
+                        {copiedKey === 'restored-main-pane' || copiedKey === 'restored-main' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+                        <span>{copiedKey === 'restored-main-pane' || copiedKey === 'restored-main' ? 'Copied' : 'Copy'}</span>
+                      </button>
                       <button
                         onClick={handleFormatRestoredMain}
-                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
                         title="Re-indent restored class code with clean 4-space indentation"
                       >
                         <AlignLeft className="w-3 h-3 text-emerald-400" />
@@ -1016,7 +1082,17 @@ How to De-obfuscate:
                 <div>
                   <div className="text-xs text-slate-400 mb-1.5 flex justify-between items-center">
                     <span>Input (Obfuscated & Modified):</span>
-                    <span>{deobfTestCode.split('\n').length} lines</span>
+                    <div className="flex items-center gap-2">
+                      <span>{deobfTestCode.split('\n').length} lines • {deobfTestCode.length} chars</span>
+                      <button
+                        onClick={() => copyToClipboard(deobfTestCode, 'deobf-test-input')}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                        title="Copy modified obfuscated test code"
+                      >
+                        {copiedKey === 'deobf-test-input' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+                        <span>{copiedKey === 'deobf-test-input' ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
                   </div>
                   <textarea
                     value={deobfTestCode}
@@ -1036,10 +1112,18 @@ How to De-obfuscate:
                       De-Obfuscated Restored Test Output:
                     </span>
                     <div className="flex items-center gap-2">
-                      <span className="text-slate-400 font-normal">{restoredTestCode.split('\n').length} lines</span>
+                      <span className="text-slate-400 font-normal">{restoredTestCode.split('\n').length} lines • {restoredTestCode.length} chars</span>
+                      <button
+                        onClick={() => copyToClipboard(restoredTestCode, 'restored-test-pane')}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                        title="Copy restored test code"
+                      >
+                        {copiedKey === 'restored-test-pane' || copiedKey === 'restored-test' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+                        <span>{copiedKey === 'restored-test-pane' || copiedKey === 'restored-test' ? 'Copied' : 'Copy'}</span>
+                      </button>
                       <button
                         onClick={handleFormatRestoredTest}
-                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
                         title="Re-indent restored test code with clean 4-space indentation"
                       >
                         <AlignLeft className="w-3 h-3 text-emerald-400" />
