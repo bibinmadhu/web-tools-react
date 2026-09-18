@@ -42,6 +42,16 @@ export const TOOLS_DATA: DevTool[] = [
     isPopular: true,
   },
   {
+    id: 'java-dual-obfuscator',
+    name: 'Java Class & Test Dual Obfuscator',
+    description: 'Obfuscate & de-obfuscate a Java class and its unit/integration test with synchronized mapping keys across both files',
+    category: 'security',
+    tags: ['Java', 'Security', 'Obfuscator', 'Deobfuscate', 'JUnit', 'Mockito', 'Testing', 'Mapping'],
+    iconText: '☕²',
+    iconType: 'shield',
+    isPopular: true,
+  },
+  {
     id: 'code-formatter',
     name: 'Code Format',
     description: 'Beautify JS, HTML & CSS',

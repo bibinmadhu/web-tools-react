@@ -14,6 +14,7 @@ import { CronParserTool } from './tools/CronParserTool';
 import { MarkdownPreviewTool } from './tools/MarkdownPreviewTool';
 import { CodeFormatterTool } from './tools/CodeFormatterTool';
 import { JavaObfuscatorTool } from './tools/JavaObfuscatorTool';
+import { DualJavaObfuscatorTool } from './tools/DualJavaObfuscatorTool';
 import { MultiObfuscatorTool } from './tools/MultiObfuscatorTool';
 import { PdfSignerTool } from './tools/PdfSignerTool';
 import { PdfConverterTool } from './tools/PdfConverterTool';
@@ -51,6 +52,8 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return <CodeObfuscatorTool />;
       case 'java-obfuscator':
         return <JavaObfuscatorTool />;
+      case 'java-dual-obfuscator':
+        return <DualJavaObfuscatorTool />;
       case 'multi-obfuscator':
         return <MultiObfuscatorTool />;
       case 'base64-encoder':

@@ -10,6 +10,8 @@ import {
   parseCron,
 } from './toolFunctions';
 import { obfuscateJavaCode, deobfuscateJavaCode } from './javaObfuscator';
+import { obfuscateDualJavaFiles, deobfuscateDualJavaFiles } from './javaDualObfuscator';
+import { JAVA_DUAL_PRESETS } from './javaDualPresets';
 import {
   createSamplePdf,
   getPdfMetadata,
@@ -324,6 +326,126 @@ public class OrderService {
 
     assertTrue(deobfuscated.includes('com.acme.financial.controller.PaymentController.executePayment(PaymentController.java:24)'), 'Stack trace should be de-obfuscated accurately');
     assertTrue(deobfuscated.includes('com.acme.financial.service.PaymentService.main(PaymentService.java:15)'), 'Package and class in stack trace should be restored');
+  });
+
+  // --- Suite 9B: Java Class & Test Dual Obfuscator & De-Obfuscator ---
+  test('Java Class & Test Dual Obfuscator', 'Synchronized obfuscation of class and test with same mapping keys in same line', () => {
+    const mainClass = `package com.acme.ecommerce.service;
+public class OrderService {
+    public double calculateTotal(double price, int qty) {
+        return price * qty;
+    }
+}`;
+
+    const testClass = `package com.acme.ecommerce.service;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+public class OrderServiceTest {
+    private OrderService orderService = new OrderService();
+
+    @Test
+    void testCalculateTotal() {
+        double total = orderService.calculateTotal(50.0, 2);
+        assertEquals(100.0, total);
+    }
+}`;
+
+    const res = obfuscateDualJavaFiles({
+      mainClassFile: { fileName: 'OrderService.java', code: mainClass },
+      testClassFile: { fileName: 'OrderServiceTest.java', code: testClass },
+    }, {
+      namingStyle: 'alphabetical',
+      obfuscateClasses: true,
+      obfuscateMethods: true,
+      obfuscateVariables: true,
+      preserveTestMethods: true,
+    });
+
+    const obfOrderService = res.mapping.classes['OrderService'];
+    const obfCalculateTotal = res.mapping.methods['calculateTotal'];
+
+    assertTrue(Boolean(obfOrderService), 'OrderService must have a mapped obfuscated class name');
+    assertTrue(Boolean(obfCalculateTotal), 'calculateTotal must have a mapped obfuscated method name');
+
+    // Main file checks
+    assertTrue(res.mainClassFile.obfuscatedCode.includes(`class ${obfOrderService}`), 'Main file should declare obfuscated class name');
+    assertTrue(res.mainClassFile.obfuscatedCode.includes(obfCalculateTotal), 'Main file should rename calculateTotal method');
+
+    // Test file checks - MUST HAVE SAME MAPPING KEYS
+    assertTrue(res.testClassFile.obfuscatedCode.includes(`${obfOrderService} `), 'Test file must use the EXACT SAME obfuscated class name as field type');
+    assertTrue(res.testClassFile.obfuscatedCode.includes(`new ${obfOrderService}()`), 'Test file must use the EXACT SAME obfuscated class name in instantiation');
+    assertTrue(res.testClassFile.obfuscatedCode.includes(`.${obfCalculateTotal}(`), 'Test file must call the EXACT SAME obfuscated method name');
+
+    // Testing assertions & annotations must be preserved
+    assertTrue(res.testClassFile.obfuscatedCode.includes('@Test'), '@Test annotation must be preserved');
+    assertTrue(res.testClassFile.obfuscatedCode.includes('assertEquals(100.0,'), 'assertEquals assertion must be preserved');
+    assertTrue(res.testClassFile.obfuscatedCode.includes('testCalculateTotal()'), 'testCalculateTotal() name should be preserved when preserveTestMethods is true');
+
+    // Cross-file shared identifiers stats
+    assertTrue(res.sharedIdentifiers.classes.includes('OrderService'), 'OrderService should be recognized as a shared class');
+    assertTrue(res.sharedIdentifiers.methods.includes('calculateTotal'), 'calculateTotal should be recognized as a shared method');
+  });
+
+  test('Java Class & Test Dual Obfuscator', 'Lossless de-obfuscation of modified code for both class and test', () => {
+    const mainClass = `package com.acme.security.auth;
+public class TokenValidator {
+    public boolean verifyToken(String token) {
+        return token != null;
+    }
+}`;
+
+    const testClass = `package com.acme.security.auth;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+public class TokenValidatorTest {
+    private TokenValidator validator = new TokenValidator();
+    @Test
+    void testVerify() {
+        assertTrue(validator.verifyToken("ABC"));
+    }
+}`;
+
+    // 1. Obfuscate both
+    const obfResult = obfuscateDualJavaFiles({
+      mainClassFile: { fileName: 'TokenValidator.java', code: mainClass },
+      testClassFile: { fileName: 'TokenValidatorTest.java', code: testClass },
+    });
+
+    const obfMain = obfResult.mainClassFile.obfuscatedCode;
+    const obfTest = obfResult.testClassFile.obfuscatedCode;
+
+    // 2. User modifies the obfuscated class & test during development or debugging
+    const modifiedObfMain = obfMain + '\n// User modified: added audit line\npublic void auditEvent() { System.out.println("Audited"); }';
+    const modifiedObfTest = obfTest + '\n// User modified: added second test\n@Test\nvoid userExtraTest() { assertTrue(true); }';
+
+    // 3. De-obfuscate both modified files using the shared mapping
+    const restored = deobfuscateDualJavaFiles(modifiedObfMain, modifiedObfTest, obfResult.mapping);
+
+    // Verifications:
+    // Original names restored
+    assertTrue(restored.restoredMainCode.includes('TokenValidator'), 'Restored main code must have TokenValidator restored');
+    assertTrue(restored.restoredMainCode.includes('verifyToken'), 'Restored main code must have verifyToken restored');
+    assertTrue(restored.restoredTestCode.includes('TokenValidator validator = new TokenValidator();'), 'Restored test code must have TokenValidator and validator restored');
+    assertTrue(restored.restoredTestCode.includes('validator.verifyToken('), 'Restored test code must call verifyToken');
+
+    // User modifications preserved intact
+    assertTrue(restored.restoredMainCode.includes('auditEvent()'), 'User-added method in main class must be preserved');
+    assertTrue(restored.restoredMainCode.includes('// User modified: added audit line'), 'User-added comment must be preserved');
+    assertTrue(restored.restoredTestCode.includes('userExtraTest()'), 'User-added test in test class must be preserved');
+  });
+
+  test('Java Class & Test Dual Obfuscator', 'Preset scenarios obfuscate with zero collisions and accurate mapping', () => {
+    for (const preset of JAVA_DUAL_PRESETS) {
+      const res = obfuscateDualJavaFiles({
+        mainClassFile: { fileName: preset.mainFile.fileName, code: preset.mainFile.code },
+        testClassFile: { fileName: preset.testFile.fileName, code: preset.testFile.code },
+      });
+
+      assertTrue(res.stats.totalClassesRenamed >= 1, `Preset ${preset.id} must rename classes`);
+      assertTrue(res.stats.crossFileTokensCount >= 1, `Preset ${preset.id} must have synchronized cross-file tokens`);
+      assertTrue(!res.mainClassFile.obfuscatedCode.includes(preset.mainFile.fileName.replace('.java', '')), `Primary class in ${preset.id} should be obfuscated`);
+    }
   });
 
   // --- Suite 10: PDF Signer & Annotator ---
