@@ -27,6 +27,7 @@ import { AgreementGeneratorTool } from './tools/AgreementGeneratorTool';
 import { QrCodeGeneratorTool } from './tools/QrCodeGeneratorTool';
 import { CurlChainConverterTool } from './tools/CurlChainConverterTool';
 import { CurlDbChainConverterTool } from './tools/CurlDbChainConverterTool';
+import { DbUpdateQueryGeneratorTool } from './tools/DbUpdateQueryGeneratorTool';
 import { GenericTool } from './tools/GenericTool';
 
 interface ToolModalProps {
@@ -52,6 +53,14 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return true;
       }
     }
+    if (tool.id === 'db-update-query-generator') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_db_update');
+        return saved !== null ? saved === 'true' : false;
+      } catch (e) {
+        return false;
+      }
+    }
     return false;
   });
 
@@ -62,6 +71,13 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         setIsFullScreen(saved !== null ? saved === 'true' : true);
       } catch (e) {
         setIsFullScreen(true);
+      }
+    } else if (tool?.id === 'db-update-query-generator') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_db_update');
+        setIsFullScreen(saved !== null ? saved === 'true' : false);
+      } catch (e) {
+        setIsFullScreen(false);
       }
     } else {
       setIsFullScreen(false);
@@ -74,6 +90,12 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       if (tool?.id === 'java-dual-obfuscator') {
         try {
           localStorage.setItem('devhub_fullscreen_java_dual', String(next));
+        } catch (e) {
+          // ignore
+        }
+      } else if (tool?.id === 'db-update-query-generator') {
+        try {
+          localStorage.setItem('devhub_fullscreen_db_update', String(next));
         } catch (e) {
           // ignore
         }
@@ -143,6 +165,13 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return <CurlChainConverterTool />;
       case 'curl-db-chain-to-python':
         return <CurlDbChainConverterTool />;
+      case 'db-update-query-generator':
+        return (
+          <DbUpdateQueryGeneratorTool
+            isFullScreen={isFullScreen}
+            onToggleFullScreen={handleToggleFullScreen}
+          />
+        );
       default:
         return <GenericTool tool={tool} />;
     }
@@ -159,6 +188,7 @@ export const ToolModal: React.FC<ToolModalProps> = ({
     'curl-converter',
     'curl-chain-to-python',
     'curl-db-chain-to-python',
+    'db-update-query-generator',
     'java-formatter',
     'multi-obfuscator',
     'qr-generator'

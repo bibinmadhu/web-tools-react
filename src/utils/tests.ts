@@ -1,4 +1,12 @@
 import {
+  generatePostgresUpdateQuery,
+  formatPostgresValue,
+  parseCsvOrTsv,
+  inferColumnType,
+  parseDelimitedValues,
+  DB_UPDATE_PRESETS,
+} from './dbUpdateQueryGenerator';
+import {
   beautifyJson,
   obfuscateCode,
   base64Encode,
@@ -1521,6 +1529,102 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     assertTrue(funcScript.includes('def login() -> str:'), 'Must generate typed login function');
     assertTrue(funcScript.includes('def step_1_check_account_status(token: str) -> dict:'), 'Must generate step functions with token parameter');
     assertTrue(funcScript.includes('def main():'), 'Must generate main orchestrator');
+  });
+
+  // ==========================================
+  // DATABASE UPDATE QUERY GENERATOR SUITE
+  // ==========================================
+  test('Database Update Query Generator', 'PostgreSQL Batch VALUES Strategy with type casts', () => {
+    const preset = DB_UPDATE_PRESETS[0]; // users-status-role
+    const result = generatePostgresUpdateQuery({
+      tableName: preset.tableName,
+      matchColumns: preset.matchColumns,
+      updateColumns: preset.updateColumns,
+      strategy: 'batch_values',
+      transactionMode: 'commit',
+      returningClause: preset.returningClause,
+      includeTypeCasts: true,
+    });
+
+    assertTrue(result.rowCount === 5, `Expected 5 rows, got ${result.rowCount}`);
+    assertTrue(result.columnCount === 3, `Expected 3 update columns, got ${result.columnCount}`);
+    assertTrue(result.sql.includes('UPDATE users AS t'), 'Must contain UPDATE users AS t');
+    assertTrue(result.sql.includes('FROM (\n  VALUES'), 'Must contain FROM (VALUES ...)');
+    assertTrue(result.sql.includes('status = v.status::text'), 'Must include type cast on status');
+    assertTrue(result.sql.includes('WHERE t.id = v.id'), 'Must include WHERE t.id = v.id');
+    assertTrue(result.sql.includes('BEGIN;\n\n'), 'Must be wrapped in BEGIN');
+    assertTrue(result.sql.includes('\n\nCOMMIT;'), 'Must be committed with COMMIT');
+    assertTrue(result.sql.includes('RETURNING id, status, role, updated_at;'), 'Must include RETURNING clause');
+    assertTrue(result.pythonSnippet.includes('pg8000.native.Connection'), 'Python snippet must support pg8000');
+  });
+
+  test('Database Update Query Generator', 'Individual UPDATE Statements Strategy', () => {
+    const result = generatePostgresUpdateQuery({
+      tableName: 'products',
+      matchColumns: [{ id: 'm1', name: 'sku', type: 'text', values: ['SKU-1', 'SKU-2'] }],
+      updateColumns: [{ id: 'u1', name: 'price', type: 'numeric', values: ['19.99', '29.50'] }],
+      strategy: 'individual',
+      transactionMode: 'none',
+    });
+
+    assertTrue(result.rowCount === 2, 'Expected 2 rows');
+    assertTrue(result.sql.includes("UPDATE products SET price = 19.99 WHERE sku = 'SKU-1';"), 'Must generate first individual UPDATE statement');
+    assertTrue(result.sql.includes("UPDATE products SET price = 29.50 WHERE sku = 'SKU-2';"), 'Must generate second individual UPDATE statement');
+  });
+
+  test('Database Update Query Generator', 'CASE-WHEN Update Strategy', () => {
+    const result = generatePostgresUpdateQuery({
+      tableName: 'accounts',
+      matchColumns: [{ id: 'm1', name: 'id', type: 'integer', values: ['1', '2'] }],
+      updateColumns: [{ id: 'u1', name: 'status', type: 'text', values: ['active', 'paused'] }],
+      strategy: 'case_when',
+      transactionMode: 'rollback',
+    });
+
+    assertTrue(result.sql.includes('UPDATE accounts\nSET\n  status = CASE id'), 'Must generate CASE WHEN syntax');
+    assertTrue(result.sql.includes("WHEN 1 THEN 'active'"), 'Must include WHEN 1 THEN active');
+    assertTrue(result.sql.includes("WHEN 2 THEN 'paused'"), 'Must include WHEN 2 THEN paused');
+    assertTrue(result.sql.includes('WHERE id IN (\n  1, 2\n)'), 'Must include WHERE id IN (1, 2)');
+    assertTrue(result.sql.includes('ROLLBACK;'), 'Must include rollback for dry run');
+  });
+
+  test('Database Update Query Generator', 'PostgreSQL Value Escaping and Typing', () => {
+    // Single quotes escaping
+    const escapedText = formatPostgresValue("O'Reilly", 'text', false);
+    assertTrue(escapedText === "'O''Reilly'", `Expected 'O''Reilly', got ${escapedText}`);
+
+    // Numeric and Integer
+    const intVal = formatPostgresValue("42", 'integer', false);
+    assertTrue(intVal === '42', `Expected 42, got ${intVal}`);
+
+    // Boolean
+    const boolVal = formatPostgresValue("true", 'boolean', false);
+    assertTrue(boolVal === 'TRUE', `Expected TRUE, got ${boolVal}`);
+
+    // Date & Timestamp
+    const tsVal = formatPostgresValue("2026-09-18 10:00:00", 'timestamp', false);
+    assertTrue(tsVal === "'2026-09-18 10:00:00'::timestamp", `Expected timestamp cast, got ${tsVal}`);
+
+    // Null
+    const nullVal = formatPostgresValue("NULL", 'text', false);
+    assertTrue(nullVal === 'NULL', `Expected NULL, got ${nullVal}`);
+  });
+
+  test('Database Update Query Generator', 'CSV and TSV parser with inferColumnType', () => {
+    const csv = `id,status,score\n1,active,95.5\n2,pending,80.0`;
+    const parsed = parseCsvOrTsv(csv);
+    assertTrue(parsed.headers.length === 3, 'Must parse 3 headers');
+    assertTrue(parsed.rows.length === 2, 'Must parse 2 data rows');
+    assertTrue(parsed.rows[0][1] === 'active', 'First row status must be active');
+
+    const inferredInt = inferColumnType(['1', '2', '3']);
+    assertTrue(inferredInt === 'integer', `Expected integer, got ${inferredInt}`);
+
+    const inferredNum = inferColumnType(['12.5', '99.9', '0.5']);
+    assertTrue(inferredNum === 'numeric', `Expected numeric, got ${inferredNum}`);
+
+    const inferredBool = inferColumnType(['true', 'false', 'true']);
+    assertTrue(inferredBool === 'boolean', `Expected boolean, got ${inferredBool}`);
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

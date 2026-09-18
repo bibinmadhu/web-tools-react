@@ -271,4 +271,14 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'database',
     isPopular: true,
   },
+  {
+    id: 'db-update-query-generator',
+    name: 'Database Update Query Generator',
+    description: 'Generate bulk and targeted PostgreSQL UPDATE queries from customizable tables, match columns, and multi-column value lists with batch VALUES syntax, transactions, and grid editing',
+    category: 'testing',
+    tags: ['Testing', 'Database', 'PostgreSQL', 'SQL', 'Update', 'Bulk Update', 'Query Generator', 'Migration'],
+    iconText: 'SQL',
+    iconType: 'database',
+    isPopular: true,
+  },
 ];
