@@ -27,7 +27,9 @@ import {
   HelpCircle,
   Code2,
   WrapText,
-  AlignLeft
+  AlignLeft,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import JSZip from 'jszip';
 import {
@@ -42,7 +44,15 @@ import { JAVA_DUAL_PRESETS, JavaDualPreset } from '../../utils/javaDualPresets';
 import { JavaObfuscationMapping, DEFAULT_EXCLUDED_PACKAGES } from '../../utils/javaObfuscator';
 import { formatJavaCode } from '../../utils/javaFormatter';
 
-export const DualJavaObfuscatorTool: React.FC = () => {
+export interface DualJavaObfuscatorToolProps {
+  isFullScreen?: boolean;
+  onToggleFullScreen?: () => void;
+}
+
+export const DualJavaObfuscatorTool: React.FC<DualJavaObfuscatorToolProps> = ({
+  isFullScreen = false,
+  onToggleFullScreen,
+}) => {
   const [activeTab, setActiveTab] = useState<'obfuscate' | 'deobfuscate' | 'mapping' | 'diff' | 'settings'>('obfuscate');
   const [selectedFileTab, setSelectedFileTab] = useState<'both' | 'main' | 'test'>('both');
   const [viewMode, setViewMode] = useState<'split' | 'code'>('split');
@@ -542,61 +552,78 @@ How to De-obfuscate:
           </button>
         </div>
 
-        {/* View Layout Filter (Both files vs Main vs Test) + Format & Wrap Controls */}
-        {(activeTab === 'obfuscate' || activeTab === 'deobfuscate') && (
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-800 text-xs">
-              <button
-                onClick={() => setSelectedFileTab('both')}
-                className={`px-2.5 py-1 rounded-lg transition-colors ${
-                  selectedFileTab === 'both' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                Side-by-Side (Both)
-              </button>
-              <button
-                onClick={() => setSelectedFileTab('main')}
-                className={`px-2.5 py-1 rounded-lg transition-colors ${
-                  selectedFileTab === 'main' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                Class Only
-              </button>
-              <button
-                onClick={() => setSelectedFileTab('test')}
-                className={`px-2.5 py-1 rounded-lg transition-colors ${
-                  selectedFileTab === 'test' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                Test Only
-              </button>
-            </div>
+        {/* View Layout Filter (Both files vs Main vs Test) + Format & Wrap Controls + Full Viewport */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {(activeTab === 'obfuscate' || activeTab === 'deobfuscate') && (
+            <>
+              <div className="flex items-center gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-800 text-xs">
+                <button
+                  onClick={() => setSelectedFileTab('both')}
+                  className={`px-2.5 py-1 rounded-lg transition-colors ${
+                    selectedFileTab === 'both' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Side-by-Side (Both)
+                </button>
+                <button
+                  onClick={() => setSelectedFileTab('main')}
+                  className={`px-2.5 py-1 rounded-lg transition-colors ${
+                    selectedFileTab === 'main' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Class Only
+                </button>
+                <button
+                  onClick={() => setSelectedFileTab('test')}
+                  className={`px-2.5 py-1 rounded-lg transition-colors ${
+                    selectedFileTab === 'test' ? 'bg-slate-800 text-indigo-300 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Test Only
+                </button>
+              </div>
 
+              <button
+                onClick={() => setWrapLines(!wrapLines)}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 border ${
+                  wrapLines
+                    ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/40'
+                    : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:bg-slate-800'
+                }`}
+                title={wrapLines ? 'Word wrap is ON. Click to disable wrapping and maintain exact horizontal indentation.' : 'Word wrap is OFF (Horizontal scroll enabled). Indentation and layout are exact.'}
+              >
+                <WrapText className="w-3.5 h-3.5" />
+                <span>{wrapLines ? 'Wrap: On' : 'Wrap: Off (Exact Format)'}</span>
+              </button>
+
+              {activeTab === 'obfuscate' && (
+                <button
+                  onClick={handleFormatBothInputs}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-900/80 text-slate-300 border border-slate-800 hover:bg-slate-800 hover:text-white transition-colors flex items-center gap-1.5"
+                  title="Format both source classes with standard 4-space Java indentation"
+                >
+                  <AlignLeft className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Format Both</span>
+                </button>
+              )}
+            </>
+          )}
+
+          {onToggleFullScreen && (
             <button
-              onClick={() => setWrapLines(!wrapLines)}
+              onClick={onToggleFullScreen}
               className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 border ${
-                wrapLines
-                  ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/40'
+                isFullScreen
+                  ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/40 hover:bg-indigo-600/40'
                   : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:bg-slate-800'
               }`}
-              title={wrapLines ? 'Word wrap is ON. Click to disable wrapping and maintain exact horizontal indentation.' : 'Word wrap is OFF (Horizontal scroll enabled). Indentation and layout are exact.'}
+              title={isFullScreen ? 'Exit full viewport mode (restore normal modal dialog)' : 'Expand to full viewport for maximum code view'}
             >
-              <WrapText className="w-3.5 h-3.5" />
-              <span>{wrapLines ? 'Wrap: On' : 'Wrap: Off (Exact Format)'}</span>
+              {isFullScreen ? <Minimize2 className="w-3.5 h-3.5 text-indigo-400" /> : <Maximize2 className="w-3.5 h-3.5 text-indigo-400" />}
+              <span>{isFullScreen ? 'Full Viewport: On' : 'Full Viewport'}</span>
             </button>
-
-            {activeTab === 'obfuscate' && (
-              <button
-                onClick={handleFormatBothInputs}
-                className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-900/80 text-slate-300 border border-slate-800 hover:bg-slate-800 hover:text-white transition-colors flex items-center gap-1.5"
-                title="Format both source classes with standard 4-space Java indentation"
-              >
-                <AlignLeft className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Format Both</span>
-              </button>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* TAB 1: OBFUSCATE (CLASS + TEST) */}
@@ -694,7 +721,7 @@ How to De-obfuscate:
                     <textarea
                       value={mainCode}
                       onChange={(e) => setMainCode(e.target.value)}
-                      rows={11}
+                      rows={isFullScreen ? 18 : 11}
                       wrap={wrapLines ? 'soft' : 'off'}
                       spellCheck={false}
                       className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y whitespace-pre overflow-x-auto leading-relaxed"
@@ -732,7 +759,7 @@ How to De-obfuscate:
                     <textarea
                       readOnly
                       value={result.mainClassFile.obfuscatedCode}
-                      rows={11}
+                      rows={isFullScreen ? 18 : 11}
                       wrap={wrapLines ? 'soft' : 'off'}
                       spellCheck={false}
                       className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
@@ -813,7 +840,7 @@ How to De-obfuscate:
                     <textarea
                       value={testCode}
                       onChange={(e) => setTestCode(e.target.value)}
-                      rows={11}
+                      rows={isFullScreen ? 18 : 11}
                       wrap={wrapLines ? 'soft' : 'off'}
                       spellCheck={false}
                       className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y whitespace-pre overflow-x-auto leading-relaxed"
@@ -851,7 +878,7 @@ How to De-obfuscate:
                     <textarea
                       readOnly
                       value={result.testClassFile.obfuscatedCode}
-                      rows={11}
+                      rows={isFullScreen ? 18 : 11}
                       wrap={wrapLines ? 'soft' : 'off'}
                       spellCheck={false}
                       className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
@@ -1007,7 +1034,7 @@ How to De-obfuscate:
                   <textarea
                     value={deobfMainCode}
                     onChange={(e) => setDeobfMainCode(e.target.value)}
-                    rows={10}
+                    rows={isFullScreen ? 16 : 10}
                     wrap={wrapLines ? 'soft' : 'off'}
                     spellCheck={false}
                     className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y whitespace-pre overflow-x-auto leading-relaxed"
@@ -1044,7 +1071,7 @@ How to De-obfuscate:
                   <textarea
                     readOnly
                     value={restoredMainCode}
-                    rows={10}
+                    rows={isFullScreen ? 16 : 10}
                     wrap={wrapLines ? 'soft' : 'off'}
                     spellCheck={false}
                     className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
@@ -1097,7 +1124,7 @@ How to De-obfuscate:
                   <textarea
                     value={deobfTestCode}
                     onChange={(e) => setDeobfTestCode(e.target.value)}
-                    rows={10}
+                    rows={isFullScreen ? 16 : 10}
                     wrap={wrapLines ? 'soft' : 'off'}
                     spellCheck={false}
                     className="w-full font-mono text-xs bg-slate-950 text-slate-200 border border-slate-800 rounded-lg p-3 focus:outline-none focus:border-indigo-500 resize-y whitespace-pre overflow-x-auto leading-relaxed"
@@ -1134,7 +1161,7 @@ How to De-obfuscate:
                   <textarea
                     readOnly
                     value={restoredTestCode}
-                    rows={10}
+                    rows={isFullScreen ? 16 : 10}
                     wrap={wrapLines ? 'soft' : 'off'}
                     spellCheck={false}
                     className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 border border-slate-800 rounded-lg p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
@@ -1208,7 +1235,7 @@ How to De-obfuscate:
           </div>
 
           {/* Mapping Grid Table */}
-          <div className="border border-slate-800 rounded-lg overflow-hidden max-h-96 overflow-y-auto">
+          <div className={`border border-slate-800 rounded-lg overflow-hidden ${isFullScreen ? 'max-h-[calc(100vh-320px)]' : 'max-h-96'} overflow-y-auto`}>
             <table className="w-full text-left text-xs font-mono">
               <thead className="bg-slate-850 text-slate-400 border-b border-slate-800 sticky top-0">
                 <tr>

@@ -1,5 +1,5 @@
-import React from 'react';
-import { X, Star } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Star, Maximize2, Minimize2 } from 'lucide-react';
 import { DevTool } from '../types';
 import { JsonBeautifierTool } from './tools/JsonBeautifierTool';
 import { CodeObfuscatorTool } from './tools/CodeObfuscatorTool';
@@ -42,6 +42,46 @@ export const ToolModal: React.FC<ToolModalProps> = ({
   isFavorite,
   onToggleFavorite,
 }) => {
+  const [isFullScreen, setIsFullScreen] = useState<boolean>(() => {
+    if (!tool) return false;
+    if (tool.id === 'java-dual-obfuscator') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_java_dual');
+        return saved !== null ? saved === 'true' : true;
+      } catch (e) {
+        return true;
+      }
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (tool?.id === 'java-dual-obfuscator') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_java_dual');
+        setIsFullScreen(saved !== null ? saved === 'true' : true);
+      } catch (e) {
+        setIsFullScreen(true);
+      }
+    } else {
+      setIsFullScreen(false);
+    }
+  }, [tool?.id]);
+
+  const handleToggleFullScreen = () => {
+    setIsFullScreen((prev) => {
+      const next = !prev;
+      if (tool?.id === 'java-dual-obfuscator') {
+        try {
+          localStorage.setItem('devhub_fullscreen_java_dual', String(next));
+        } catch (e) {
+          // ignore
+        }
+      }
+      return next;
+    });
+  };
+
   if (!tool) return null;
 
   const renderToolBody = () => {
@@ -53,7 +93,12 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       case 'java-obfuscator':
         return <JavaObfuscatorTool />;
       case 'java-dual-obfuscator':
-        return <DualJavaObfuscatorTool />;
+        return (
+          <DualJavaObfuscatorTool
+            isFullScreen={isFullScreen}
+            onToggleFullScreen={handleToggleFullScreen}
+          />
+        );
       case 'multi-obfuscator':
         return <MultiObfuscatorTool />;
       case 'base64-encoder':
@@ -103,21 +148,43 @@ export const ToolModal: React.FC<ToolModalProps> = ({
     }
   };
 
-  const isWideModal = ['pdf-signer', 'pdf-converter', 'pdf-to-markdown', 'invoice-generator', 'agreement-generator', 'curl-converter', 'curl-chain-to-python', 'curl-db-chain-to-python', 'java-formatter', 'multi-obfuscator', 'qr-generator'].includes(tool.id);
+  const isWideModal = [
+    'java-dual-obfuscator',
+    'java-obfuscator',
+    'pdf-signer',
+    'pdf-converter',
+    'pdf-to-markdown',
+    'invoice-generator',
+    'agreement-generator',
+    'curl-converter',
+    'curl-chain-to-python',
+    'curl-db-chain-to-python',
+    'java-formatter',
+    'multi-obfuscator',
+    'qr-generator'
+  ].includes(tool.id);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6">
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity"
-        onClick={onClose}
-        aria-hidden="true"
-      />
+    <div className={`fixed inset-0 z-50 flex items-center justify-center ${isFullScreen ? 'p-0' : 'p-3 sm:p-6'}`}>
+      {/* Backdrop (hidden in full viewport) */}
+      {!isFullScreen && (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+      )}
 
       {/* Modal Dialog */}
-      <div className={`relative z-50 w-full ${isWideModal ? 'max-w-6xl' : 'max-w-4xl'} bg-white dark:bg-[#1E293B] text-slate-900 dark:text-slate-100 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[92vh]`}>
+      <div
+        className={`relative z-50 w-full ${
+          isFullScreen
+            ? 'w-screen h-screen max-w-none max-h-none rounded-none border-0 shadow-none'
+            : `${isWideModal ? 'max-w-7xl' : 'max-w-4xl'} rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 max-h-[92vh]`
+        } bg-white dark:bg-[#1E293B] text-slate-900 dark:text-slate-100 overflow-hidden flex flex-col`}
+      >
         {/* Header Bar */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0F172A]">
+        <div className="flex items-center justify-between px-6 py-3.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0F172A] shrink-0">
           <div className="flex items-center gap-3.5">
             <div className="w-10 h-10 rounded-lg bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/20 flex items-center justify-center font-mono font-bold text-sm text-indigo-600 dark:text-indigo-400 shadow-2xs">
               {tool.iconText}
@@ -129,12 +196,32 @@ export const ToolModal: React.FC<ToolModalProps> = ({
                 <span className="text-[10px] font-mono font-semibold uppercase px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-500/10 dark:text-indigo-300 dark:border-indigo-500/20">
                   {tool.category}
                 </span>
+                {isFullScreen && (
+                  <span className="text-[10px] font-mono font-semibold uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    Full Viewport
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{tool.description}</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            {/* Toggle Full Viewport Button */}
+            <button
+              onClick={handleToggleFullScreen}
+              className={`p-2 rounded-lg transition-colors ${
+                isFullScreen
+                  ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/25 border border-indigo-500/30'
+                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/80 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800'
+              }`}
+              title={isFullScreen ? 'Exit full viewport (Restore modal window)' : 'Use full viewport'}
+              aria-label={isFullScreen ? 'Exit full viewport' : 'Use full viewport'}
+            >
+              {isFullScreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+            </button>
+
             <button
               onClick={(e) => onToggleFavorite(tool.id, e)}
               className="p-2 rounded-lg hover:bg-slate-200/80 dark:hover:bg-slate-800 transition-colors"
@@ -158,7 +245,9 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 overflow-y-auto flex-1">{renderToolBody()}</div>
+        <div className={`overflow-y-auto flex-1 ${isFullScreen ? 'p-4 sm:p-6 h-[calc(100vh-68px)]' : 'p-6'}`}>
+          {renderToolBody()}
+        </div>
       </div>
     </div>
   );
