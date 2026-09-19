@@ -4,6 +4,8 @@ import {
   parseCsvOrTsv,
   inferColumnType,
   parseDelimitedValues,
+  createDbUpdateConfigExport,
+  validateAndParseDbUpdateConfig,
   DB_UPDATE_PRESETS,
 } from './dbUpdateQueryGenerator';
 import {
@@ -1687,6 +1689,69 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
 
     assertTrue(batchResult.sql.includes("UPDATE orders AS t SET"), 'Batch query should generate single UPDATE ... FROM (VALUES ...) statement');
     assertTrue(batchResult.sql.includes("FROM (VALUES"), 'Batch query should use VALUES block');
+  });
+
+  test('Database Update Query Generator', 'Export and Import Configuration Reusability', () => {
+    // 1. Export configuration
+    const exportedConfig = createDbUpdateConfigExport({
+      name: 'Inventory Restock Config',
+      description: 'Bulk update for warehouse stock levels',
+      tableName: 'inventory_items',
+      matchColumns: [
+        { id: 'm1', name: 'warehouse_id', type: 'text', values: ['wh-north'], valueMode: 'single' },
+        { id: 'm2', name: 'sku', type: 'text', values: ['SKU-001', 'SKU-002'], valueMode: 'list' }
+      ],
+      updateColumns: [
+        { id: 'u1', name: 'stock_quantity', type: 'integer', values: ['150', '320'] },
+        { id: 'u2', name: 'status', type: 'text', values: ['in_stock', 'in_stock'] }
+      ],
+      executionMode: 'batch',
+      strategy: 'batch_values',
+      transactionMode: 'commit',
+      returningClause: 'sku, stock_quantity, status',
+      includeTypeCasts: true,
+      includeRowComments: true
+    });
+
+    assertTrue(exportedConfig.version === 1, 'Config version must be 1');
+    assertTrue(exportedConfig.tableName === 'inventory_items', 'Table name must match');
+    assertTrue(exportedConfig.matchColumns.length === 2, 'Must export 2 match columns');
+    assertTrue(exportedConfig.updateColumns.length === 2, 'Must export 2 update columns');
+    assertTrue(exportedConfig.executionMode === 'batch', 'Execution mode must be batch');
+
+    // 2. Serialize to JSON string
+    const jsonString = JSON.stringify(exportedConfig, null, 2);
+    assertTrue(typeof jsonString === 'string' && jsonString.length > 50, 'JSON string should be generated');
+
+    // 3. Import & Validate from JSON string
+    const parseRes = validateAndParseDbUpdateConfig(jsonString);
+    assertTrue(parseRes.success === true, `Failed to parse valid config: ${parseRes.error}`);
+    assertTrue(parseRes.config?.tableName === 'inventory_items', 'Imported tableName must match');
+    assertTrue(parseRes.config?.matchColumns[0].valueMode === 'single', 'First match col must preserve single valueMode');
+    assertTrue(parseRes.config?.matchColumns[1].valueMode === 'list', 'Second match col must preserve list valueMode');
+
+    // 4. Round-trip execution: Generate query from imported configuration
+    const generated = generatePostgresUpdateQuery({
+      tableName: parseRes.config!.tableName,
+      matchColumns: parseRes.config!.matchColumns,
+      updateColumns: parseRes.config!.updateColumns,
+      executionMode: parseRes.config!.executionMode,
+      strategy: parseRes.config!.strategy,
+      transactionMode: parseRes.config!.transactionMode,
+      returningClause: parseRes.config!.returningClause,
+      includeTypeCasts: parseRes.config!.includeTypeCasts,
+      includeRowComments: parseRes.config!.includeRowComments
+    });
+
+    assertTrue(generated.rowCount === 2, `Expected 2 rows, got ${generated.rowCount}`);
+    assertTrue(generated.sql.includes('UPDATE inventory_items AS t'), 'Should update target table');
+    assertTrue(generated.sql.includes("t.warehouse_id = 'wh-north'"), 'Should include single match constant');
+    assertTrue(generated.sql.includes('t.sku = v.sku'), 'Should join on list match key sku');
+
+    // 5. Validation error handling for invalid JSON
+    const invalidRes = validateAndParseDbUpdateConfig('{ invalid json string }');
+    assertTrue(invalidRes.success === false, 'Invalid JSON must return success=false');
+    assertTrue(typeof invalidRes.error === 'string', 'Error message should be provided');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

@@ -1078,3 +1078,177 @@ export const DB_UPDATE_PRESETS: DbUpdatePreset[] = [
     ],
   },
 ];
+
+// ==========================================
+// CONFIGURATION EXPORT & IMPORT UTILITIES
+// ==========================================
+
+export interface DbUpdateConfig {
+  version: 1;
+  app: 'devhub-db-update-generator';
+  exportedAt: string;
+  name?: string;
+  description?: string;
+  tableName: string;
+  matchColumns: MatchColumn[];
+  updateColumns: UpdateColumn[];
+  executionMode: QueryExecutionMode;
+  strategy: UpdateStrategy;
+  transactionMode: TransactionMode;
+  returningClause: string;
+  includeTypeCasts: boolean;
+  includeRowComments: boolean;
+}
+
+export function createDbUpdateConfigExport(data: {
+  tableName: string;
+  matchColumns: MatchColumn[];
+  updateColumns: UpdateColumn[];
+  executionMode?: QueryExecutionMode;
+  strategy?: UpdateStrategy;
+  transactionMode?: TransactionMode;
+  returningClause?: string;
+  includeTypeCasts?: boolean;
+  includeRowComments?: boolean;
+  name?: string;
+  description?: string;
+}): DbUpdateConfig {
+  return {
+    version: 1,
+    app: 'devhub-db-update-generator',
+    exportedAt: new Date().toISOString(),
+    name: data.name || `${data.tableName || 'table'}_update_config`,
+    description: data.description || '',
+    tableName: data.tableName ? data.tableName.trim() : 'my_table',
+    matchColumns: (data.matchColumns || []).map((col, idx) => ({
+      id: col.id || `match-${idx + 1}-${Date.now()}`,
+      name: col.name ? col.name.trim() : `match_${idx + 1}`,
+      type: col.type || 'text',
+      valueMode: col.valueMode === 'single' ? 'single' : 'list',
+      singleValue: col.singleValue !== undefined ? String(col.singleValue) : '',
+      values: Array.isArray(col.values) ? col.values.map(String) : [],
+    })),
+    updateColumns: (data.updateColumns || []).map((col, idx) => ({
+      id: col.id || `upd-${idx + 1}-${Date.now()}`,
+      name: col.name ? col.name.trim() : `col_${idx + 1}`,
+      type: col.type || 'text',
+      values: Array.isArray(col.values) ? col.values.map(String) : [],
+    })),
+    executionMode: data.executionMode === 'individual' ? 'individual' : 'batch',
+    strategy: data.strategy || 'batch_values',
+    transactionMode: data.transactionMode || 'commit',
+    returningClause: data.returningClause !== undefined ? data.returningClause : '*',
+    includeTypeCasts: data.includeTypeCasts !== false,
+    includeRowComments: data.includeRowComments !== false,
+  };
+}
+
+export function validateAndParseDbUpdateConfig(input: string | unknown): {
+  success: boolean;
+  config?: DbUpdateConfig;
+  error?: string;
+} {
+  try {
+    let raw: any;
+    if (typeof input === 'string') {
+      const trimmed = input.trim();
+      if (!trimmed) {
+        return { success: false, error: 'Configuration string is empty.' };
+      }
+      raw = JSON.parse(trimmed);
+    } else {
+      raw = input;
+    }
+
+    if (!raw || typeof raw !== 'object') {
+      return { success: false, error: 'Invalid configuration format: Root must be a JSON object.' };
+    }
+
+    // Determine tableName
+    const tableName = typeof raw.tableName === 'string' && raw.tableName.trim()
+      ? raw.tableName.trim()
+      : 'my_table';
+
+    // Parse matchColumns
+    const validTypes: ColumnType[] = ['text', 'integer', 'numeric', 'boolean', 'timestamp', 'date', 'jsonb', 'uuid', 'raw'];
+    let matchCols: MatchColumn[] = [];
+
+    if (Array.isArray(raw.matchColumns) && raw.matchColumns.length > 0) {
+      matchCols = raw.matchColumns.map((mc: any, idx: number) => {
+        const id = mc.id || `match-${idx + 1}-${Date.now()}`;
+        const name = typeof mc.name === 'string' && mc.name.trim() ? mc.name.trim() : `match_${idx + 1}`;
+        const type: ColumnType = validTypes.includes(mc.type) ? mc.type : 'text';
+        const valueMode: ValueMode = mc.valueMode === 'single' ? 'single' : 'list';
+        const singleValue = mc.singleValue !== undefined && mc.singleValue !== null ? String(mc.singleValue) : (Array.isArray(mc.values) && mc.values[0] ? String(mc.values[0]) : '');
+        const values = Array.isArray(mc.values) ? mc.values.map(String) : (singleValue ? [singleValue] : []);
+        return { id, name, type, valueMode, singleValue, values };
+      });
+    } else if (raw.matchColumn) {
+      // Legacy or single matchColumn format
+      const mc = raw.matchColumn;
+      const name = typeof mc.name === 'string' && mc.name.trim() ? mc.name.trim() : 'id';
+      const type: ColumnType = validTypes.includes(mc.type) ? mc.type : 'integer';
+      const values = Array.isArray(mc.values) ? mc.values.map(String) : [];
+      matchCols = [{ id: 'match-1', name, type, valueMode: 'list', singleValue: '', values }];
+    } else {
+      // Fallback
+      matchCols = [{ id: 'match-1', name: 'id', type: 'integer', valueMode: 'list', singleValue: '', values: [] }];
+    }
+
+    // Parse updateColumns
+    let updateCols: UpdateColumn[] = [];
+    if (Array.isArray(raw.updateColumns) && raw.updateColumns.length > 0) {
+      updateCols = raw.updateColumns.map((uc: any, idx: number) => {
+        const id = uc.id || `upd-${idx + 1}-${Date.now()}`;
+        const name = typeof uc.name === 'string' && uc.name.trim() ? uc.name.trim() : `column_${idx + 1}`;
+        const type: ColumnType = validTypes.includes(uc.type) ? uc.type : 'text';
+        const values = Array.isArray(uc.values) ? uc.values.map(String) : [];
+        return { id, name, type, values };
+      });
+    } else {
+      updateCols = [{ id: 'upd-1', name: 'status', type: 'text', values: [] }];
+    }
+
+    // Execution Mode
+    const executionMode: QueryExecutionMode = raw.executionMode === 'individual' ? 'individual' : 'batch';
+
+    // Strategy
+    const validStrategies: UpdateStrategy[] = ['batch_values', 'individual', 'case_when', 'cte'];
+    const strategy: UpdateStrategy = validStrategies.includes(raw.strategy)
+      ? raw.strategy
+      : (executionMode === 'individual' ? 'individual' : 'batch_values');
+
+    // Transaction Mode
+    const validTransactions: TransactionMode[] = ['none', 'commit', 'rollback'];
+    const transactionMode: TransactionMode = validTransactions.includes(raw.transactionMode) ? raw.transactionMode : 'commit';
+
+    const returningClause = typeof raw.returningClause === 'string' ? raw.returningClause : '*';
+    const includeTypeCasts = raw.includeTypeCasts !== false;
+    const includeRowComments = raw.includeRowComments !== false;
+
+    const config: DbUpdateConfig = {
+      version: 1,
+      app: 'devhub-db-update-generator',
+      exportedAt: typeof raw.exportedAt === 'string' ? raw.exportedAt : new Date().toISOString(),
+      name: typeof raw.name === 'string' ? raw.name : `${tableName} Update Configuration`,
+      description: typeof raw.description === 'string' ? raw.description : '',
+      tableName,
+      matchColumns: matchCols,
+      updateColumns: updateCols,
+      executionMode,
+      strategy,
+      transactionMode,
+      returningClause,
+      includeTypeCasts,
+      includeRowComments,
+    };
+
+    return { success: true, config };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Failed to parse configuration: ${err?.message || 'Invalid JSON format.'}`,
+    };
+  }
+}
+

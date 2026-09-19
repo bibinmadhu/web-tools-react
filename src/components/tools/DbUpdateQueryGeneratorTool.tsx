@@ -6,6 +6,7 @@ import {
   Copy,
   Check,
   Download,
+  Upload,
   AlertTriangle,
   FileSpreadsheet,
   Table,
@@ -20,6 +21,8 @@ import {
   FileText,
   Info,
   Filter,
+  FileJson,
+  Bookmark,
 } from 'lucide-react';
 import {
   ColumnType,
@@ -30,12 +33,14 @@ import {
   MatchColumn,
   UpdateColumn,
   UpdateQueryOptions,
+  DbUpdateConfig,
   generatePostgresUpdateQuery,
   parseDelimitedValues,
   inferColumnType,
   parseCsvOrTsv,
   DB_UPDATE_PRESETS,
 } from '../../utils/dbUpdateQueryGenerator';
+import { DbUpdateConfigModal } from './DbUpdateConfigModal';
 
 interface DbUpdateQueryGeneratorToolProps {
   isFullScreen?: boolean;
@@ -102,6 +107,28 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [csvRawInput, setCsvRawInput] = useState<string>('');
   const [csvLeadingMatchCount, setCsvLeadingMatchCount] = useState<number>(1);
+
+  // Export / Import Modal State
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
+  const [configModalTab, setConfigModalTab] = useState<'import' | 'export' | 'saved'>('import');
+
+  const handleOpenConfigModal = (tab: 'import' | 'export' | 'saved') => {
+    setConfigModalTab(tab);
+    setIsConfigModalOpen(true);
+  };
+
+  const handleApplyConfig = (config: DbUpdateConfig) => {
+    setTableName(config.tableName);
+    setMatchColumns(JSON.parse(JSON.stringify(config.matchColumns)));
+    setUpdateColumns(JSON.parse(JSON.stringify(config.updateColumns)));
+    setExecutionMode(config.executionMode);
+    setStrategy(config.strategy);
+    setTransactionMode(config.transactionMode);
+    setReturningClause(config.returningClause);
+    setIncludeTypeCasts(config.includeTypeCasts);
+    setIncludeRowComments(config.includeRowComments);
+    setSelectedPresetId('custom-imported');
+  };
 
   // Load preset handler
   const handleLoadPreset = (presetId: string) => {
@@ -491,12 +518,12 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
         <div className="flex items-center gap-2">
           {/* Preset Selector */}
           <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1 text-xs">
-            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-slate-400 text-[11px]">Preset:</span>
+            <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="text-slate-400 text-[11px] hidden sm:inline">Preset:</span>
             <select
               value={selectedPresetId}
               onChange={(e) => handleLoadPreset(e.target.value)}
-              className="bg-transparent text-slate-200 text-xs font-medium focus:outline-none cursor-pointer max-w-[220px] truncate"
+              className="bg-transparent text-slate-200 text-xs font-medium focus:outline-none cursor-pointer max-w-[180px] sm:max-w-[210px] truncate"
             >
               {DB_UPDATE_PRESETS.map((preset) => (
                 <option key={preset.id} value={preset.id} className="bg-slate-900 text-slate-200">
@@ -506,7 +533,42 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
               <option value="custom-blank" className="bg-slate-900 text-slate-200">
                 Custom / Blank Template
               </option>
+              {selectedPresetId === 'custom-imported' && (
+                <option value="custom-imported" className="bg-slate-900 text-slate-200">
+                  Imported Configuration
+                </option>
+              )}
             </select>
+          </div>
+
+          {/* Import / Export / Saved Configuration Buttons */}
+          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
+            <button
+              onClick={() => handleOpenConfigModal('import')}
+              className="px-2.5 py-1 rounded-md text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Import configuration from JSON file or text"
+            >
+              <Upload className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="hidden sm:inline">Import</span>
+            </button>
+
+            <button
+              onClick={() => handleOpenConfigModal('export')}
+              className="px-2.5 py-1 rounded-md text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Export configuration as JSON file or copy to clipboard"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">Export</span>
+            </button>
+
+            <button
+              onClick={() => handleOpenConfigModal('saved')}
+              className="px-2.5 py-1 rounded-md text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="View and load saved templates in browser storage"
+            >
+              <Bookmark className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden md:inline">Saved</span>
+            </button>
           </div>
 
           {/* Full Viewport Toggle */}
@@ -1232,6 +1294,25 @@ export const DbUpdateQueryGeneratorTool: React.FC<DbUpdateQueryGeneratorToolProp
           </div>
         </div>
       </div>
+
+      {/* Configuration Export / Import / Templates Modal */}
+      <DbUpdateConfigModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        initialTab={configModalTab}
+        currentConfigData={{
+          tableName,
+          matchColumns,
+          updateColumns,
+          executionMode,
+          strategy,
+          transactionMode,
+          returningClause,
+          includeTypeCasts,
+          includeRowComments,
+        }}
+        onApplyConfig={handleApplyConfig}
+      />
     </div>
   );
 };
