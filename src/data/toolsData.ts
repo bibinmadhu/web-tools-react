@@ -291,4 +291,14 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'database',
     isPopular: true,
   },
+  {
+    id: 'data-grid-converter',
+    name: 'Data Grid Converter',
+    description: 'Convert CSV, space-separated, tab-separated (TSV), and delimited data into an editable data grid with one-click column copying and multi-format exports (CSV, TSV, JSON, Markdown, SQL, HTML, ASCII)',
+    category: 'testing',
+    tags: ['Testing', 'Data Grid', 'CSV', 'TSV', 'Space Separated', 'Tab Separated', 'Converter', 'Table', 'SQL', 'Export'],
+    iconText: 'GRID',
+    iconType: 'table',
+    isPopular: true,
+  },
 ];

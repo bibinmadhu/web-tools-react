@@ -101,6 +101,18 @@ import {
   DEFAULT_OPTIONS,
 } from './curlChainConverter';
 import { CURL_CHAIN_PRESETS } from './curlChainPresets';
+import {
+  parseToDataGrid,
+  detectDelimiter,
+  extractColumnData,
+  calculateColumnStats,
+  transposeDataGrid,
+  deduplicateGridRows,
+  sortGridRows,
+  filterGridRows,
+  exportDataGrid,
+  DATA_GRID_PRESETS,
+} from './dataGridConverter';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -2168,6 +2180,192 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
 
     const queryFromParsed = generatePostgresSelectQuery(parsedConfig.config!);
     assertTrue(queryFromParsed.sql.includes('LEFT JOIN'), 'Query from parsed config should generate LEFT JOIN');
+  });
+
+  test('Data Grid Converter', 'CSV Parsing with RFC 4180 Quotes & Escaped Commas', () => {
+    const rawCsv = `id,name,notes,amount\n1,"Acme, Corp","Fast, reliable delivery",150.50\n2,"Smith, John ""CEO""",Normal,200.00`;
+    const grid = parseToDataGrid(rawCsv, {
+      delimiter: 'comma',
+      hasHeader: true,
+      trimCells: true,
+      collapseSpaces: true,
+      skipEmptyLines: true,
+      ignoreComments: true,
+    });
+
+    assertEqual(grid.headers.length, 4, 'Should parse 4 headers');
+    assertEqual(grid.headers[0], 'id');
+    assertEqual(grid.headers[1], 'name');
+    assertEqual(grid.headers[2], 'notes');
+    assertEqual(grid.rows.length, 2, 'Should parse 2 data rows');
+    assertEqual(grid.rows[0][1], 'Acme, Corp', 'Should preserve comma inside quotes');
+    assertEqual(grid.rows[0][2], 'Fast, reliable delivery', 'Should preserve quoted phrase');
+    assertEqual(grid.rows[1][1], 'Smith, John "CEO"', 'Should unescape double quotes');
+  });
+
+  test('Data Grid Converter', 'Tab-Separated (TSV) and Space-Separated CLI Data Parsing', () => {
+    // 1. TSV parsing
+    const tsvData = `user_id\trole\tactive\nU101\tAdmin\ttrue\nU102\tDeveloper\tfalse`;
+    const tsvGrid = parseToDataGrid(tsvData, {
+      delimiter: 'tab',
+      hasHeader: true,
+      trimCells: true,
+      collapseSpaces: false,
+      skipEmptyLines: true,
+      ignoreComments: true,
+    });
+    assertEqual(tsvGrid.headers.length, 3, 'TSV should have 3 columns');
+    assertEqual(tsvGrid.rows.length, 2, 'TSV should have 2 rows');
+    assertEqual(tsvGrid.rows[0][1], 'Admin', 'TSV value should match');
+
+    // 2. Space-separated CLI output (like ps aux or docker ps)
+    const spaceData = `PID   USER    CPU   CMD\n1     root    0.0   /sbin/init\n1450  nginx   0.4   nginx-worker`;
+    const spaceGrid = parseToDataGrid(spaceData, {
+      delimiter: 'space',
+      hasHeader: true,
+      trimCells: true,
+      collapseSpaces: true,
+      skipEmptyLines: true,
+      ignoreComments: true,
+    });
+    assertEqual(spaceGrid.headers.length, 4, 'Space grid should have 4 headers');
+    assertEqual(spaceGrid.rows.length, 2, 'Space grid should have 2 rows');
+    assertEqual(spaceGrid.rows[1][0], '1450', 'PID should be parsed correctly');
+    assertEqual(spaceGrid.rows[1][3], 'nginx-worker', 'CMD should be parsed correctly');
+  });
+
+  test('Data Grid Converter', 'Auto Delimiter Detection', () => {
+    const csvDetected = detectDelimiter('col1,col2,col3\nval1,val2,val3');
+    assertEqual(csvDetected.type, 'comma', 'Should detect comma delimiter');
+
+    const tsvDetected = detectDelimiter('col1\tcol2\tcol3\nval1\tval2\tval3');
+    assertEqual(tsvDetected.type, 'tab', 'Should detect tab delimiter');
+
+    const pipeDetected = detectDelimiter('col1|col2|col3\nval1|val2|val3');
+    assertEqual(pipeDetected.type, 'pipe', 'Should detect pipe delimiter');
+
+    const semiDetected = detectDelimiter('col1;col2;col3\nval1;val2;val3');
+    assertEqual(semiDetected.type, 'semicolon', 'Should detect semicolon delimiter');
+  });
+
+  test('Data Grid Converter', 'Column Data Extraction & Copying Formats', () => {
+    const rawData = `city,country,population\nTokyo,Japan,37400000\nDelhi,India,29300000\nShanghai,China,26300000`;
+    const grid = parseToDataGrid(rawData, {
+      delimiter: 'comma',
+      hasHeader: true,
+      trimCells: true,
+      collapseSpaces: false,
+      skipEmptyLines: true,
+      ignoreComments: true,
+    });
+
+    // 1. Newline list
+    const newlineList = extractColumnData(grid, 0, 'newline');
+    assertEqual(newlineList, 'Tokyo\nDelhi\nShanghai', 'Should extract column as newline list');
+
+    // 2. Comma separated
+    const commaList = extractColumnData(grid, 0, 'comma_space');
+    assertEqual(commaList, 'Tokyo, Delhi, Shanghai', 'Should extract column as comma separated string');
+
+    // 3. SQL IN format
+    const sqlInList = extractColumnData(grid, 0, 'single_quote_sql');
+    assertEqual(sqlInList, "'Tokyo', 'Delhi', 'Shanghai'", 'Should format as SQL IN clause');
+
+    // 4. JSON Array format
+    const jsonArrayList = extractColumnData(grid, 0, 'json_array');
+    assertTrue(jsonArrayList.includes('"Tokyo"'), 'Should format as JSON array');
+
+    // 5. Column stats
+    const popStats = calculateColumnStats(grid, 2);
+    assertEqual(popStats.type, 'integer', 'Population should be detected as integer');
+    assertEqual(popStats.totalCount, 3);
+    assertTrue(popStats.numericStats !== undefined && popStats.numericStats.min === 26300000, 'Numeric stats min should match');
+  });
+
+  test('Data Grid Converter', 'Grid Transformations: Transpose, Deduplicate, Sort, Filter', () => {
+    const rawData = `name,score\nCharlie,85\nAlice,95\nBob,70\nAlice,95`;
+    const grid = parseToDataGrid(rawData, {
+      delimiter: 'comma',
+      hasHeader: true,
+      trimCells: true,
+      collapseSpaces: false,
+      skipEmptyLines: true,
+      ignoreComments: true,
+    });
+
+    // 1. Deduplicate
+    const dedupResult = deduplicateGridRows(grid);
+    assertEqual(dedupResult.removedCount, 1, 'Should remove 1 duplicate row');
+    assertEqual(dedupResult.grid.rows.length, 3, 'Unique rows should be 3');
+
+    // 2. Sort by score ASC
+    const sortedGrid = sortGridRows(dedupResult.grid, 1, 'asc');
+    assertEqual(sortedGrid.rows[0][0], 'Bob', 'Lowest score row should be first');
+    assertEqual(sortedGrid.rows[2][0], 'Alice', 'Highest score row should be last');
+
+    // 3. Filter by search query
+    const filteredGrid = filterGridRows(dedupResult.grid, 'Charlie');
+    assertEqual(filteredGrid.rows.length, 1, 'Filter should return 1 matching row');
+    assertEqual(filteredGrid.rows[0][0], 'Charlie');
+
+    // 4. Transpose
+    const simple = parseToDataGrid(`A,B\n1,2\n3,4`, {
+      delimiter: 'comma',
+      hasHeader: true,
+      trimCells: true,
+      collapseSpaces: false,
+      skipEmptyLines: true,
+      ignoreComments: true,
+    });
+    const transposed = transposeDataGrid(simple);
+    assertEqual(transposed.headers.length, 3, 'Transposed should have 3 headers');
+    assertEqual(transposed.headers[0], 'A');
+    assertEqual(transposed.headers[1], '1');
+    assertEqual(transposed.headers[2], '3');
+  });
+
+  test('Data Grid Converter', 'Multi-Format Exporters (CSV, TSV, JSON, Markdown, SQL, HTML, ASCII)', () => {
+    const rawData = `id,name,active\n1,Alice,true\n2,Bob,false`;
+    const grid = parseToDataGrid(rawData, {
+      delimiter: 'comma',
+      hasHeader: true,
+      trimCells: true,
+      collapseSpaces: false,
+      skipEmptyLines: true,
+      ignoreComments: true,
+    });
+
+    // CSV
+    const csvExport = exportDataGrid(grid, 'csv');
+    assertTrue(csvExport.includes('id,name,active'), 'CSV export should include headers');
+    assertTrue(csvExport.includes('1,Alice,true'), 'CSV export should include row 1');
+
+    // TSV
+    const tsvExport = exportDataGrid(grid, 'tsv');
+    assertTrue(tsvExport.includes('id\tname\tactive'), 'TSV export should include tab separators');
+
+    // JSON Objects
+    const jsonObjExport = exportDataGrid(grid, 'json_objects');
+    assertTrue(jsonObjExport.includes('"name": "Alice"'), 'JSON Objects export should map keys to values');
+
+    // Markdown Table
+    const mdExport = exportDataGrid(grid, 'markdown');
+    assertTrue(mdExport.includes('| id'), 'Markdown export should have table pipes');
+    assertTrue(mdExport.includes('| ---'), 'Markdown export should have header divider');
+
+    // SQL INSERT
+    const sqlExport = exportDataGrid(grid, 'sql_insert', { tableName: 'users' });
+    assertTrue(sqlExport.includes('INSERT INTO users'), 'SQL export should generate INSERT statements');
+    assertTrue(sqlExport.includes("'Alice'"), 'SQL export should quote string literals');
+
+    // HTML Table
+    const htmlExport = exportDataGrid(grid, 'html');
+    assertTrue(htmlExport.includes('<table>') || htmlExport.includes('<table class="table">'), 'HTML export should render table tag');
+    assertTrue(htmlExport.includes('<th>name</th>'), 'HTML export should render headers');
+
+    // ASCII Box
+    const asciiExport = exportDataGrid(grid, 'ascii');
+    assertTrue(asciiExport.includes('+'), 'ASCII export should render bordered box grid');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

@@ -1,6 +1,6 @@
 {
   "name": "DevHub - Developer Utilities Platform",
-  "description": "A comprehensive developer tool suite featuring Java Class & Test Dual Obfuscator with synchronized mapping, Testing Tools (Database Update Query Generator for PostgreSQL, Curl & Database Chain to Python with PostgreSQL, SQL Server & Oracle databases), cURL Auth Chain to Python Converter, QR Code Generator, Multiple JS/TS & HTML Obfuscator, Agreement Generator, PDF to Markdown conversion, PDF signing, and code utilities with dark mode and search.",
+  "description": "A comprehensive developer tool suite featuring Java Class & Test Dual Obfuscator with synchronized mapping, Testing Tools (Data Grid Converter for CSV, TSV, space-separated and delimited data, Database Select & Update Query Generators for PostgreSQL, Curl & Database Chain to Python), cURL Auth Chain to Python Converter, QR Code Generator, Multiple JS/TS & HTML Obfuscator, Agreement Generator, PDF utilities, and developer productivity tools.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
