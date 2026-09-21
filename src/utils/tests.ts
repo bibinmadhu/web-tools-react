@@ -9,6 +9,12 @@ import {
   DB_UPDATE_PRESETS,
 } from './dbUpdateQueryGenerator';
 import {
+  generatePostgresSelectQuery,
+  createDbSelectConfigExport,
+  validateAndParseDbSelectConfig,
+  DB_SELECT_PRESETS,
+} from './dbSelectQueryGenerator';
+import {
   beautifyJson,
   obfuscateCode,
   base64Encode,
@@ -1752,6 +1758,158 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     const invalidRes = validateAndParseDbUpdateConfig('{ invalid json string }');
     assertTrue(invalidRes.success === false, 'Invalid JSON must return success=false');
     assertTrue(typeof invalidRes.error === 'string', 'Error message should be provided');
+  });
+
+  test('Database Select Query Generator', 'Batch VALUES Join and Custom Projections', () => {
+    const result = generatePostgresSelectQuery({
+      tableName: 'users',
+      tableAlias: 't',
+      matchColumns: [
+        { id: 'm1', name: 'tenant_id', type: 'text', valueMode: 'single', singleValue: 'org-123', values: ['org-123'] },
+        { id: 'm2', name: 'id', type: 'integer', valueMode: 'list', singleValue: '', values: ['101', '102', '103'] }
+      ],
+      selectColumns: [
+        { id: 's1', name: 'id' },
+        { id: 's2', name: 'username' },
+        { id: 's3', name: 'email' }
+      ],
+      strategy: 'batch_values',
+      executionMode: 'batch',
+      orderBy: 't.id ASC',
+      limit: '50',
+      includeTypeCasts: true
+    });
+
+    assertTrue(result.rowCount === 3, `Expected rowCount 3, got ${result.rowCount}`);
+    assertTrue(result.sql.includes('FROM users AS t'), 'Should select from users table');
+    assertTrue(result.sql.includes('JOIN (\n  VALUES'), 'Should join on VALUES');
+    assertTrue(result.sql.includes("101::int"), 'Should include type cast on first row');
+    assertTrue(result.sql.includes("t.tenant_id = 'org-123'"), 'Should include constant filter in WHERE');
+    assertTrue(result.sql.includes('ORDER BY t.id ASC'), 'Should include ORDER BY');
+    assertTrue(result.sql.includes('LIMIT 50'), 'Should include LIMIT');
+    assertTrue(result.pythonSnippet.includes('pg8000.native.Connection'), 'Python snippet should include pg8000');
+  });
+
+  test('Database Select Query Generator', 'IN and Multi-Column Tuple IN Clauses', () => {
+    // Single list column IN
+    const singleIn = generatePostgresSelectQuery({
+      tableName: 'customers',
+      tableAlias: 'c',
+      matchColumns: [
+        { id: 'm1', name: 'status', type: 'text', valueMode: 'single', singleValue: 'active', values: ['active'] },
+        { id: 'm2', name: 'id', type: 'integer', valueMode: 'list', singleValue: '', values: ['1', '2', '3'] }
+      ],
+      selectColumns: [{ id: 's1', name: '*' }],
+      selectAllColumns: true,
+      strategy: 'in_clause',
+      executionMode: 'batch'
+    });
+
+    assertTrue(singleIn.sql.includes('c.id IN ('), 'Should use IN clause');
+    assertTrue(singleIn.sql.includes("c.status = 'active'"), 'Should include single match');
+
+    // Multi-column Tuple IN
+    const tupleIn = generatePostgresSelectQuery({
+      tableName: 'order_items',
+      tableAlias: 'o',
+      matchColumns: [
+        { id: 'm1', name: 'store_id', type: 'text', valueMode: 'list', singleValue: '', values: ['east', 'west'] },
+        { id: 'm2', name: 'sku', type: 'text', valueMode: 'list', singleValue: '', values: ['SKU-1', 'SKU-2'] }
+      ],
+      selectColumns: [{ id: 's1', name: '*' }],
+      selectAllColumns: true,
+      strategy: 'in_clause',
+      executionMode: 'batch'
+    });
+
+    assertTrue(tupleIn.sql.includes('(o.store_id, o.sku) IN ('), 'Should use tuple IN for multiple list match columns');
+    assertTrue(tupleIn.sql.includes("('east', 'SKU-1')"), 'Should format tuple values');
+  });
+
+  test('Database Select Query Generator', 'CTE and Individual Statements and UNION ALL', () => {
+    // CTE
+    const cteResult = generatePostgresSelectQuery({
+      tableName: 'inventory',
+      tableAlias: 't',
+      matchColumns: [
+        { id: 'm1', name: 'warehouse_id', type: 'text', valueMode: 'single', singleValue: 'WH-1', values: ['WH-1'] },
+        { id: 'm2', name: 'item_id', type: 'integer', valueMode: 'list', singleValue: '', values: ['10', '20'] }
+      ],
+      selectColumns: [{ id: 's1', name: '*' }],
+      selectAllColumns: true,
+      strategy: 'cte',
+      executionMode: 'batch'
+    });
+    assertTrue(cteResult.sql.includes('WITH lookup_keys (item_id) AS'), 'Should generate CTE with lookup_keys');
+    assertTrue(cteResult.sql.includes('JOIN lookup_keys'), 'Should join CTE');
+
+    // Individual Statements
+    const indResult = generatePostgresSelectQuery({
+      tableName: 'accounts',
+      matchColumns: [
+        { id: 'm1', name: 'account_no', type: 'text', valueMode: 'list', singleValue: '', values: ['ACC-1', 'ACC-2'] }
+      ],
+      selectColumns: [{ id: 's1', name: 'balance' }],
+      strategy: 'individual',
+      executionMode: 'individual',
+      includeRowComments: true
+    });
+    assertTrue(indResult.sql.includes('-- Query 1 (account_no=ACC-1)'), 'Should include row comment for Query 1');
+    assertTrue(indResult.sql.includes('-- Query 2 (account_no=ACC-2)'), 'Should include row comment for Query 2');
+
+    // UNION ALL
+    const unionResult = generatePostgresSelectQuery({
+      tableName: 'logs',
+      matchColumns: [
+        { id: 'm1', name: 'level', type: 'text', valueMode: 'list', singleValue: '', values: ['warn', 'error'] }
+      ],
+      selectColumns: [{ id: 's1', name: 'message' }],
+      strategy: 'union_all',
+      executionMode: 'batch'
+    });
+    assertTrue(unionResult.sql.includes('UNION ALL'), 'Should combine statements with UNION ALL');
+    assertTrue(unionResult.sql.includes('1 AS query_index'), 'Should include query index provenance');
+  });
+
+  test('Database Select Query Generator', 'Export and Import Configuration Reusability', () => {
+    const exportedConfig = createDbSelectConfigExport({
+      name: 'Product Inventory Search',
+      description: 'Find products across warehouses',
+      tableName: 'products',
+      matchColumns: [
+        { id: 'm1', name: 'category', type: 'text', valueMode: 'single', singleValue: 'electronics', values: ['electronics'] },
+        { id: 'm2', name: 'sku', type: 'text', valueMode: 'list', singleValue: '', values: ['SKU-A', 'SKU-B'] }
+      ],
+      selectColumns: [
+        { id: 's1', name: 'sku' },
+        { id: 's2', name: 'price' }
+      ],
+      selectAllColumns: false,
+      customSelectClause: 'sku, price, stock',
+      strategy: 'batch_values',
+      executionMode: 'batch',
+      isDistinct: true,
+      orderBy: 'sku ASC',
+      limit: '100'
+    });
+
+    assertTrue(exportedConfig.version === 1, 'Config version must be 1');
+    assertTrue(exportedConfig.app === 'devhub-db-select-generator', 'App identifier must match');
+    assertTrue(exportedConfig.tableName === 'products', 'Table name must be products');
+    assertTrue(exportedConfig.isDistinct === true, 'isDistinct must be true');
+
+    const jsonStr = JSON.stringify(exportedConfig, null, 2);
+    const parsed = validateAndParseDbSelectConfig(jsonStr);
+    assertTrue(parsed.success === true, `Failed to parse select config: ${parsed.error}`);
+    assertTrue(parsed.config?.tableName === 'products', 'Imported tableName must match');
+    assertTrue(parsed.config?.matchColumns.length === 2, 'Should have 2 match columns');
+    assertTrue(parsed.config?.isDistinct === true, 'Imported isDistinct must be true');
+
+    // Round-trip query generation from parsed config
+    const generated = generatePostgresSelectQuery(parsed.config!);
+    assertTrue(generated.rowCount === 2, `Expected 2 rows, got ${generated.rowCount}`);
+    assertTrue(generated.sql.includes('SELECT DISTINCT'), 'Should include DISTINCT keyword');
+    assertTrue(generated.sql.includes('LIMIT 100'), 'Should include LIMIT 100');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

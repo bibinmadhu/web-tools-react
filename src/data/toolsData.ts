@@ -281,4 +281,14 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'database',
     isPopular: true,
   },
+  {
+    id: 'db-select-query-generator',
+    name: 'Database Select Query Generator',
+    description: 'Generate bulk and targeted PostgreSQL SELECT queries from customizable tables, multi-match filter criteria (single or list values), column selectors, batch VALUES joins, IN/CTE clauses, and individual queries',
+    category: 'testing',
+    tags: ['Testing', 'Database', 'PostgreSQL', 'SQL', 'Select', 'Bulk Query', 'Query Generator', 'Lookup'],
+    iconText: 'SQL',
+    iconType: 'database',
+    isPopular: true,
+  },
 ];
