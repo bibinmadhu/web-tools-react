@@ -49,6 +49,7 @@ export interface DbSelectConfigModalProps {
     offset?: number | string;
     includeTypeCasts: boolean;
     includeRowComments: boolean;
+    showNullForMissing?: boolean;
   };
   onApplyConfig: (config: DbSelectConfig) => void;
   initialTab?: 'import' | 'export' | 'saved';

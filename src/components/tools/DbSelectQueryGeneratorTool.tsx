@@ -43,6 +43,9 @@ import {
   inferColumnType,
   parseCsvOrTsv,
   DB_SELECT_PRESETS,
+  stripAliasFromExpression,
+  prefixAliasToProjection,
+  prefixAliasToOrderBy,
 } from '../../utils/dbSelectQueryGenerator';
 import { DbSelectConfigModal } from './DbSelectConfigModal';
 
@@ -108,6 +111,7 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
   const [offset, setOffset] = useState<string>('');
   const [includeTypeCasts, setIncludeTypeCasts] = useState<boolean>(true);
   const [includeRowComments, setIncludeRowComments] = useState<boolean>(true);
+  const [showNullForMissing, setShowNullForMissing] = useState<boolean>(false);
 
   // UI State
   const [inputViewMode, setInputViewMode] = useState<'lists' | 'grid' | 'csv'>('lists');
@@ -153,6 +157,9 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
     setOffset(config.offset !== undefined ? String(config.offset) : '');
     setIncludeTypeCasts(config.includeTypeCasts);
     setIncludeRowComments(config.includeRowComments);
+    if (config.showNullForMissing !== undefined) {
+      setShowNullForMissing(!!config.showNullForMissing);
+    }
     setSelectedPresetId('custom-imported');
   };
 
@@ -172,6 +179,7 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
       setOrderBy('');
       setLimit('');
       setOffset('');
+      setShowNullForMissing(false);
       setMatchColumns([
         {
           id: 'match-' + Date.now(),
@@ -208,6 +216,7 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
       if (preset.includeRowComments !== undefined) {
         setIncludeRowComments(preset.includeRowComments);
       }
+      setShowNullForMissing(!!preset.showNullForMissing);
     }
   };
 
@@ -253,6 +262,7 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
       offset,
       includeTypeCasts,
       includeRowComments,
+      showNullForMissing,
     };
     return generatePostgresSelectQuery(options);
   }, [
@@ -273,6 +283,7 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
     offset,
     includeTypeCasts,
     includeRowComments,
+    showNullForMissing,
   ]);
 
   // Copy to clipboard helper
@@ -536,7 +547,20 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
                     <input
                       type="checkbox"
                       checked={useTableAlias}
-                      onChange={(e) => setUseTableAlias(e.target.checked)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setUseTableAlias(checked);
+                        if (!checked) {
+                          // Remove alias from Columns to Select (Projection)
+                          setCustomSelectClause((prev) => stripAliasFromExpression(prev, tableAlias));
+                          // Also remove alias from ORDER BY
+                          setOrderBy((prev) => stripAliasFromExpression(prev, tableAlias));
+                        } else {
+                          // Re-prefix Projection and ORDER BY with table alias
+                          setCustomSelectClause((prev) => prefixAliasToProjection(prev, tableAlias || 't'));
+                          setOrderBy((prev) => prefixAliasToOrderBy(prev, tableAlias || 't'));
+                        }
+                      }}
                       className="rounded bg-slate-900 border-slate-700 text-indigo-500 focus:ring-0 w-3 h-3"
                     />
                     <span className="text-slate-300">Alias:</span>
@@ -545,7 +569,15 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
                     <input
                       type="text"
                       value={tableAlias}
-                      onChange={(e) => setTableAlias(e.target.value)}
+                      onChange={(e) => {
+                        const newAlias = e.target.value;
+                        const oldAlias = tableAlias;
+                        setTableAlias(newAlias);
+                        if (newAlias && oldAlias && newAlias !== oldAlias) {
+                          setCustomSelectClause((prev) => prev.replace(new RegExp(`\\b${oldAlias}\\.`, 'g'), `${newAlias}.`));
+                          setOrderBy((prev) => prev.replace(new RegExp(`\\b${oldAlias}\\.`, 'g'), `${newAlias}.`));
+                        }
+                      }}
                       placeholder="t"
                       className="w-9 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-xs text-center font-mono text-indigo-300 focus:outline-none focus:border-indigo-500"
                       title="Table alias (e.g. FROM table AS alias)"
@@ -918,20 +950,32 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
                         </label>
                         <div className="flex items-center gap-1">
                           <button
-                            onClick={() => setCustomSelectClause('t.id, t.username, t.email, t.status')}
-                            className="text-[10px] text-slate-400 hover:text-emerald-400 px-1.5 py-0.5 rounded bg-slate-800"
+                            onClick={() =>
+                              setCustomSelectClause(
+                                useTableAlias
+                                  ? `${tableAlias || 't'}.id, ${tableAlias || 't'}.username, ${tableAlias || 't'}.email, ${tableAlias || 't'}.status`
+                                  : 'id, username, email, status'
+                              )
+                            }
+                            className="text-[10px] text-slate-400 hover:text-emerald-400 px-1.5 py-0.5 rounded bg-slate-800 cursor-pointer"
                           >
                             User profile
                           </button>
                           <button
-                            onClick={() => setCustomSelectClause('id, order_id, sku, quantity, unit_price')}
-                            className="text-[10px] text-slate-400 hover:text-emerald-400 px-1.5 py-0.5 rounded bg-slate-800"
+                            onClick={() =>
+                              setCustomSelectClause(
+                                useTableAlias
+                                  ? `${tableAlias || 't'}.id, ${tableAlias || 't'}.order_id, ${tableAlias || 't'}.sku, ${tableAlias || 't'}.quantity, ${tableAlias || 't'}.unit_price`
+                                  : 'id, order_id, sku, quantity, unit_price'
+                              )
+                            }
+                            className="text-[10px] text-slate-400 hover:text-emerald-400 px-1.5 py-0.5 rounded bg-slate-800 cursor-pointer"
                           >
                             Line items
                           </button>
                           <button
                             onClick={() => setCustomSelectClause('COUNT(*) AS total_count')}
-                            className="text-[10px] text-slate-400 hover:text-emerald-400 px-1.5 py-0.5 rounded bg-slate-800"
+                            className="text-[10px] text-slate-400 hover:text-emerald-400 px-1.5 py-0.5 rounded bg-slate-800 cursor-pointer"
                           >
                             Count aggregation
                           </button>
@@ -940,7 +984,11 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
                       <textarea
                         value={customSelectClause}
                         onChange={(e) => setCustomSelectClause(e.target.value)}
-                        placeholder="e.g. t.id, t.name, t.email, COALESCE(t.status, 'active') AS status"
+                        placeholder={
+                          useTableAlias
+                            ? `e.g. ${tableAlias || 't'}.id, ${tableAlias || 't'}.name, ${tableAlias || 't'}.email, COALESCE(${tableAlias || 't'}.status, 'active') AS status`
+                            : "e.g. id, name, email, COALESCE(status, 'active') AS status"
+                        }
                         rows={2}
                         className="w-full bg-slate-950 border border-slate-750 rounded p-2 text-xs font-mono text-emerald-300 focus:outline-none focus:border-emerald-500"
                       />
@@ -1012,7 +1060,14 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
                     <div>
                       <select
                         value={orderByMatchColumnId}
-                        onChange={(e) => setOrderByMatchColumnId(e.target.value)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setOrderByMatchColumnId(val);
+                          if (val) {
+                            // If Order by match criteria list is selected, remove / clear order by as well
+                            setOrderBy('');
+                          }
+                        }}
                         className="w-full bg-slate-900 border border-slate-750 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
                       >
                         <option value="">None (Custom ORDER BY or DB default)</option>
@@ -1053,15 +1108,31 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
                 {/* Modifiers: ORDER BY, LIMIT, OFFSET */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs pt-1">
                   <div>
-                    <label className="text-[11px] font-medium text-slate-400 block mb-1">
-                      ORDER BY
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] font-medium text-slate-400 block">
+                        ORDER BY
+                      </label>
+                      {orderByMatchColumnId && (
+                        <span className="text-[10px] text-amber-400 italic">
+                          (Removed: Match list order active)
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="text"
                       value={orderBy}
+                      disabled={!!orderByMatchColumnId}
                       onChange={(e) => setOrderBy(e.target.value)}
-                      placeholder="e.g. t.id ASC, created_at DESC"
-                      className="w-full bg-slate-950 border border-slate-750 rounded px-2 py-1 text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500"
+                      placeholder={
+                        orderByMatchColumnId
+                          ? "Disabled: Order by match criteria list is active"
+                          : (useTableAlias ? `e.g. ${tableAlias || 't'}.id ASC, created_at DESC` : "e.g. id ASC, created_at DESC")
+                      }
+                      className={`w-full border rounded px-2 py-1 text-xs font-mono focus:outline-none ${
+                        orderByMatchColumnId
+                          ? "bg-slate-950/60 border-slate-800 text-slate-500 cursor-not-allowed italic"
+                          : "bg-slate-950 border-slate-750 text-slate-200 focus:border-indigo-500"
+                      }`}
                     />
                   </div>
 
@@ -1096,6 +1167,21 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
 
                 {/* Boolean Switches */}
                 <div className="flex flex-wrap items-center gap-4 pt-2 border-t border-slate-800 text-xs">
+                  <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={showNullForMissing}
+                      onChange={(e) => setShowNullForMissing(e.target.checked)}
+                      className="rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-0"
+                    />
+                    <span className="flex items-center gap-1 font-medium text-amber-200">
+                      Show NULL data if matching rows not found
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase font-mono font-semibold">
+                        LEFT JOIN
+                      </span>
+                    </span>
+                  </label>
+
                   <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer select-none">
                     <input
                       type="checkbox"
@@ -1270,6 +1356,7 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
           offset,
           includeTypeCasts,
           includeRowComments,
+          showNullForMissing,
         }}
         onApplyConfig={handleApplyConfig}
       />

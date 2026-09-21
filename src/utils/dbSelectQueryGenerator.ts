@@ -64,6 +64,7 @@ export interface SelectQueryOptions {
   includeRowComments?: boolean; // include '-- Row N' comments in queries
   orderByMatchColumnId?: string; // ID of match column to order results by its input list
   orderByMatchDirection?: 'ASC' | 'DESC'; // Sort direction ('ASC' for input list order, 'DESC' for reverse)
+  showNullForMissing?: boolean; // If true, generates query (e.g. LEFT JOIN) so unmatched rows return NULL data instead of being omitted
 }
 
 export interface SelectQueryResult {
@@ -281,43 +282,153 @@ export function inferColumnType(values: string[]): ColumnType {
 }
 
 /**
+ * Strips table alias prefixes from a SQL projection or ORDER BY expression.
+ * E.g. "t.id, t.username, t.email" -> "id, username, email"
+ * E.g. "t.id ASC" -> "id ASC"
+ */
+export function stripAliasFromExpression(expr: string, alias?: string): string {
+  if (!expr) return '';
+  let result = expr;
+  if (alias && alias.trim()) {
+    const escaped = alias.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    result = result.replace(new RegExp(`\\b${escaped}\\.`, 'g'), '');
+  }
+  // Also strip any default "t." if alias differed or was unspecified
+  result = result.replace(/\bt\./g, '');
+  return result;
+}
+
+/**
+ * Prefixes unqualified column identifiers in a projection expression with a table alias.
+ * E.g. "id, username, email" with alias "t" -> "t.id, t.username, t.email"
+ */
+export function prefixAliasToProjection(expr: string, alias: string): string {
+  if (!expr || !alias || !alias.trim()) return expr;
+  const a = alias.trim();
+  return expr
+    .split(',')
+    .map((item) => {
+      const trimmed = item.trim();
+      if (!trimmed) return '';
+      if (trimmed.startsWith(`${a}.`)) return trimmed;
+      if (/^[a-zA-Z_][a-zA-Z0-9_]*\./.test(trimmed)) {
+        return trimmed.replace(/^[a-zA-Z_][a-zA-Z0-9_]*\./, `${a}.`);
+      }
+      if (trimmed === '*') return `${a}.*`;
+      if (trimmed.includes('(')) return trimmed;
+      return `${a}.${trimmed}`;
+    })
+    .join(', ');
+}
+
+/**
+ * Prefixes unqualified column identifiers in an ORDER BY expression with a table alias.
+ * E.g. "id ASC, created_at DESC" with alias "t" -> "t.id ASC, t.created_at DESC"
+ */
+export function prefixAliasToOrderBy(expr: string, alias: string): string {
+  if (!expr || !alias || !alias.trim()) return expr;
+  const a = alias.trim();
+  return expr
+    .split(',')
+    .map((item) => {
+      const trimmed = item.trim();
+      if (!trimmed) return '';
+      if (trimmed.startsWith(`${a}.`)) return trimmed;
+      if (/^[a-zA-Z_][a-zA-Z0-9_]*\./.test(trimmed)) {
+        return trimmed.replace(/^[a-zA-Z_][a-zA-Z0-9_]*\./, `${a}.`);
+      }
+      return `${a}.${trimmed}`;
+    })
+    .join(', ');
+}
+
+/**
  * Formats select columns into a SQL projection clause
  */
 function buildSelectProjection(
   selectCols: SelectColumn[],
   selectAll: boolean,
   customClause?: string,
+  useTableAlias?: boolean,
   tableAlias?: string,
   tableName?: string,
-  isJoin?: boolean
+  isJoin?: boolean,
+  showNullForMissing?: boolean,
+  drivingSourceAlias?: string,
+  listMatchColNames?: string[],
+  isUsingJoin?: boolean
 ): string {
   if (customClause && customClause.trim()) {
-    return customClause.trim();
+    let cleaned = customClause.trim();
+    if (!useTableAlias) {
+      cleaned = stripAliasFromExpression(cleaned, tableAlias);
+    }
+    // If showNullForMissing is enabled, ensure match columns coalesce with drivingSourceAlias so the search key is preserved
+    if (showNullForMissing && drivingSourceAlias && listMatchColNames && listMatchColNames.length > 0) {
+      for (const colName of listMatchColNames) {
+        const id = sanitizeIdentifier(colName);
+        if (useTableAlias && tableAlias) {
+          const regexWithAlias = new RegExp(`\\b${tableAlias}\\.${id}\\b(\\s+AS\\s+([a-zA-Z0-9_"]+))?`, 'gi');
+          cleaned = cleaned.replace(regexWithAlias, (match, asClause, aliasName) => {
+            if (match.toLowerCase().includes('coalesce')) return match;
+            const targetAlias = aliasName || id;
+            return `COALESCE(${tableAlias}.${id}, ${drivingSourceAlias}.${id}) AS ${targetAlias}`;
+          });
+        } else if (!isUsingJoin) {
+          const regexUnqual = new RegExp(`\\b(${tableName}\\.)?${id}\\b(\\s+AS\\s+([a-zA-Z0-9_"]+))?`, 'gi');
+          cleaned = cleaned.replace(regexUnqual, (match, prefix, asClause, aliasName) => {
+            if (match.toLowerCase().includes('coalesce')) return match;
+            const targetAlias = aliasName || id;
+            return `COALESCE(${tableName || 'table'}.${id}, ${drivingSourceAlias}.${id}) AS ${targetAlias}`;
+          });
+        }
+      }
+    }
+    return cleaned;
   }
 
-  // If tableAlias is provided and non-empty, qualify using tableAlias (e.g. t.* or t.col)
-  // If tableAlias is omitted/empty:
-  // - in JOIN queries (batch_values / cte), qualify with tableName (e.g. users.* or users.col) to prevent ambiguity with VALUES columns
-  // - in single-table queries (in_clause / individual / union_all), produce clean unqualified column expressions (*, id, col)
-  const qualifier = tableAlias && tableAlias.trim()
-    ? tableAlias.trim()
-    : (isJoin && tableName ? tableName : '');
+  // If tableAlias is provided and useTableAlias is true, qualify using tableAlias (e.g. t.* or t.col)
+  // If useTableAlias is false or tableAlias is omitted/empty: produce clean unqualified column expressions (*, id, col)
+  const qualifier = useTableAlias && tableAlias && tableAlias.trim() ? tableAlias.trim() : '';
 
-  if (selectAll) {
-    return qualifier ? `${qualifier}.*` : '*';
-  }
-
-  if (!selectCols || selectCols.length === 0) {
+  if (selectAll || !selectCols || selectCols.length === 0) {
+    if (showNullForMissing && drivingSourceAlias && listMatchColNames && listMatchColNames.length > 0) {
+      if (useTableAlias && qualifier) {
+        const keyCols = listMatchColNames.map((c) => `COALESCE(${qualifier}.${sanitizeIdentifier(c)}, ${drivingSourceAlias}.${sanitizeIdentifier(c)}) AS ${sanitizeIdentifier(c)}`);
+        return `${keyCols.join(',\n  ')},\n  ${qualifier}.*`;
+      } else if (!isUsingJoin) {
+        const keyCols = listMatchColNames.map((c) => `COALESCE(${tableName}.${sanitizeIdentifier(c)}, ${drivingSourceAlias}.${sanitizeIdentifier(c)}) AS ${sanitizeIdentifier(c)}`);
+        return `${keyCols.join(',\n  ')},\n  *`;
+      }
+    }
     return qualifier ? `${qualifier}.*` : '*';
   }
 
   return selectCols
     .map((col) => {
-      const colExpr = col.expression
+      const isMatchCol = listMatchColNames && listMatchColNames.includes(col.name);
+      if (showNullForMissing && isMatchCol && drivingSourceAlias) {
+        const colIdent = sanitizeIdentifier(col.name);
+        const aliasIdent = col.alias && col.alias.trim() ? sanitizeIdentifier(col.alias) : colIdent;
+        if (useTableAlias && qualifier) {
+          return `COALESCE(${qualifier}.${colIdent}, ${drivingSourceAlias}.${colIdent}) AS ${aliasIdent}`;
+        } else if (!isUsingJoin) {
+          return `COALESCE(${tableName}.${colIdent}, ${drivingSourceAlias}.${colIdent}) AS ${aliasIdent}`;
+        } else {
+          return col.alias && col.alias.trim() ? `${colIdent} AS ${aliasIdent}` : colIdent;
+        }
+      }
+
+      let colExpr = col.expression
         ? col.expression
         : qualifier
         ? `${qualifier}.${sanitizeIdentifier(col.name)}`
         : sanitizeIdentifier(col.name);
+
+      if (!useTableAlias) {
+        colExpr = stripAliasFromExpression(colExpr, tableAlias);
+      }
+
       if (col.alias && col.alias.trim()) {
         return `${colExpr} AS ${sanitizeIdentifier(col.alias)}`;
       }
@@ -361,6 +472,7 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
   const valuesAlias = options.valuesAlias?.trim() || 'v';
   const includeTypeCasts = options.includeTypeCasts !== false;
   const isDistinct = !!options.isDistinct;
+  const showNullForMissing = !!(options.showNullForMissing || (options as any).showNullIfNotFound);
 
   const matchCols = (options.matchColumns || []).filter((c) => c.name && c.name.trim());
   const selectCols = (options.selectColumns || []).filter((c) => c.name && c.name.trim());
@@ -393,17 +505,23 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
     const parts: string[] = [];
     const orderItems: string[] = [];
 
+    // If order by match criteria list is selected, ONLY order by the match list!
+    // As explicitly requested: "If Order by match critera list is selected remove order by as well."
     if (listOrderClause && listOrderClause.trim()) {
       orderItems.push(listOrderClause.trim());
-    }
-    if (options.orderBy && options.orderBy.trim()) {
-      orderItems.push(options.orderBy.trim());
+    } else if (options.orderBy && options.orderBy.trim()) {
+      let cleanOrderBy = options.orderBy.trim();
+      if (!useTableAlias) {
+        cleanOrderBy = stripAliasFromExpression(cleanOrderBy, tableAlias);
+      }
+      if (cleanOrderBy) {
+        orderItems.push(cleanOrderBy);
+      }
     }
 
     if (orderItems.length > 0) {
       parts.push(`${indent}ORDER BY ${orderItems.join(', ')}`);
     }
-
     if (options.limit !== undefined && String(options.limit).trim() !== '') {
       const lim = parseInt(String(options.limit), 10);
       if (!isNaN(lim) && lim >= 0) {
@@ -436,26 +554,6 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
     }
 
     for (const r of rowIndices) {
-      const whereParts: string[] = [];
-
-      // Single match filters
-      singleMatchCols.forEach((col) => {
-        const val = getMatchColumnValue(col, r);
-        const op = col.operator || '=';
-        whereParts.push(`${sanitizeIdentifier(col.name)} ${op} ${formatPostgresValue(val, col.type, false)}`);
-      });
-
-      // List match filters
-      listMatchCols.forEach((col) => {
-        const val = getMatchColumnValue(col, r);
-        const op = col.operator || '=';
-        whereParts.push(`${sanitizeIdentifier(col.name)} ${op} ${formatPostgresValue(val, col.type, false)}`);
-      });
-
-      const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
-      const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, '', tableName, false);
-      const modifiers = buildModifiers(undefined, '  ');
-
       let comment = '';
       if (options.includeRowComments !== false) {
         const summary = matchCols
@@ -464,81 +562,231 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
         comment = `-- Query ${r + 1} (${summary || 'All'})\n`;
       }
 
-      statements.push(`${comment}SELECT ${distinctKeyword}${projection}\nFROM ${tableName}${whereClause ? '\n' + whereClause : ''}${modifiers};`);
+      if (showNullForMissing && listMatchCols.length > 0) {
+        const rowVals = listMatchCols.map((c) => formatPostgresValue(getMatchColumnValue(c, r), c.type, r === 0 && includeTypeCasts));
+        const colList = listMatchCols.map((c) => sanitizeIdentifier(c.name)).join(', ');
+        const valuesSource = `(\n  VALUES (${rowVals.join(', ')})\n) AS ${valuesAlias}(${colList})`;
+
+        const onConditions = listMatchCols.map((c) => `${tableRef}.${sanitizeIdentifier(c.name)} = ${valuesAlias}.${sanitizeIdentifier(c.name)}`);
+        singleMatchCols.forEach((col) => {
+          const val = getMatchColumnValue(col, r);
+          onConditions.push(`${tableRef}.${sanitizeIdentifier(col.name)} = ${formatPostgresValue(val, col.type, false)}`);
+        });
+
+        const isUsingJoin = !useTableAlias && singleMatchCols.length === 0;
+        const projection = buildSelectProjection(
+          selectCols,
+          !!options.selectAllColumns,
+          options.customSelectClause,
+          useTableAlias,
+          tableAlias,
+          tableName,
+          true,
+          true,
+          valuesAlias,
+          listMatchCols.map((c) => c.name),
+          isUsingJoin
+        );
+
+        let joinClause = '';
+        if (useTableAlias) {
+          joinClause = `LEFT JOIN ${fromTableClause}\n  ON ${onConditions.join('\n AND ')}`;
+        } else if (singleMatchCols.length > 0) {
+          const unqualConditions = listMatchCols.map((c) => `${tableName}.${sanitizeIdentifier(c.name)} = ${valuesAlias}.${sanitizeIdentifier(c.name)}`);
+          singleMatchCols.forEach((col) => {
+            const val = getMatchColumnValue(col, r);
+            unqualConditions.push(`${tableName}.${sanitizeIdentifier(col.name)} = ${formatPostgresValue(val, col.type, false)}`);
+          });
+          joinClause = `LEFT JOIN ${fromTableClause}\n  ON ${unqualConditions.join('\n AND ')}`;
+        } else {
+          joinClause = `LEFT JOIN ${fromTableClause}\n  USING (${colList})`;
+        }
+
+        const modifiers = buildModifiers(undefined, '  ');
+        statements.push(`${comment}SELECT ${distinctKeyword}${projection}\nFROM ${valuesSource}\n${joinClause}${modifiers};`);
+      } else {
+        const whereParts: string[] = [];
+
+        singleMatchCols.forEach((col) => {
+          const val = getMatchColumnValue(col, r);
+          const op = col.operator || '=';
+          whereParts.push(`${sanitizeIdentifier(col.name)} ${op} ${formatPostgresValue(val, col.type, false)}`);
+        });
+
+        listMatchCols.forEach((col) => {
+          const val = getMatchColumnValue(col, r);
+          const op = col.operator || '=';
+          whereParts.push(`${sanitizeIdentifier(col.name)} ${op} ${formatPostgresValue(val, col.type, false)}`);
+        });
+
+        const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
+        const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, useTableAlias, tableAlias, tableName, false);
+        const modifiers = buildModifiers(undefined, '  ');
+
+        statements.push(`${comment}SELECT ${distinctKeyword}${projection}\nFROM ${fromTableClause}${whereClause ? '\n' + whereClause : ''}${modifiers};`);
+      }
     }
 
     sql = statements.join('\n\n');
   }
   // STRATEGY 2: IN / TUPLE-IN CLAUSE
   else if (options.strategy === 'in_clause') {
-    const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, tableAlias, tableName, false);
-    const whereConditions: string[] = [];
+    if (showNullForMissing && listMatchCols.length > 0) {
+      warnings.push('Showing NULL data for missing rows: using array unnest LEFT JOIN query since standard WHERE ... IN (...) omits non-matching rows.');
+      const listMatchNames = listMatchCols.map((c) => c.name);
+      const isUsingJoin = !useTableAlias && singleMatchCols.length === 0;
+      const projection = buildSelectProjection(
+        selectCols,
+        !!options.selectAllColumns,
+        options.customSelectClause,
+        useTableAlias,
+        tableAlias,
+        tableName,
+        true,
+        true,
+        'k',
+        listMatchNames,
+        isUsingJoin
+      );
 
-    // Constant single match columns
-    singleMatchCols.forEach((col) => {
-      const val = getMatchColumnValue(col, 0);
-      const op = col.operator || '=';
-      const colRef = tableAlias ? `${tableAlias}.${sanitizeIdentifier(col.name)}` : sanitizeIdentifier(col.name);
-      whereConditions.push(`${colRef} ${op} ${formatPostgresValue(val, col.type, false)}`);
-    });
+      const singleMatchOn: string[] = [];
+      singleMatchCols.forEach((col) => {
+        const val = getMatchColumnValue(col, 0);
+        const op = col.operator || '=';
+        const colRef = useTableAlias ? `${tableRef}.${sanitizeIdentifier(col.name)}` : `${tableName}.${sanitizeIdentifier(col.name)}`;
+        singleMatchOn.push(`${colRef} ${op} ${formatPostgresValue(val, col.type, false)}`);
+      });
 
-    // List match columns
-    if (listMatchCols.length === 1) {
-      const col = listMatchCols[0];
-      const items = Array.from({ length: totalRowCount }).map((_, r) => {
-        const val = getMatchColumnValue(col, r);
-        return formatPostgresValue(val, col.type, false);
+      let fromSource = '';
+      let joinOnClause = '';
+
+      if (listMatchCols.length === 1) {
+        const col = listMatchCols[0];
+        const id = sanitizeIdentifier(col.name);
+        const items = Array.from({ length: totalRowCount }).map((_, r) => {
+          return formatPostgresValue(getMatchColumnValue(col, r), col.type, false);
+        });
+        const pgTypeName = getPostgresTypeName(col.type);
+        const castSuffix = pgTypeName ? `::${pgTypeName}[]` : '';
+        fromSource = `unnest(ARRAY[\n    ${items.join(',\n    ')}\n  ]${castSuffix}) AS k(${id})`;
+
+        if (useTableAlias) {
+          const onParts = [`${tableRef}.${id} = k.${id}`, ...singleMatchOn];
+          joinOnClause = `LEFT JOIN ${fromTableClause}\n  ON ${onParts.join('\n AND ')}`;
+        } else if (singleMatchOn.length > 0) {
+          const onParts = [`${tableName}.${id} = k.${id}`, ...singleMatchOn];
+          joinOnClause = `LEFT JOIN ${fromTableClause}\n  ON ${onParts.join('\n AND ')}`;
+        } else {
+          joinOnClause = `LEFT JOIN ${fromTableClause}\n  USING (${id})`;
+        }
+      } else {
+        const colList = listMatchCols.map((c) => sanitizeIdentifier(c.name)).join(', ');
+        const tupleRows = Array.from({ length: totalRowCount }).map((_, r) => {
+          const rowVals = listMatchCols.map((c) => formatPostgresValue(getMatchColumnValue(c, r), c.type, r === 0 && includeTypeCasts));
+          return `    (${rowVals.join(', ')})`;
+        });
+        fromSource = `(\n  VALUES\n${tupleRows.join(',\n')}\n) AS k(${colList})`;
+        if (useTableAlias) {
+          const onParts = listMatchCols.map((c) => `${tableRef}.${sanitizeIdentifier(c.name)} = k.${sanitizeIdentifier(c.name)}`).concat(singleMatchOn);
+          joinOnClause = `LEFT JOIN ${fromTableClause}\n  ON ${onParts.join('\n AND ')}`;
+        } else if (singleMatchOn.length > 0) {
+          const onParts = listMatchCols.map((c) => `${tableName}.${sanitizeIdentifier(c.name)} = k.${sanitizeIdentifier(c.name)}`).concat(singleMatchOn);
+          joinOnClause = `LEFT JOIN ${fromTableClause}\n  ON ${onParts.join('\n AND ')}`;
+        } else {
+          joinOnClause = `LEFT JOIN ${fromTableClause}\n  USING (${colList})`;
+        }
+      }
+
+      let listOrderClause: string | undefined;
+      if (isListOrderActive && listOrderCol) {
+        const arrayItems = Array.from({ length: totalRowCount }).map((_, r) => {
+          return formatPostgresValue(getMatchColumnValue(listOrderCol, r), listOrderCol.type, false);
+        });
+        const pgTypeName = getPostgresTypeName(listOrderCol.type);
+        const castSuffix = pgTypeName ? `::${pgTypeName}[]` : '';
+        listOrderClause = `array_position(ARRAY[${arrayItems.join(', ')}]${castSuffix}, k.${sanitizeIdentifier(listOrderCol.name)}) ${listOrderDir}`;
+      }
+
+      const modifiers = buildModifiers(listOrderClause, '');
+      sql = `-- Batch SELECT using array unnest LEFT JOIN to show NULL data for non-matching rows\n` +
+        `-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
+        `SELECT ${distinctKeyword}\n  ${projection}\n` +
+        `FROM ${fromSource}\n` +
+        `${joinOnClause}${modifiers};`;
+    } else {
+      const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, useTableAlias, tableAlias, tableName, false);
+      const whereConditions: string[] = [];
+
+      // Constant single match columns
+      singleMatchCols.forEach((col) => {
+        const val = getMatchColumnValue(col, 0);
+        const op = col.operator || '=';
+        const colRef = useTableAlias && tableAlias ? `${tableAlias}.${sanitizeIdentifier(col.name)}` : sanitizeIdentifier(col.name);
+        whereConditions.push(`${colRef} ${op} ${formatPostgresValue(val, col.type, false)}`);
       });
-      const colRef = tableAlias ? `${tableAlias}.${sanitizeIdentifier(col.name)}` : sanitizeIdentifier(col.name);
-      whereConditions.push(`${colRef} IN (\n    ${items.join(',\n    ')}\n  )`);
-    } else if (listMatchCols.length > 1) {
-      // Multi-column tuple IN: (col1, col2) IN ((v1, v2), (v3, v4))
-      const colTuple = `(${listMatchCols.map((c) => tableAlias ? `${tableAlias}.${sanitizeIdentifier(c.name)}` : sanitizeIdentifier(c.name)).join(', ')})`;
-      const tupleRows = Array.from({ length: totalRowCount }).map((_, r) => {
-        const rowVals = listMatchCols.map((c) => formatPostgresValue(getMatchColumnValue(c, r), c.type, false));
-        return `    (${rowVals.join(', ')})`;
-      });
-      whereConditions.push(`${colTuple} IN (\n${tupleRows.join(',\n')}\n  )`);
+
+      // List match columns
+      if (listMatchCols.length === 1) {
+        const col = listMatchCols[0];
+        const items = Array.from({ length: totalRowCount }).map((_, r) => {
+          const val = getMatchColumnValue(col, r);
+          return formatPostgresValue(val, col.type, false);
+        });
+        const colRef = useTableAlias && tableAlias ? `${tableAlias}.${sanitizeIdentifier(col.name)}` : sanitizeIdentifier(col.name);
+        whereConditions.push(`${colRef} IN (\n    ${items.join(',\n    ')}\n  )`);
+      } else if (listMatchCols.length > 1) {
+        // Multi-column tuple IN: (col1, col2) IN ((v1, v2), (v3, v4))
+        const colTuple = `(${listMatchCols.map((c) => useTableAlias && tableAlias ? `${tableAlias}.${sanitizeIdentifier(c.name)}` : sanitizeIdentifier(c.name)).join(', ')})`;
+        const tupleRows = Array.from({ length: totalRowCount }).map((_, r) => {
+          const rowVals = listMatchCols.map((c) => formatPostgresValue(getMatchColumnValue(c, r), c.type, false));
+          return `    (${rowVals.join(', ')})`;
+        });
+        whereConditions.push(`${colTuple} IN (\n${tupleRows.join(',\n')}\n  )`);
+      }
+
+      const whereClause = whereConditions.length > 0 ? `\nWHERE ${whereConditions.join('\n  AND ')}` : '';
+
+      // List ordering using PostgreSQL array_position
+      let listOrderClause: string | undefined;
+      if (isListOrderActive && listOrderCol) {
+        const colRef = useTableAlias && tableAlias ? `${tableAlias}.${sanitizeIdentifier(listOrderCol.name)}` : sanitizeIdentifier(listOrderCol.name);
+        const arrayItems = Array.from({ length: totalRowCount }).map((_, r) => {
+          return formatPostgresValue(getMatchColumnValue(listOrderCol, r), listOrderCol.type, false);
+        });
+        const pgTypeName = getPostgresTypeName(listOrderCol.type);
+        const castSuffix = pgTypeName ? `::${pgTypeName}[]` : '';
+        listOrderClause = `array_position(ARRAY[${arrayItems.join(', ')}]${castSuffix}, ${colRef}) ${listOrderDir}`;
+      }
+
+      const modifiers = buildModifiers(listOrderClause, '');
+
+      sql = `-- Batch SELECT using IN / Tuple-IN clause\n-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
+        `SELECT ${distinctKeyword}\n  ${projection}\n` +
+        `FROM ${fromTableClause}${whereClause}${modifiers};`;
     }
-
-    const whereClause = whereConditions.length > 0 ? `\nWHERE ${whereConditions.join('\n  AND ')}` : '';
-
-    // List ordering using PostgreSQL array_position
-    let listOrderClause: string | undefined;
-    if (isListOrderActive && listOrderCol) {
-      const colRef = tableAlias ? `${tableAlias}.${sanitizeIdentifier(listOrderCol.name)}` : sanitizeIdentifier(listOrderCol.name);
-      const arrayItems = Array.from({ length: totalRowCount }).map((_, r) => {
-        return formatPostgresValue(getMatchColumnValue(listOrderCol, r), listOrderCol.type, false);
-      });
-      const pgTypeName = getPostgresTypeName(listOrderCol.type);
-      const castSuffix = pgTypeName ? `::${pgTypeName}[]` : '';
-      listOrderClause = `array_position(ARRAY[${arrayItems.join(', ')}]${castSuffix}, ${colRef}) ${listOrderDir}`;
-    }
-
-    const modifiers = buildModifiers(listOrderClause, '');
-
-    sql = `-- Batch SELECT using IN / Tuple-IN clause\n-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
-      `SELECT ${distinctKeyword}\n  ${projection}\n` +
-      `FROM ${fromTableClause}${whereClause}${modifiers};`;
   }
   // STRATEGY 3: COMMON TABLE EXPRESSION (CTE)
   else if (options.strategy === 'cte') {
-    const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, tableAlias, tableName, true);
-
-    if (listMatchCols.length === 0) {
-      // Fallback if only single match or no list
-      const whereParts = singleMatchCols.map((col) => {
-        const val = getMatchColumnValue(col, 0);
-        return `${tableRef}.${sanitizeIdentifier(col.name)} = ${formatPostgresValue(val, col.type, false)}`;
-      });
-      const whereClause = whereParts.length > 0 ? `\nWHERE ${whereParts.join(' AND ')}` : '';
-      const modifiers = buildModifiers(undefined, '');
-      sql = `SELECT ${distinctKeyword}\n  ${projection}\nFROM ${fromTableClause}${whereClause}${modifiers};`;
-    } else {
+    if (showNullForMissing && listMatchCols.length > 0) {
       const cteName = 'lookup_keys';
       const ordColName = '_ord';
       const colNames = listMatchCols.map((c) => sanitizeIdentifier(c.name));
       const cteColNames = (isListOrderActive ? [...colNames, ordColName] : colNames).join(', ');
+      const isUsingJoin = !useTableAlias && singleMatchCols.length === 0;
+
+      const projection = buildSelectProjection(
+        selectCols,
+        !!options.selectAllColumns,
+        options.customSelectClause,
+        useTableAlias,
+        tableAlias,
+        tableName,
+        true,
+        true,
+        cteName,
+        listMatchCols.map((c) => c.name),
+        isUsingJoin
+      );
 
       const rows: string[] = [];
       for (let r = 0; r < totalRowCount; r++) {
@@ -554,76 +802,208 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
         rows.push(`    (${rowVals.join(', ')})`);
       }
 
-      const joinConditions = listMatchCols.map((c) => {
-        const id = sanitizeIdentifier(c.name);
-        return `${tableRef}.${id} = ${cteName}.${id}`;
-      });
-
-      const whereConditions: string[] = [];
+      const singleMatchOn: string[] = [];
       singleMatchCols.forEach((c) => {
         const val = getMatchColumnValue(c, 0);
-        whereConditions.push(`${tableRef}.${sanitizeIdentifier(c.name)} = ${formatPostgresValue(val, c.type, false)}`);
+        const colRef = useTableAlias ? `${tableRef}.${sanitizeIdentifier(c.name)}` : `${tableName}.${sanitizeIdentifier(c.name)}`;
+        singleMatchOn.push(`${colRef} = ${formatPostgresValue(val, c.type, false)}`);
       });
 
-      const whereClause = whereConditions.length > 0 ? `\nWHERE ${whereConditions.join('\n  AND ')}` : '';
+      let joinClause = '';
+      if (useTableAlias) {
+        const joinConditions = listMatchCols.map((c) => {
+          const id = sanitizeIdentifier(c.name);
+          return `${tableRef}.${id} = ${cteName}.${id}`;
+        });
+        joinClause = `LEFT JOIN ${fromTableClause}\n  ON ${[...joinConditions, ...singleMatchOn].join('\n AND ')}`;
+      } else if (singleMatchOn.length > 0) {
+        const joinConditions = listMatchCols.map((c) => {
+          const id = sanitizeIdentifier(c.name);
+          return `${tableName}.${id} = ${cteName}.${id}`;
+        });
+        joinClause = `LEFT JOIN ${fromTableClause}\n  ON ${[...joinConditions, ...singleMatchOn].join('\n AND ')}`;
+      } else {
+        joinClause = `LEFT JOIN ${fromTableClause}\n  USING (${colNames.join(', ')})`;
+      }
+
       const listOrderClause = isListOrderActive ? `${cteName}.${ordColName} ${listOrderDir}` : undefined;
       const modifiers = buildModifiers(listOrderClause, '');
 
-      sql = `-- Batch SELECT using CTE (WITH ... VALUES)\n-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
+      sql = `-- Batch SELECT using CTE with unmatched keys preserved as NULL\n` +
+        `-- Target Table: ${rawTable} | Total Rows: ${totalRowCount} | Missing rows return NULL data\n` +
         `WITH ${cteName} (${cteColNames}) AS (\n  VALUES\n${rows.join(',\n')}\n)\n` +
         `SELECT ${distinctKeyword}\n  ${projection}\n` +
-        `FROM ${fromTableClause}\n` +
-        `JOIN ${cteName}\n  ON ${joinConditions.join('\n AND ')}${whereClause}${modifiers};`;
+        `FROM ${cteName}\n` +
+        `${joinClause}${modifiers};`;
+    } else {
+      const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, useTableAlias, tableAlias, tableName, true);
+
+      if (listMatchCols.length === 0) {
+        // Fallback if only single match or no list
+        const whereParts = singleMatchCols.map((col) => {
+          const val = getMatchColumnValue(col, 0);
+          const colRef = useTableAlias ? `${tableRef}.${sanitizeIdentifier(col.name)}` : sanitizeIdentifier(col.name);
+          return `${colRef} = ${formatPostgresValue(val, col.type, false)}`;
+        });
+        const whereClause = whereParts.length > 0 ? `\nWHERE ${whereParts.join(' AND ')}` : '';
+        const modifiers = buildModifiers(undefined, '');
+        sql = `SELECT ${distinctKeyword}\n  ${projection}\nFROM ${fromTableClause}${whereClause}${modifiers};`;
+      } else {
+        const cteName = 'lookup_keys';
+        const ordColName = '_ord';
+        const colNames = listMatchCols.map((c) => sanitizeIdentifier(c.name));
+        const cteColNames = (isListOrderActive ? [...colNames, ordColName] : colNames).join(', ');
+
+        const rows: string[] = [];
+        for (let r = 0; r < totalRowCount; r++) {
+          const rowVals: string[] = [];
+          listMatchCols.forEach((col) => {
+            const val = getMatchColumnValue(col, r);
+            const forceCast = r === 0 && includeTypeCasts;
+            rowVals.push(formatPostgresValue(val, col.type, forceCast));
+          });
+          if (isListOrderActive) {
+            rowVals.push(r === 0 && includeTypeCasts ? `${r + 1}::int` : `${r + 1}`);
+          }
+          rows.push(`    (${rowVals.join(', ')})`);
+        }
+
+        const joinConditions = listMatchCols.map((c) => {
+          const id = sanitizeIdentifier(c.name);
+          return `${tableRef}.${id} = ${cteName}.${id}`;
+        });
+
+        const whereConditions: string[] = [];
+        singleMatchCols.forEach((c) => {
+          const val = getMatchColumnValue(c, 0);
+          const colRef = useTableAlias ? `${tableRef}.${sanitizeIdentifier(c.name)}` : sanitizeIdentifier(c.name);
+          whereConditions.push(`${colRef} = ${formatPostgresValue(val, c.type, false)}`);
+        });
+
+        const whereClause = whereConditions.length > 0 ? `\nWHERE ${whereConditions.join('\n  AND ')}` : '';
+        const listOrderClause = isListOrderActive ? `${cteName}.${ordColName} ${listOrderDir}` : undefined;
+        const modifiers = buildModifiers(listOrderClause, '');
+
+        const joinClause = useTableAlias
+          ? `JOIN ${cteName}\n  ON ${joinConditions.join('\n AND ')}`
+          : `JOIN ${cteName}\n  USING (${colNames.join(', ')})`;
+
+        sql = `-- Batch SELECT using CTE (WITH ... VALUES)\n-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
+          `WITH ${cteName} (${cteColNames}) AS (\n  VALUES\n${rows.join(',\n')}\n)\n` +
+          `SELECT ${distinctKeyword}\n  ${projection}\n` +
+          `FROM ${fromTableClause}\n` +
+          `${joinClause}${whereClause}${modifiers};`;
+      }
     }
   }
   // STRATEGY 4: UNION ALL QUERY
   else if (options.strategy === 'union_all') {
-    const statements: string[] = [];
-    const effectiveCount = totalRowCount > 0 ? totalRowCount : 1;
-    const baseProjection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, '', tableName, false);
+    if (showNullForMissing && listMatchCols.length > 0) {
+      const statements: string[] = [];
+      const effectiveCount = totalRowCount > 0 ? totalRowCount : 1;
 
-    for (let r = 0; r < effectiveCount; r++) {
-      const whereParts: string[] = [];
-      singleMatchCols.forEach((col) => {
-        const val = getMatchColumnValue(col, r);
-        const op = col.operator || '=';
-        whereParts.push(`${sanitizeIdentifier(col.name)} ${op} ${formatPostgresValue(val, col.type, false)}`);
-      });
-      listMatchCols.forEach((col) => {
-        const val = getMatchColumnValue(col, r);
-        const op = col.operator || '=';
-        whereParts.push(`${sanitizeIdentifier(col.name)} ${op} ${formatPostgresValue(val, col.type, false)}`);
-      });
+      for (let r = 0; r < effectiveCount; r++) {
+        const rowVals = listMatchCols.map((c) => formatPostgresValue(getMatchColumnValue(c, r), c.type, r === 0 && includeTypeCasts));
+        const colList = listMatchCols.map((c) => sanitizeIdentifier(c.name)).join(', ');
+        const valuesSource = `(\n  VALUES (${rowVals.join(', ')})\n) AS ${valuesAlias}(${colList})`;
 
-      const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
-      const queryLabel = `${r + 1} AS query_index`;
-      const projectionWithIndex = `${baseProjection},\n  ${queryLabel}`;
+        const onConditions = listMatchCols.map((c) => `${tableRef}.${sanitizeIdentifier(c.name)} = ${valuesAlias}.${sanitizeIdentifier(c.name)}`);
+        singleMatchCols.forEach((col) => {
+          const val = getMatchColumnValue(col, r);
+          onConditions.push(`${tableRef}.${sanitizeIdentifier(col.name)} = ${formatPostgresValue(val, col.type, false)}`);
+        });
 
-      statements.push(`SELECT ${distinctKeyword}${projectionWithIndex}\nFROM ${tableName}${whereClause ? '\n' + whereClause : ''}`);
+        const isUsingJoin = !useTableAlias && singleMatchCols.length === 0;
+        const projection = buildSelectProjection(
+          selectCols,
+          !!options.selectAllColumns,
+          options.customSelectClause,
+          useTableAlias,
+          tableAlias,
+          tableName,
+          true,
+          true,
+          valuesAlias,
+          listMatchCols.map((c) => c.name),
+          isUsingJoin
+        );
+
+        let joinClause = '';
+        if (useTableAlias) {
+          joinClause = `LEFT JOIN ${fromTableClause}\n  ON ${onConditions.join('\n AND ')}`;
+        } else if (singleMatchCols.length > 0) {
+          const unqualConditions = listMatchCols.map((c) => `${tableName}.${sanitizeIdentifier(c.name)} = ${valuesAlias}.${sanitizeIdentifier(c.name)}`);
+          singleMatchCols.forEach((col) => {
+            const val = getMatchColumnValue(col, r);
+            unqualConditions.push(`${tableName}.${sanitizeIdentifier(col.name)} = ${formatPostgresValue(val, col.type, false)}`);
+          });
+          joinClause = `LEFT JOIN ${fromTableClause}\n  ON ${unqualConditions.join('\n AND ')}`;
+        } else {
+          joinClause = `LEFT JOIN ${fromTableClause}\n  USING (${colList})`;
+        }
+
+        const queryLabel = `${r + 1} AS query_index`;
+        const projectionWithIndex = `${projection},\n  ${queryLabel}`;
+
+        statements.push(`SELECT ${distinctKeyword}${projectionWithIndex}\nFROM ${valuesSource}\n${joinClause}`);
+      }
+
+      const listOrderClause = isListOrderActive ? `query_index ${listOrderDir}` : undefined;
+      const modifiers = buildModifiers(listOrderClause, '');
+      sql = `-- Batch SELECT using UNION ALL with unmatched keys preserved as NULL\n-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
+        statements.join('\n\nUNION ALL\n\n') + `${modifiers};`;
+    } else {
+      const statements: string[] = [];
+      const effectiveCount = totalRowCount > 0 ? totalRowCount : 1;
+      const baseProjection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, false, '', tableName, false);
+
+      for (let r = 0; r < effectiveCount; r++) {
+        const whereParts: string[] = [];
+        singleMatchCols.forEach((col) => {
+          const val = getMatchColumnValue(col, r);
+          const op = col.operator || '=';
+          whereParts.push(`${sanitizeIdentifier(col.name)} ${op} ${formatPostgresValue(val, col.type, false)}`);
+        });
+        listMatchCols.forEach((col) => {
+          const val = getMatchColumnValue(col, r);
+          const op = col.operator || '=';
+          whereParts.push(`${sanitizeIdentifier(col.name)} ${op} ${formatPostgresValue(val, col.type, false)}`);
+        });
+
+        const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
+        const queryLabel = `${r + 1} AS query_index`;
+        const projectionWithIndex = `${baseProjection},\n  ${queryLabel}`;
+
+        statements.push(`SELECT ${distinctKeyword}${projectionWithIndex}\nFROM ${tableName}${whereClause ? '\n' + whereClause : ''}`);
+      }
+
+      const listOrderClause = isListOrderActive ? `query_index ${listOrderDir}` : undefined;
+      const modifiers = buildModifiers(listOrderClause, '');
+      sql = `-- Batch SELECT using UNION ALL\n-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
+        statements.join('\n\nUNION ALL\n\n') + `${modifiers};`;
     }
-
-    const listOrderClause = isListOrderActive ? `query_index ${listOrderDir}` : undefined;
-    const modifiers = buildModifiers(listOrderClause, '');
-    sql = `-- Batch SELECT using UNION ALL\n-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
-      statements.join('\n\nUNION ALL\n\n') + `${modifiers};`;
   }
   // STRATEGY 5 (DEFAULT): BATCH VALUES JOIN
   else {
-    const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, tableAlias, tableName, true);
-
-    if (listMatchCols.length === 0) {
-      // Single matches only or empty
-      const whereParts = singleMatchCols.map((col) => {
-        const val = getMatchColumnValue(col, 0);
-        return `${tableRef}.${sanitizeIdentifier(col.name)} = ${formatPostgresValue(val, col.type, false)}`;
-      });
-      const whereClause = whereParts.length > 0 ? `\nWHERE ${whereParts.join(' AND ')}` : '';
-      const modifiers = buildModifiers(undefined, '');
-      sql = `SELECT ${distinctKeyword}\n  ${projection}\nFROM ${fromTableClause}${whereClause}${modifiers};`;
-    } else {
+    if (showNullForMissing && listMatchCols.length > 0) {
       const ordColName = '_ord';
       const colNames = listMatchCols.map((c) => sanitizeIdentifier(c.name));
       const valuesColList = (isListOrderActive ? [...colNames, ordColName] : colNames).join(', ');
+      const isUsingJoin = !useTableAlias && singleMatchCols.length === 0;
+
+      const projection = buildSelectProjection(
+        selectCols,
+        !!options.selectAllColumns,
+        options.customSelectClause,
+        useTableAlias,
+        tableAlias,
+        tableName,
+        true,
+        true,
+        valuesAlias,
+        listMatchCols.map((c) => c.name),
+        isUsingJoin
+      );
 
       const rows: string[] = [];
       for (let r = 0; r < totalRowCount; r++) {
@@ -639,27 +1019,97 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
         rows.push(`    (${rowVals.join(', ')})`);
       }
 
-      const joinConditions = listMatchCols.map((c) => {
-        const id = sanitizeIdentifier(c.name);
-        return `${tableRef}.${id} = ${valuesAlias}.${id}`;
-      });
-
-      const whereConditions: string[] = [];
+      const singleMatchOn: string[] = [];
       singleMatchCols.forEach((c) => {
         const val = getMatchColumnValue(c, 0);
-        whereConditions.push(`${tableRef}.${sanitizeIdentifier(c.name)} = ${formatPostgresValue(val, c.type, false)}`);
+        const colRef = useTableAlias ? `${tableRef}.${sanitizeIdentifier(c.name)}` : `${tableName}.${sanitizeIdentifier(c.name)}`;
+        singleMatchOn.push(`${colRef} = ${formatPostgresValue(val, c.type, false)}`);
       });
 
-      const whereClause = whereConditions.length > 0 ? `\nWHERE ${whereConditions.join('\n  AND ')}` : '';
+      let joinClause = '';
+      if (useTableAlias) {
+        const joinConditions = listMatchCols.map((c) => {
+          const id = sanitizeIdentifier(c.name);
+          return `${tableRef}.${id} = ${valuesAlias}.${id}`;
+        });
+        joinClause = `LEFT JOIN ${fromTableClause}\n  ON ${[...joinConditions, ...singleMatchOn].join('\n AND ')}`;
+      } else if (singleMatchOn.length > 0) {
+        const joinConditions = listMatchCols.map((c) => {
+          const id = sanitizeIdentifier(c.name);
+          return `${tableName}.${id} = ${valuesAlias}.${id}`;
+        });
+        joinClause = `LEFT JOIN ${fromTableClause}\n  ON ${[...joinConditions, ...singleMatchOn].join('\n AND ')}`;
+      } else {
+        joinClause = `LEFT JOIN ${fromTableClause}\n  USING (${colNames.join(', ')})`;
+      }
+
       const listOrderClause = isListOrderActive ? `${valuesAlias}.${ordColName} ${listOrderDir}` : undefined;
       const modifiers = buildModifiers(listOrderClause, '');
 
-      sql = `-- Batch SELECT for PostgreSQL using JOIN (VALUES ...)\n` +
+      sql = `-- Batch SELECT for PostgreSQL using LEFT JOIN (VALUES ...) to preserve missing rows as NULL\n` +
         `-- Total Rows: ${totalRowCount} | Target Table: ${rawTable} | Match: ${listMatchCols.length} list key(s), ${singleMatchCols.length} constant filter(s)\n` +
+        `-- (Shows NULL data for lookup keys that do not exist in the database)\n` +
         `SELECT ${distinctKeyword}\n  ${projection}\n` +
-        `FROM ${fromTableClause}\n` +
-        `JOIN (\n  VALUES\n${rows.join(',\n')}\n) AS ${valuesAlias}(${valuesColList})\n` +
-        `  ON ${joinConditions.join('\n AND ')}${whereClause}${modifiers};`;
+        `FROM (\n  VALUES\n${rows.join(',\n')}\n) AS ${valuesAlias}(${valuesColList})\n` +
+        `${joinClause}${modifiers};`;
+    } else {
+      const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, useTableAlias, tableAlias, tableName, true);
+
+      if (listMatchCols.length === 0) {
+        // Single matches only or empty
+        const whereParts = singleMatchCols.map((col) => {
+          const val = getMatchColumnValue(col, 0);
+          const colRef = useTableAlias ? `${tableRef}.${sanitizeIdentifier(col.name)}` : sanitizeIdentifier(col.name);
+          return `${colRef} = ${formatPostgresValue(val, col.type, false)}`;
+        });
+        const whereClause = whereParts.length > 0 ? `\nWHERE ${whereParts.join(' AND ')}` : '';
+        const modifiers = buildModifiers(undefined, '');
+        sql = `SELECT ${distinctKeyword}\n  ${projection}\nFROM ${fromTableClause}${whereClause}${modifiers};`;
+      } else {
+        const ordColName = '_ord';
+        const colNames = listMatchCols.map((c) => sanitizeIdentifier(c.name));
+        const valuesColList = (isListOrderActive ? [...colNames, ordColName] : colNames).join(', ');
+
+        const rows: string[] = [];
+        for (let r = 0; r < totalRowCount; r++) {
+          const rowVals: string[] = [];
+          listMatchCols.forEach((col) => {
+            const val = getMatchColumnValue(col, r);
+            const forceCast = r === 0 && includeTypeCasts;
+            rowVals.push(formatPostgresValue(val, col.type, forceCast));
+          });
+          if (isListOrderActive) {
+            rowVals.push(r === 0 && includeTypeCasts ? `${r + 1}::int` : `${r + 1}`);
+          }
+          rows.push(`    (${rowVals.join(', ')})`);
+        }
+
+        const joinConditions = listMatchCols.map((c) => {
+          const id = sanitizeIdentifier(c.name);
+          return `${tableRef}.${id} = ${valuesAlias}.${id}`;
+        });
+
+        const whereConditions: string[] = [];
+        singleMatchCols.forEach((c) => {
+          const val = getMatchColumnValue(c, 0);
+          const colRef = useTableAlias ? `${tableRef}.${sanitizeIdentifier(c.name)}` : sanitizeIdentifier(c.name);
+          whereConditions.push(`${colRef} = ${formatPostgresValue(val, c.type, false)}`);
+        });
+
+        const whereClause = whereConditions.length > 0 ? `\nWHERE ${whereConditions.join('\n  AND ')}` : '';
+        const listOrderClause = isListOrderActive ? `${valuesAlias}.${ordColName} ${listOrderDir}` : undefined;
+        const modifiers = buildModifiers(listOrderClause, '');
+
+        const joinClause = useTableAlias
+          ? `JOIN (\n  VALUES\n${rows.join(',\n')}\n) AS ${valuesAlias}(${valuesColList})\n  ON ${joinConditions.join('\n AND ')}`
+          : `JOIN (\n  VALUES\n${rows.join(',\n')}\n) AS ${valuesAlias}(${valuesColList})\n  USING (${colNames.join(', ')})`;
+
+        sql = `-- Batch SELECT for PostgreSQL using JOIN (VALUES ...)\n` +
+          `-- Total Rows: ${totalRowCount} | Target Table: ${rawTable} | Match: ${listMatchCols.length} list key(s), ${singleMatchCols.length} constant filter(s)\n` +
+          `SELECT ${distinctKeyword}\n  ${projection}\n` +
+          `FROM ${fromTableClause}\n` +
+          `${joinClause}${whereClause}${modifiers};`;
+      }
     }
   }
 
@@ -864,6 +1314,7 @@ export interface SelectPreset {
   limit?: number | string;
   offset?: number | string;
   includeRowComments?: boolean;
+  showNullForMissing?: boolean;
 }
 
 export const DB_SELECT_PRESETS: SelectPreset[] = [
@@ -904,6 +1355,46 @@ export const DB_SELECT_PRESETS: SelectPreset[] = [
       { id: 's-4', name: 'role' },
       { id: 's-5', name: 'status' },
       { id: 's-6', name: 'created_at' },
+    ],
+  },
+  {
+    id: 'users-null-unmatched',
+    name: 'Users Lookup (Shows NULL for Missing Rows)',
+    description: 'LEFT JOIN query preserving all searched user IDs, showing NULL data for IDs not found in table',
+    tableName: 'users',
+    useTableAlias: true,
+    tableAlias: 't',
+    showNullForMissing: true,
+    orderByMatchColumnId: 'm-user-ids',
+    orderByMatchDirection: 'ASC',
+    strategy: 'batch_values',
+    executionMode: 'batch',
+    selectAllColumns: false,
+    customSelectClause: 'COALESCE(t.id, v.id) AS id, t.username, t.email, t.role, t.status',
+    matchColumns: [
+      {
+        id: 'm-tenant',
+        name: 'tenant_id',
+        type: 'text',
+        valueMode: 'single',
+        singleValue: 'org-acme-corp',
+        values: ['org-acme-corp'],
+      },
+      {
+        id: 'm-user-ids',
+        name: 'id',
+        type: 'integer',
+        valueMode: 'list',
+        singleValue: '',
+        values: ['101', '9999', '102', '8888', '103'],
+      },
+    ],
+    selectColumns: [
+      { id: 's-1', name: 'id' },
+      { id: 's-2', name: 'username' },
+      { id: 's-3', name: 'email' },
+      { id: 's-4', name: 'role' },
+      { id: 's-5', name: 'status' },
     ],
   },
   {
@@ -1110,6 +1601,7 @@ export interface DbSelectConfig {
   offset?: number | string;
   includeTypeCasts: boolean;
   includeRowComments: boolean;
+  showNullForMissing?: boolean;
 }
 
 export function createDbSelectConfigExport(data: {
@@ -1130,6 +1622,7 @@ export function createDbSelectConfigExport(data: {
   offset?: number | string;
   includeTypeCasts?: boolean;
   includeRowComments?: boolean;
+  showNullForMissing?: boolean;
   name?: string;
   description?: string;
 }): DbSelectConfig {
@@ -1169,6 +1662,7 @@ export function createDbSelectConfigExport(data: {
     offset: data.offset !== undefined ? data.offset : '',
     includeTypeCasts: data.includeTypeCasts !== false,
     includeRowComments: data.includeRowComments !== false,
+    showNullForMissing: !!data.showNullForMissing,
   };
 }
 
@@ -1264,6 +1758,7 @@ export function validateAndParseDbSelectConfig(input: string | unknown): {
       offset: raw.offset !== undefined ? raw.offset : '',
       includeTypeCasts: raw.includeTypeCasts !== false,
       includeRowComments: raw.includeRowComments !== false,
+      showNullForMissing: !!raw.showNullForMissing,
     };
 
     return { success: true, config };

@@ -13,6 +13,9 @@ import {
   createDbSelectConfigExport,
   validateAndParseDbSelectConfig,
   DB_SELECT_PRESETS,
+  stripAliasFromExpression,
+  prefixAliasToProjection,
+  prefixAliasToOrderBy,
 } from './dbSelectQueryGenerator';
 import {
   beautifyJson,
@@ -1954,15 +1957,39 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
 
     assertTrue(batchValuesNoAlias.sql.includes('FROM users\nJOIN'), 'Should generate FROM users without AS alias');
     assertTrue(!batchValuesNoAlias.sql.includes('users AS'), 'FROM clause should not have alias');
-    assertTrue(batchValuesNoAlias.sql.includes('users.id = v.id'), 'JOIN condition should qualify with table name to avoid collision');
+    assertTrue(batchValuesNoAlias.sql.includes('USING (id)'), 'JOIN condition should use USING (id) to avoid ambiguous column error');
+    assertTrue(batchValuesNoAlias.sql.includes('id,\n  username'), 'Projection should have clean unqualified column names without alias');
+
+    // 3. Custom select projection stripping alias when useTableAlias is false
+    const customProjectionNoAlias = generatePostgresSelectQuery({
+      tableName: 'users',
+      useTableAlias: false,
+      tableAlias: 't',
+      selectColumns: [],
+      customSelectClause: 't.id, t.username, t.email, t.status',
+      matchColumns: [
+        { id: 'm1', name: 'id', type: 'integer', valueMode: 'list', singleValue: '', values: ['1', '2'] }
+      ],
+      strategy: 'in_clause',
+      executionMode: 'batch'
+    });
+    assertTrue(!customProjectionNoAlias.sql.includes('t.id'), 'Custom select clause should strip t. alias prefix when useTableAlias is false');
+    assertTrue(customProjectionNoAlias.sql.includes('id, username, email, status'), 'Unqualified columns should be present');
+
+    // 4. Alias helpers: strip and prefix
+    assertEqual(stripAliasFromExpression('t.id, t.username, t.email', 't'), 'id, username, email');
+    assertEqual(stripAliasFromExpression('u.id ASC, u.created_at DESC', 'u'), 'id ASC, created_at DESC');
+    assertEqual(prefixAliasToProjection('id, username, email', 't'), 't.id, t.username, t.email');
+    assertEqual(prefixAliasToOrderBy('id ASC, created_at DESC', 't'), 't.id ASC, t.created_at DESC');
   });
 
-  test('Database Select Query Generator', 'Supports Ordering by Order of Match and Filter Criteria List', () => {
-    // 1. batch_values strategy with order by match list
+  test('Database Select Query Generator', 'Supports Ordering by Order of Match and Filter Criteria List and Removes Conflicting ORDER BY', () => {
+    // 1. batch_values strategy with order by match list and manual orderBy supplied -> manual orderBy should be REMOVED
     const batchValuesOrdered = generatePostgresSelectQuery({
       tableName: 'orders',
       useTableAlias: true,
       tableAlias: 't',
+      orderBy: 't.created_at DESC, t.id ASC', // should be removed because orderByMatchColumnId is active!
       matchColumns: [
         { id: 'm-order-ids', name: 'order_id', type: 'text', valueMode: 'list', singleValue: '', values: ['ORD-99', 'ORD-12', 'ORD-44'] }
       ],
@@ -1977,12 +2004,14 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     assertTrue(batchValuesOrdered.sql.includes('AS v(order_id, _ord)'), 'Values alias should include _ord column');
     assertTrue(batchValuesOrdered.sql.includes("('ORD-99', 1::int)"), 'Row values should include index for ordering');
     assertTrue(batchValuesOrdered.sql.includes('ORDER BY v._ord ASC'), 'Should ORDER BY v._ord ASC');
+    assertTrue(!batchValuesOrdered.sql.includes('t.created_at'), 'Conflicting manual orderBy should be removed when match list order is active');
 
-    // 2. in_clause strategy with order by match list (PostgreSQL array_position)
+    // 2. in_clause strategy with order by match list (PostgreSQL array_position) and manual orderBy removed
     const inClauseOrdered = generatePostgresSelectQuery({
       tableName: 'products',
       useTableAlias: false,
       tableAlias: '',
+      orderBy: 'price DESC', // should be removed!
       matchColumns: [
         { id: 'm-skus', name: 'sku', type: 'text', valueMode: 'list', singleValue: '', values: ['SKU-Z', 'SKU-A', 'SKU-M'] }
       ],
@@ -1994,8 +2023,25 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     });
 
     assertTrue(inClauseOrdered.sql.includes("array_position(ARRAY['SKU-Z', 'SKU-A', 'SKU-M']::text[], sku) DESC"), 'Should order by array_position with cast DESC');
+    assertTrue(!inClauseOrdered.sql.includes('price DESC'), 'Manual orderBy should be removed when match list order is active');
 
-    // 3. CTE strategy with order by match list
+    // 3. Manual ORDER BY without match list ordering when useTableAlias is false -> alias is stripped
+    const manualOrderNoAlias = generatePostgresSelectQuery({
+      tableName: 'products',
+      useTableAlias: false,
+      tableAlias: 't',
+      orderBy: 't.price DESC, t.name ASC',
+      matchColumns: [
+        { id: 'm-skus', name: 'sku', type: 'text', valueMode: 'list', singleValue: '', values: ['SKU-1', 'SKU-2'] }
+      ],
+      selectColumns: [{ id: 's1', name: 'sku' }],
+      strategy: 'in_clause',
+      executionMode: 'batch'
+    });
+    assertTrue(manualOrderNoAlias.sql.includes('ORDER BY price DESC, name ASC'), 'Manual ORDER BY should have table alias stripped when useTableAlias is false');
+    assertTrue(!manualOrderNoAlias.sql.includes('t.price'), 'No t. in ORDER BY');
+
+    // 4. CTE strategy with order by match list
     const cteOrdered = generatePostgresSelectQuery({
       tableName: 'items',
       useTableAlias: true,
@@ -2014,7 +2060,7 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     assertTrue(cteOrdered.sql.includes('lookup_keys (code, _ord)'), 'CTE should include _ord column');
     assertTrue(cteOrdered.sql.includes('ORDER BY lookup_keys._ord ASC'), 'CTE should ORDER BY lookup_keys._ord ASC');
 
-    // 4. Config export and import preserves no-alias and order by match list options
+    // 5. Config export and import preserves no-alias and order by match list options
     const exportedWithNewFeatures = createDbSelectConfigExport({
       tableName: 'shipments',
       useTableAlias: false,
@@ -2040,6 +2086,88 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     const reGenerated = generatePostgresSelectQuery(parsedJson.config!);
     assertTrue(reGenerated.sql.includes('FROM shipments\nJOIN'), 'Re-generated query should not have AS alias');
     assertTrue(reGenerated.sql.includes('ORDER BY v._ord ASC'), 'Re-generated query should order by _ord');
+  });
+
+  test('Database Select Query Generator', 'Configurable Show NULL Data for Missing Rows (LEFT JOIN)', () => {
+    // 1. batch_values strategy with showNullForMissing enabled
+    const batchValuesNullData = generatePostgresSelectQuery({
+      tableName: 'users',
+      useTableAlias: true,
+      tableAlias: 't',
+      showNullForMissing: true,
+      matchColumns: [
+        { id: 'm1', name: 'id', type: 'integer', valueMode: 'list', singleValue: '', values: ['101', '999'] }
+      ],
+      selectColumns: [
+        { id: 's1', name: 'id' },
+        { id: 's2', name: 'username' },
+        { id: 's3', name: 'email' }
+      ],
+      strategy: 'batch_values',
+      executionMode: 'batch'
+    });
+
+    assertTrue(batchValuesNullData.sql.includes('LEFT JOIN users AS t'), 'batch_values should use LEFT JOIN to preserve unmatched rows');
+    assertTrue(batchValuesNullData.sql.includes('FROM (\n  VALUES'), 'Driving table should be the VALUES clause');
+    assertTrue(batchValuesNullData.sql.includes('COALESCE(t.id, v.id) AS id'), 'Match column in projection should use COALESCE to retain search key');
+    assertTrue(batchValuesNullData.sql.includes('t.username'), 'Target column username should be selected from t');
+
+    // 2. batch_values with showNullForMissing = false (default) should still use standard JOIN
+    const batchValuesDefault = generatePostgresSelectQuery({
+      tableName: 'users',
+      useTableAlias: true,
+      tableAlias: 't',
+      showNullForMissing: false,
+      matchColumns: [
+        { id: 'm1', name: 'id', type: 'integer', valueMode: 'list', singleValue: '', values: ['101', '999'] }
+      ],
+      selectColumns: [
+        { id: 's1', name: 'id' },
+        { id: 's2', name: 'username' }
+      ],
+      strategy: 'batch_values',
+      executionMode: 'batch'
+    });
+    assertTrue(batchValuesDefault.sql.includes('FROM users AS t\n  JOIN'), 'Default behavior should use standard JOIN');
+    assertTrue(!batchValuesDefault.sql.includes('LEFT JOIN'), 'Default behavior should NOT use LEFT JOIN');
+
+    // 3. CTE strategy with showNullForMissing enabled
+    const cteNullData = generatePostgresSelectQuery({
+      tableName: 'users',
+      useTableAlias: true,
+      tableAlias: 't',
+      showNullForMissing: true,
+      matchColumns: [
+        { id: 'm1', name: 'id', type: 'integer', valueMode: 'list', singleValue: '', values: ['101', '999'] }
+      ],
+      selectColumns: [
+        { id: 's1', name: 'id' },
+        { id: 's2', name: 'username' }
+      ],
+      strategy: 'cte',
+      executionMode: 'batch'
+    });
+    assertTrue(cteNullData.sql.includes('FROM lookup_keys\nLEFT JOIN users AS t'), 'CTE should select from lookup_keys and LEFT JOIN target table');
+    assertTrue(cteNullData.sql.includes('COALESCE(t.id, lookup_keys.id) AS id'), 'CTE should COALESCE match column to lookup_keys');
+
+    // 4. Config export and parsing preserves showNullForMissing
+    const exportedConfig = createDbSelectConfigExport({
+      tableName: 'customers',
+      showNullForMissing: true,
+      matchColumns: [
+        { id: 'm1', name: 'id', type: 'integer', valueMode: 'list', singleValue: '', values: ['501'] }
+      ],
+      selectColumns: [{ id: 's1', name: 'id' }],
+      strategy: 'batch_values',
+      executionMode: 'batch'
+    });
+    assertTrue(exportedConfig.showNullForMissing === true, 'Exported config should have showNullForMissing true');
+
+    const parsedConfig = validateAndParseDbSelectConfig(JSON.stringify(exportedConfig));
+    assertTrue(parsedConfig.success && parsedConfig.config?.showNullForMissing === true, 'Parsed config should have showNullForMissing true');
+
+    const queryFromParsed = generatePostgresSelectQuery(parsedConfig.config!);
+    assertTrue(queryFromParsed.sql.includes('LEFT JOIN'), 'Query from parsed config should generate LEFT JOIN');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
