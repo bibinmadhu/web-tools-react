@@ -1912,6 +1912,136 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     assertTrue(generated.sql.includes('LIMIT 100'), 'Should include LIMIT 100');
   });
 
+  test('Database Select Query Generator', 'Supports Queries Without Table Alias', () => {
+    // 1. in_clause without alias
+    const inClauseNoAlias = generatePostgresSelectQuery({
+      tableName: 'customers',
+      useTableAlias: false,
+      tableAlias: '',
+      matchColumns: [
+        { id: 'm1', name: 'status', type: 'text', valueMode: 'single', singleValue: 'active', values: ['active'] },
+        { id: 'm2', name: 'id', type: 'integer', valueMode: 'list', singleValue: '', values: ['1', '2', '3'] }
+      ],
+      selectColumns: [
+        { id: 's1', name: 'id' },
+        { id: 's2', name: 'email' }
+      ],
+      selectAllColumns: false,
+      strategy: 'in_clause',
+      executionMode: 'batch'
+    });
+
+    assertTrue(inClauseNoAlias.sql.includes('FROM customers\nWHERE'), 'Should generate FROM customers without AS alias');
+    assertTrue(!inClauseNoAlias.sql.includes('customers AS'), 'Should not contain AS alias');
+    assertTrue(inClauseNoAlias.sql.includes('id IN ('), 'Should not prefix with table alias in in_clause');
+    assertTrue(inClauseNoAlias.sql.includes("status = 'active'"), 'Should use clean column name in WHERE');
+
+    // 2. batch_values without alias
+    const batchValuesNoAlias = generatePostgresSelectQuery({
+      tableName: 'users',
+      useTableAlias: false,
+      tableAlias: '',
+      matchColumns: [
+        { id: 'm1', name: 'id', type: 'integer', valueMode: 'list', singleValue: '', values: ['10', '20'] }
+      ],
+      selectColumns: [
+        { id: 's1', name: 'id' },
+        { id: 's2', name: 'username' }
+      ],
+      strategy: 'batch_values',
+      executionMode: 'batch'
+    });
+
+    assertTrue(batchValuesNoAlias.sql.includes('FROM users\nJOIN'), 'Should generate FROM users without AS alias');
+    assertTrue(!batchValuesNoAlias.sql.includes('users AS'), 'FROM clause should not have alias');
+    assertTrue(batchValuesNoAlias.sql.includes('users.id = v.id'), 'JOIN condition should qualify with table name to avoid collision');
+  });
+
+  test('Database Select Query Generator', 'Supports Ordering by Order of Match and Filter Criteria List', () => {
+    // 1. batch_values strategy with order by match list
+    const batchValuesOrdered = generatePostgresSelectQuery({
+      tableName: 'orders',
+      useTableAlias: true,
+      tableAlias: 't',
+      matchColumns: [
+        { id: 'm-order-ids', name: 'order_id', type: 'text', valueMode: 'list', singleValue: '', values: ['ORD-99', 'ORD-12', 'ORD-44'] }
+      ],
+      selectColumns: [{ id: 's1', name: '*' }],
+      selectAllColumns: true,
+      strategy: 'batch_values',
+      executionMode: 'batch',
+      orderByMatchColumnId: 'm-order-ids',
+      orderByMatchDirection: 'ASC'
+    });
+
+    assertTrue(batchValuesOrdered.sql.includes('AS v(order_id, _ord)'), 'Values alias should include _ord column');
+    assertTrue(batchValuesOrdered.sql.includes("('ORD-99', 1::int)"), 'Row values should include index for ordering');
+    assertTrue(batchValuesOrdered.sql.includes('ORDER BY v._ord ASC'), 'Should ORDER BY v._ord ASC');
+
+    // 2. in_clause strategy with order by match list (PostgreSQL array_position)
+    const inClauseOrdered = generatePostgresSelectQuery({
+      tableName: 'products',
+      useTableAlias: false,
+      tableAlias: '',
+      matchColumns: [
+        { id: 'm-skus', name: 'sku', type: 'text', valueMode: 'list', singleValue: '', values: ['SKU-Z', 'SKU-A', 'SKU-M'] }
+      ],
+      selectColumns: [{ id: 's1', name: 'sku' }, { id: 's2', name: 'price' }],
+      strategy: 'in_clause',
+      executionMode: 'batch',
+      orderByMatchColumnId: 'm-skus',
+      orderByMatchDirection: 'DESC'
+    });
+
+    assertTrue(inClauseOrdered.sql.includes("array_position(ARRAY['SKU-Z', 'SKU-A', 'SKU-M']::text[], sku) DESC"), 'Should order by array_position with cast DESC');
+
+    // 3. CTE strategy with order by match list
+    const cteOrdered = generatePostgresSelectQuery({
+      tableName: 'items',
+      useTableAlias: true,
+      tableAlias: 't',
+      matchColumns: [
+        { id: 'm-codes', name: 'code', type: 'text', valueMode: 'list', singleValue: '', values: ['C1', 'C2'] }
+      ],
+      selectColumns: [{ id: 's1', name: '*' }],
+      selectAllColumns: true,
+      strategy: 'cte',
+      executionMode: 'batch',
+      orderByMatchColumnId: 'm-codes',
+      orderByMatchDirection: 'ASC'
+    });
+
+    assertTrue(cteOrdered.sql.includes('lookup_keys (code, _ord)'), 'CTE should include _ord column');
+    assertTrue(cteOrdered.sql.includes('ORDER BY lookup_keys._ord ASC'), 'CTE should ORDER BY lookup_keys._ord ASC');
+
+    // 4. Config export and import preserves no-alias and order by match list options
+    const exportedWithNewFeatures = createDbSelectConfigExport({
+      tableName: 'shipments',
+      useTableAlias: false,
+      tableAlias: '',
+      orderByMatchColumnId: 'm-trk',
+      orderByMatchDirection: 'ASC',
+      matchColumns: [
+        { id: 'm-trk', name: 'tracking_num', type: 'text', valueMode: 'list', singleValue: '', values: ['TRK-1', 'TRK-2'] }
+      ],
+      selectColumns: [{ id: 's1', name: 'tracking_num' }],
+      strategy: 'batch_values',
+      executionMode: 'batch'
+    });
+
+    assertTrue(exportedWithNewFeatures.useTableAlias === false, 'Exported useTableAlias must be false');
+    assertTrue(exportedWithNewFeatures.orderByMatchColumnId === 'm-trk', 'Exported orderByMatchColumnId must match');
+
+    const parsedJson = validateAndParseDbSelectConfig(JSON.stringify(exportedWithNewFeatures));
+    assertTrue(parsedJson.success, 'Parsing exported JSON must succeed');
+    assertTrue(parsedJson.config?.useTableAlias === false, 'Parsed useTableAlias must be false');
+    assertTrue(parsedJson.config?.orderByMatchColumnId === 'm-trk', 'Parsed orderByMatchColumnId must match');
+
+    const reGenerated = generatePostgresSelectQuery(parsedJson.config!);
+    assertTrue(reGenerated.sql.includes('FROM shipments\nJOIN'), 'Re-generated query should not have AS alias');
+    assertTrue(reGenerated.sql.includes('ORDER BY v._ord ASC'), 'Re-generated query should order by _ord');
+  });
+
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
   const passed = results.filter((r) => r.status === 'passed').length;
   const failed = results.filter((r) => r.status === 'failed').length;

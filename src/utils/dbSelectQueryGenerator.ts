@@ -49,8 +49,8 @@ export interface SelectQueryOptions {
   schema?: string;
   matchColumns: MatchColumn[];
   selectColumns: SelectColumn[];
-  selectAllColumns?: boolean;       // if true, generates SELECT *
-  customSelectClause?: string;      // raw string like "id, name, status" or custom fields
+  selectAllColumns?: boolean; // if true, generates SELECT *
+  customSelectClause?: string; // raw string like "id, name, status" or custom fields
   executionMode?: QueryExecutionMode; // 'batch' (single query) or 'individual' (separate statements)
   strategy: SelectStrategy;
   isDistinct?: boolean;
@@ -58,9 +58,12 @@ export interface SelectQueryOptions {
   limit?: number | string;
   offset?: number | string;
   includeTypeCasts?: boolean;
+  useTableAlias?: boolean; // When false, generates queries without "AS alias"
   tableAlias?: string;
   valuesAlias?: string;
-  includeRowComments?: boolean;     // include '-- Row N' comments in queries
+  includeRowComments?: boolean; // include '-- Row N' comments in queries
+  orderByMatchColumnId?: string; // ID of match column to order results by its input list
+  orderByMatchDirection?: 'ASC' | 'DESC'; // Sort direction ('ASC' for input list order, 'DESC' for reverse)
 }
 
 export interface SelectQueryResult {
@@ -284,26 +287,36 @@ function buildSelectProjection(
   selectCols: SelectColumn[],
   selectAll: boolean,
   customClause?: string,
-  tableAlias?: string
+  tableAlias?: string,
+  tableName?: string,
+  isJoin?: boolean
 ): string {
   if (customClause && customClause.trim()) {
     return customClause.trim();
   }
 
+  // If tableAlias is provided and non-empty, qualify using tableAlias (e.g. t.* or t.col)
+  // If tableAlias is omitted/empty:
+  // - in JOIN queries (batch_values / cte), qualify with tableName (e.g. users.* or users.col) to prevent ambiguity with VALUES columns
+  // - in single-table queries (in_clause / individual / union_all), produce clean unqualified column expressions (*, id, col)
+  const qualifier = tableAlias && tableAlias.trim()
+    ? tableAlias.trim()
+    : (isJoin && tableName ? tableName : '');
+
   if (selectAll) {
-    return tableAlias ? `${tableAlias}.*` : '*';
+    return qualifier ? `${qualifier}.*` : '*';
   }
 
   if (!selectCols || selectCols.length === 0) {
-    return tableAlias ? `${tableAlias}.*` : '*';
+    return qualifier ? `${qualifier}.*` : '*';
   }
 
   return selectCols
     .map((col) => {
       const colExpr = col.expression
         ? col.expression
-        : tableAlias
-        ? `${tableAlias}.${sanitizeIdentifier(col.name)}`
+        : qualifier
+        ? `${qualifier}.${sanitizeIdentifier(col.name)}`
         : sanitizeIdentifier(col.name);
       if (col.alias && col.alias.trim()) {
         return `${colExpr} AS ${sanitizeIdentifier(col.alias)}`;
@@ -339,7 +352,12 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
   }
 
   const tableName = sanitizeIdentifier(rawTable);
-  const tableAlias = options.tableAlias?.trim() || 't';
+  const useTableAlias = options.useTableAlias !== false && !!options.tableAlias?.trim();
+  const rawAlias = options.tableAlias?.trim();
+  const tableAlias = useTableAlias ? (rawAlias || 't') : '';
+  const fromTableClause = tableAlias ? `${tableName} AS ${tableAlias}` : tableName;
+  const tableRef = tableAlias || tableName;
+
   const valuesAlias = options.valuesAlias?.trim() || 'v';
   const includeTypeCasts = options.includeTypeCasts !== false;
   const isDistinct = !!options.isDistinct;
@@ -364,12 +382,28 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
 
   const totalRowCount = listRowCount > 0 ? listRowCount : (singleMatchCols.length > 0 ? 1 : 0);
 
+  // List order configuration
+  const listOrderColId = options.orderByMatchColumnId?.trim();
+  const listOrderCol = listOrderColId ? listMatchCols.find((c) => c.id === listOrderColId) : undefined;
+  const listOrderDir: 'ASC' | 'DESC' = options.orderByMatchDirection === 'DESC' ? 'DESC' : 'ASC';
+  const isListOrderActive = !!listOrderCol && totalRowCount > 0;
+
   // Helper for modifiers (ORDER BY, LIMIT, OFFSET)
-  const buildModifiers = (indent = ''): string => {
+  const buildModifiers = (listOrderClause?: string, indent = ''): string => {
     const parts: string[] = [];
-    if (options.orderBy && options.orderBy.trim()) {
-      parts.push(`${indent}ORDER BY ${options.orderBy.trim()}`);
+    const orderItems: string[] = [];
+
+    if (listOrderClause && listOrderClause.trim()) {
+      orderItems.push(listOrderClause.trim());
     }
+    if (options.orderBy && options.orderBy.trim()) {
+      orderItems.push(options.orderBy.trim());
+    }
+
+    if (orderItems.length > 0) {
+      parts.push(`${indent}ORDER BY ${orderItems.join(', ')}`);
+    }
+
     if (options.limit !== undefined && String(options.limit).trim() !== '') {
       const lim = parseInt(String(options.limit), 10);
       if (!isNaN(lim) && lim >= 0) {
@@ -393,7 +427,15 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
     const statements: string[] = [];
     const effectiveCount = totalRowCount > 0 ? totalRowCount : 1;
 
-    for (let r = 0; r < effectiveCount; r++) {
+    // Respect input order or reversed order if list ordering is specified
+    const rowIndices: number[] = [];
+    if (isListOrderActive && listOrderDir === 'DESC') {
+      for (let r = effectiveCount - 1; r >= 0; r--) rowIndices.push(r);
+    } else {
+      for (let r = 0; r < effectiveCount; r++) rowIndices.push(r);
+    }
+
+    for (const r of rowIndices) {
       const whereParts: string[] = [];
 
       // Single match filters
@@ -411,8 +453,8 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
       });
 
       const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
-      const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause);
-      const modifiers = buildModifiers('  ');
+      const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, '', tableName, false);
+      const modifiers = buildModifiers(undefined, '  ');
 
       let comment = '';
       if (options.includeRowComments !== false) {
@@ -429,14 +471,15 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
   }
   // STRATEGY 2: IN / TUPLE-IN CLAUSE
   else if (options.strategy === 'in_clause') {
-    const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, tableAlias);
+    const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, tableAlias, tableName, false);
     const whereConditions: string[] = [];
 
     // Constant single match columns
     singleMatchCols.forEach((col) => {
       const val = getMatchColumnValue(col, 0);
       const op = col.operator || '=';
-      whereConditions.push(`${tableAlias}.${sanitizeIdentifier(col.name)} ${op} ${formatPostgresValue(val, col.type, false)}`);
+      const colRef = tableAlias ? `${tableAlias}.${sanitizeIdentifier(col.name)}` : sanitizeIdentifier(col.name);
+      whereConditions.push(`${colRef} ${op} ${formatPostgresValue(val, col.type, false)}`);
     });
 
     // List match columns
@@ -446,10 +489,11 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
         const val = getMatchColumnValue(col, r);
         return formatPostgresValue(val, col.type, false);
       });
-      whereConditions.push(`${tableAlias}.${sanitizeIdentifier(col.name)} IN (\n    ${items.join(',\n    ')}\n  )`);
+      const colRef = tableAlias ? `${tableAlias}.${sanitizeIdentifier(col.name)}` : sanitizeIdentifier(col.name);
+      whereConditions.push(`${colRef} IN (\n    ${items.join(',\n    ')}\n  )`);
     } else if (listMatchCols.length > 1) {
       // Multi-column tuple IN: (col1, col2) IN ((v1, v2), (v3, v4))
-      const colTuple = `(${listMatchCols.map((c) => `${tableAlias}.${sanitizeIdentifier(c.name)}`).join(', ')})`;
+      const colTuple = `(${listMatchCols.map((c) => tableAlias ? `${tableAlias}.${sanitizeIdentifier(c.name)}` : sanitizeIdentifier(c.name)).join(', ')})`;
       const tupleRows = Array.from({ length: totalRowCount }).map((_, r) => {
         const rowVals = listMatchCols.map((c) => formatPostgresValue(getMatchColumnValue(c, r), c.type, false));
         return `    (${rowVals.join(', ')})`;
@@ -458,28 +502,43 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
     }
 
     const whereClause = whereConditions.length > 0 ? `\nWHERE ${whereConditions.join('\n  AND ')}` : '';
-    const modifiers = buildModifiers('');
+
+    // List ordering using PostgreSQL array_position
+    let listOrderClause: string | undefined;
+    if (isListOrderActive && listOrderCol) {
+      const colRef = tableAlias ? `${tableAlias}.${sanitizeIdentifier(listOrderCol.name)}` : sanitizeIdentifier(listOrderCol.name);
+      const arrayItems = Array.from({ length: totalRowCount }).map((_, r) => {
+        return formatPostgresValue(getMatchColumnValue(listOrderCol, r), listOrderCol.type, false);
+      });
+      const pgTypeName = getPostgresTypeName(listOrderCol.type);
+      const castSuffix = pgTypeName ? `::${pgTypeName}[]` : '';
+      listOrderClause = `array_position(ARRAY[${arrayItems.join(', ')}]${castSuffix}, ${colRef}) ${listOrderDir}`;
+    }
+
+    const modifiers = buildModifiers(listOrderClause, '');
 
     sql = `-- Batch SELECT using IN / Tuple-IN clause\n-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
       `SELECT ${distinctKeyword}\n  ${projection}\n` +
-      `FROM ${tableName} AS ${tableAlias}${whereClause}${modifiers};`;
+      `FROM ${fromTableClause}${whereClause}${modifiers};`;
   }
   // STRATEGY 3: COMMON TABLE EXPRESSION (CTE)
   else if (options.strategy === 'cte') {
-    const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, tableAlias);
+    const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, tableAlias, tableName, true);
 
     if (listMatchCols.length === 0) {
       // Fallback if only single match or no list
       const whereParts = singleMatchCols.map((col) => {
         const val = getMatchColumnValue(col, 0);
-        return `${tableAlias}.${sanitizeIdentifier(col.name)} = ${formatPostgresValue(val, col.type, false)}`;
+        return `${tableRef}.${sanitizeIdentifier(col.name)} = ${formatPostgresValue(val, col.type, false)}`;
       });
       const whereClause = whereParts.length > 0 ? `\nWHERE ${whereParts.join(' AND ')}` : '';
-      const modifiers = buildModifiers('');
-      sql = `SELECT ${distinctKeyword}\n  ${projection}\nFROM ${tableName} AS ${tableAlias}${whereClause}${modifiers};`;
+      const modifiers = buildModifiers(undefined, '');
+      sql = `SELECT ${distinctKeyword}\n  ${projection}\nFROM ${fromTableClause}${whereClause}${modifiers};`;
     } else {
       const cteName = 'lookup_keys';
-      const cteColNames = listMatchCols.map((c) => sanitizeIdentifier(c.name)).join(', ');
+      const ordColName = '_ord';
+      const colNames = listMatchCols.map((c) => sanitizeIdentifier(c.name));
+      const cteColNames = (isListOrderActive ? [...colNames, ordColName] : colNames).join(', ');
 
       const rows: string[] = [];
       for (let r = 0; r < totalRowCount; r++) {
@@ -489,27 +548,31 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
           const forceCast = r === 0 && includeTypeCasts;
           rowVals.push(formatPostgresValue(val, col.type, forceCast));
         });
+        if (isListOrderActive) {
+          rowVals.push(r === 0 && includeTypeCasts ? `${r + 1}::int` : `${r + 1}`);
+        }
         rows.push(`    (${rowVals.join(', ')})`);
       }
 
       const joinConditions = listMatchCols.map((c) => {
         const id = sanitizeIdentifier(c.name);
-        return `${tableAlias}.${id} = ${cteName}.${id}`;
+        return `${tableRef}.${id} = ${cteName}.${id}`;
       });
 
       const whereConditions: string[] = [];
       singleMatchCols.forEach((c) => {
         const val = getMatchColumnValue(c, 0);
-        whereConditions.push(`${tableAlias}.${sanitizeIdentifier(c.name)} = ${formatPostgresValue(val, c.type, false)}`);
+        whereConditions.push(`${tableRef}.${sanitizeIdentifier(c.name)} = ${formatPostgresValue(val, c.type, false)}`);
       });
 
-      const whereClause = whereConditions.length > 0 ? `\nWHERE ${whereConditions.join(' AND ')}` : '';
-      const modifiers = buildModifiers('');
+      const whereClause = whereConditions.length > 0 ? `\nWHERE ${whereConditions.join('\n  AND ')}` : '';
+      const listOrderClause = isListOrderActive ? `${cteName}.${ordColName} ${listOrderDir}` : undefined;
+      const modifiers = buildModifiers(listOrderClause, '');
 
       sql = `-- Batch SELECT using CTE (WITH ... VALUES)\n-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
         `WITH ${cteName} (${cteColNames}) AS (\n  VALUES\n${rows.join(',\n')}\n)\n` +
         `SELECT ${distinctKeyword}\n  ${projection}\n` +
-        `FROM ${tableName} AS ${tableAlias}\n` +
+        `FROM ${fromTableClause}\n` +
         `JOIN ${cteName}\n  ON ${joinConditions.join('\n AND ')}${whereClause}${modifiers};`;
     }
   }
@@ -517,7 +580,7 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
   else if (options.strategy === 'union_all') {
     const statements: string[] = [];
     const effectiveCount = totalRowCount > 0 ? totalRowCount : 1;
-    const baseProjection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause);
+    const baseProjection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, '', tableName, false);
 
     for (let r = 0; r < effectiveCount; r++) {
       const whereParts: string[] = [];
@@ -539,25 +602,28 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
       statements.push(`SELECT ${distinctKeyword}${projectionWithIndex}\nFROM ${tableName}${whereClause ? '\n' + whereClause : ''}`);
     }
 
-    const modifiers = buildModifiers('');
+    const listOrderClause = isListOrderActive ? `query_index ${listOrderDir}` : undefined;
+    const modifiers = buildModifiers(listOrderClause, '');
     sql = `-- Batch SELECT using UNION ALL\n-- Target Table: ${rawTable} | Total Rows: ${totalRowCount}\n` +
       statements.join('\n\nUNION ALL\n\n') + `${modifiers};`;
   }
   // STRATEGY 5 (DEFAULT): BATCH VALUES JOIN
   else {
-    const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, tableAlias);
+    const projection = buildSelectProjection(selectCols, !!options.selectAllColumns, options.customSelectClause, tableAlias, tableName, true);
 
     if (listMatchCols.length === 0) {
       // Single matches only or empty
       const whereParts = singleMatchCols.map((col) => {
         const val = getMatchColumnValue(col, 0);
-        return `${tableAlias}.${sanitizeIdentifier(col.name)} = ${formatPostgresValue(val, col.type, false)}`;
+        return `${tableRef}.${sanitizeIdentifier(col.name)} = ${formatPostgresValue(val, col.type, false)}`;
       });
       const whereClause = whereParts.length > 0 ? `\nWHERE ${whereParts.join(' AND ')}` : '';
-      const modifiers = buildModifiers('');
-      sql = `SELECT ${distinctKeyword}\n  ${projection}\nFROM ${tableName} AS ${tableAlias}${whereClause}${modifiers};`;
+      const modifiers = buildModifiers(undefined, '');
+      sql = `SELECT ${distinctKeyword}\n  ${projection}\nFROM ${fromTableClause}${whereClause}${modifiers};`;
     } else {
-      const valuesColList = listMatchCols.map((c) => sanitizeIdentifier(c.name)).join(', ');
+      const ordColName = '_ord';
+      const colNames = listMatchCols.map((c) => sanitizeIdentifier(c.name));
+      const valuesColList = (isListOrderActive ? [...colNames, ordColName] : colNames).join(', ');
 
       const rows: string[] = [];
       for (let r = 0; r < totalRowCount; r++) {
@@ -567,27 +633,31 @@ export function generatePostgresSelectQuery(options: SelectQueryOptions): Select
           const forceCast = r === 0 && includeTypeCasts;
           rowVals.push(formatPostgresValue(val, col.type, forceCast));
         });
+        if (isListOrderActive) {
+          rowVals.push(r === 0 && includeTypeCasts ? `${r + 1}::int` : `${r + 1}`);
+        }
         rows.push(`    (${rowVals.join(', ')})`);
       }
 
       const joinConditions = listMatchCols.map((c) => {
         const id = sanitizeIdentifier(c.name);
-        return `${tableAlias}.${id} = ${valuesAlias}.${id}`;
+        return `${tableRef}.${id} = ${valuesAlias}.${id}`;
       });
 
       const whereConditions: string[] = [];
       singleMatchCols.forEach((c) => {
         const val = getMatchColumnValue(c, 0);
-        whereConditions.push(`${tableAlias}.${sanitizeIdentifier(c.name)} = ${formatPostgresValue(val, c.type, false)}`);
+        whereConditions.push(`${tableRef}.${sanitizeIdentifier(c.name)} = ${formatPostgresValue(val, c.type, false)}`);
       });
 
       const whereClause = whereConditions.length > 0 ? `\nWHERE ${whereConditions.join('\n  AND ')}` : '';
-      const modifiers = buildModifiers('');
+      const listOrderClause = isListOrderActive ? `${valuesAlias}.${ordColName} ${listOrderDir}` : undefined;
+      const modifiers = buildModifiers(listOrderClause, '');
 
       sql = `-- Batch SELECT for PostgreSQL using JOIN (VALUES ...)\n` +
         `-- Total Rows: ${totalRowCount} | Target Table: ${rawTable} | Match: ${listMatchCols.length} list key(s), ${singleMatchCols.length} constant filter(s)\n` +
         `SELECT ${distinctKeyword}\n  ${projection}\n` +
-        `FROM ${tableName} AS ${tableAlias}\n` +
+        `FROM ${fromTableClause}\n` +
         `JOIN (\n  VALUES\n${rows.join(',\n')}\n) AS ${valuesAlias}(${valuesColList})\n` +
         `  ON ${joinConditions.join('\n AND ')}${whereClause}${modifiers};`;
     }
@@ -779,6 +849,10 @@ export interface SelectPreset {
   name: string;
   description: string;
   tableName: string;
+  useTableAlias?: boolean;
+  tableAlias?: string;
+  orderByMatchColumnId?: string;
+  orderByMatchDirection?: 'ASC' | 'DESC';
   matchColumns: MatchColumn[];
   selectColumns: SelectColumn[];
   selectAllColumns?: boolean;
@@ -798,6 +872,8 @@ export const DB_SELECT_PRESETS: SelectPreset[] = [
     name: 'Users Lookup (Tenant ID + User IDs)',
     description: 'Bulk retrieve user records filtering by constant tenant and a list of user IDs',
     tableName: 'users',
+    useTableAlias: true,
+    tableAlias: 't',
     strategy: 'batch_values',
     executionMode: 'batch',
     selectAllColumns: false,
@@ -831,10 +907,42 @@ export const DB_SELECT_PRESETS: SelectPreset[] = [
     ],
   },
   {
+    id: 'users-no-alias-ordered',
+    name: 'Users (No Table Alias, Preserved List Order)',
+    description: 'Direct table query without AS alias, sorted strictly by the input order of match IDs',
+    tableName: 'users',
+    useTableAlias: false,
+    tableAlias: '',
+    orderByMatchColumnId: 'm-user-ids',
+    orderByMatchDirection: 'ASC',
+    strategy: 'batch_values',
+    executionMode: 'batch',
+    selectAllColumns: false,
+    customSelectClause: 'id, username, email, role, status',
+    matchColumns: [
+      {
+        id: 'm-user-ids',
+        name: 'id',
+        type: 'integer',
+        valueMode: 'list',
+        singleValue: '',
+        values: ['402', '105', '993', '210', '555'],
+      },
+    ],
+    selectColumns: [
+      { id: 's-1', name: 'id' },
+      { id: 's-2', name: 'username' },
+      { id: 's-3', name: 'email' },
+      { id: 's-4', name: 'role' },
+      { id: 's-5', name: 'status' },
+    ],
+  },
+  {
     id: 'orders-tuple-in',
     name: 'Order Line Items (Store ID + SKU Tuple IN)',
     description: 'Query orders by multi-column composite keys using PostgreSQL tuple IN syntax',
     tableName: 'order_items',
+    useTableAlias: false,
     strategy: 'in_clause',
     executionMode: 'batch',
     selectAllColumns: false,
@@ -872,6 +980,8 @@ export const DB_SELECT_PRESETS: SelectPreset[] = [
     name: 'Inventory Stock Verification (CTE Values Join)',
     description: 'CTE lookup joining warehouse part numbers against inventory table with stock verification',
     tableName: 'inventory_stock',
+    useTableAlias: true,
+    tableAlias: 't',
     strategy: 'cte',
     executionMode: 'batch',
     selectAllColumns: false,
@@ -907,6 +1017,7 @@ export const DB_SELECT_PRESETS: SelectPreset[] = [
     name: 'Audit Log Inquiries (Individual SELECTs)',
     description: 'Generate independent standalone queries per record for isolated validation or debugging',
     tableName: 'audit_logs',
+    useTableAlias: false,
     strategy: 'individual',
     executionMode: 'individual',
     selectAllColumns: true,
@@ -943,6 +1054,7 @@ export const DB_SELECT_PRESETS: SelectPreset[] = [
     name: 'Customer Profiles (UNION ALL with Index)',
     description: 'Combine multiple lookups via UNION ALL tagging results with origin query index',
     tableName: 'customers',
+    useTableAlias: false,
     strategy: 'union_all',
     executionMode: 'batch',
     selectAllColumns: false,
@@ -982,6 +1094,10 @@ export interface DbSelectConfig {
   name?: string;
   description?: string;
   tableName: string;
+  useTableAlias?: boolean;
+  tableAlias?: string;
+  orderByMatchColumnId?: string;
+  orderByMatchDirection?: 'ASC' | 'DESC';
   matchColumns: MatchColumn[];
   selectColumns: SelectColumn[];
   selectAllColumns?: boolean;
@@ -998,6 +1114,10 @@ export interface DbSelectConfig {
 
 export function createDbSelectConfigExport(data: {
   tableName: string;
+  useTableAlias?: boolean;
+  tableAlias?: string;
+  orderByMatchColumnId?: string;
+  orderByMatchDirection?: 'ASC' | 'DESC';
   matchColumns: MatchColumn[];
   selectColumns: SelectColumn[];
   selectAllColumns?: boolean;
@@ -1020,6 +1140,10 @@ export function createDbSelectConfigExport(data: {
     name: data.name || `${data.tableName || 'table'}_select_config`,
     description: data.description || '',
     tableName: data.tableName ? data.tableName.trim() : 'my_table',
+    useTableAlias: data.useTableAlias !== undefined ? data.useTableAlias : (data.tableAlias !== undefined ? data.tableAlias.trim() !== '' : true),
+    tableAlias: data.tableAlias !== undefined ? data.tableAlias : 't',
+    orderByMatchColumnId: data.orderByMatchColumnId || '',
+    orderByMatchDirection: data.orderByMatchDirection || 'ASC',
     matchColumns: (data.matchColumns || []).map((col, idx) => ({
       id: col.id || `match-${idx + 1}-${Date.now()}`,
       name: col.name ? col.name.trim() : `match_${idx + 1}`,
@@ -1110,6 +1234,13 @@ export function validateAndParseDbSelectConfig(input: string | unknown): {
       ? raw.strategy
       : (executionMode === 'individual' ? 'individual' : 'batch_values');
 
+    const useTableAlias = raw.useTableAlias !== undefined
+      ? !!raw.useTableAlias
+      : (raw.tableAlias !== undefined ? String(raw.tableAlias).trim() !== '' : true);
+    const tableAlias = typeof raw.tableAlias === 'string' ? raw.tableAlias : (useTableAlias ? 't' : '');
+    const orderByMatchColumnId = typeof raw.orderByMatchColumnId === 'string' ? raw.orderByMatchColumnId : '';
+    const orderByMatchDirection = raw.orderByMatchDirection === 'DESC' ? 'DESC' : 'ASC';
+
     const config: DbSelectConfig = {
       version: 1,
       app: 'devhub-db-select-generator',
@@ -1117,6 +1248,10 @@ export function validateAndParseDbSelectConfig(input: string | unknown): {
       name: typeof raw.name === 'string' ? raw.name : `${tableName} Select Configuration`,
       description: typeof raw.description === 'string' ? raw.description : '',
       tableName,
+      useTableAlias,
+      tableAlias,
+      orderByMatchColumnId,
+      orderByMatchDirection,
       matchColumns: matchCols,
       selectColumns: selectCols,
       selectAllColumns: !!raw.selectAllColumns,

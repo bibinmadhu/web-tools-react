@@ -33,6 +33,10 @@ export interface DbSelectConfigModalProps {
   onClose: () => void;
   currentConfigData: {
     tableName: string;
+    useTableAlias?: boolean;
+    tableAlias?: string;
+    orderByMatchColumnId?: string;
+    orderByMatchDirection?: 'ASC' | 'DESC';
     matchColumns: MatchColumn[];
     selectColumns: SelectColumn[];
     selectAllColumns?: boolean;

@@ -27,6 +27,7 @@ import {
   ListFilter,
   Columns,
   Search,
+  ArrowUpDown,
 } from 'lucide-react';
 import {
   ColumnType,
@@ -56,8 +57,13 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
 }) => {
   // Target Table & Identity
   const [tableName, setTableName] = useState<string>('users');
+  const [useTableAlias, setUseTableAlias] = useState<boolean>(true);
   const [tableAlias, setTableAlias] = useState<string>('t');
   const [selectedPresetId, setSelectedPresetId] = useState<string>('users-multi-match');
+
+  // Order by Match Criteria List
+  const [orderByMatchColumnId, setOrderByMatchColumnId] = useState<string>('');
+  const [orderByMatchDirection, setOrderByMatchDirection] = useState<'ASC' | 'DESC'>('ASC');
 
   // Match / Filter Columns
   const [matchColumns, setMatchColumns] = useState<MatchColumn[]>([
@@ -121,6 +127,20 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
 
   const handleApplyConfig = (config: DbSelectConfig) => {
     setTableName(config.tableName);
+    if (config.useTableAlias !== undefined) {
+      setUseTableAlias(config.useTableAlias);
+    } else if (config.tableAlias !== undefined) {
+      setUseTableAlias(config.tableAlias.trim() !== '');
+    }
+    if (config.tableAlias !== undefined) {
+      setTableAlias(config.tableAlias);
+    }
+    if (config.orderByMatchColumnId !== undefined) {
+      setOrderByMatchColumnId(config.orderByMatchColumnId);
+    }
+    if (config.orderByMatchDirection !== undefined) {
+      setOrderByMatchDirection(config.orderByMatchDirection);
+    }
     setMatchColumns(JSON.parse(JSON.stringify(config.matchColumns)));
     setSelectColumns(JSON.parse(JSON.stringify(config.selectColumns)));
     setSelectAllColumns(!!config.selectAllColumns);
@@ -141,7 +161,10 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
     setSelectedPresetId(presetId);
     if (presetId === 'custom-blank') {
       setTableName('my_table');
-      setTableAlias('t');
+      setUseTableAlias(false);
+      setTableAlias('');
+      setOrderByMatchColumnId('');
+      setOrderByMatchDirection('ASC');
       setExecutionMode('batch');
       setStrategy('batch_values');
       setSelectAllColumns(true);
@@ -168,6 +191,10 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
     const preset = DB_SELECT_PRESETS.find((p) => p.id === presetId);
     if (preset) {
       setTableName(preset.tableName);
+      setUseTableAlias(preset.useTableAlias !== undefined ? preset.useTableAlias : true);
+      setTableAlias(preset.tableAlias !== undefined ? preset.tableAlias : 't');
+      setOrderByMatchColumnId(preset.orderByMatchColumnId || '');
+      setOrderByMatchDirection(preset.orderByMatchDirection || 'ASC');
       setExecutionMode(preset.executionMode || (preset.strategy === 'individual' ? 'individual' : 'batch'));
       setStrategy(preset.strategy);
       setMatchColumns(JSON.parse(JSON.stringify(preset.matchColumns)));
@@ -201,11 +228,19 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
     return max;
   }, [matchColumns]);
 
+  // List match columns available for list-based ordering
+  const listMatchColumns = useMemo(() => {
+    return matchColumns.filter((c) => c.valueMode !== 'single' && c.name && c.name.trim());
+  }, [matchColumns]);
+
   // Generate Query Result
   const queryResult = useMemo(() => {
     const options: SelectQueryOptions = {
       tableName,
+      useTableAlias,
       tableAlias,
+      orderByMatchColumnId,
+      orderByMatchDirection,
       matchColumns,
       selectColumns,
       selectAllColumns,
@@ -222,7 +257,10 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
     return generatePostgresSelectQuery(options);
   }, [
     tableName,
+    useTableAlias,
     tableAlias,
+    orderByMatchColumnId,
+    orderByMatchDirection,
     matchColumns,
     selectColumns,
     selectAllColumns,
@@ -493,14 +531,28 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
                   placeholder="e.g. users, order_items"
                   className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white font-mono flex-1 focus:outline-none focus:border-indigo-500"
                 />
-                <div className="flex items-center gap-1 text-[11px] text-slate-400 shrink-0">
-                  <span>Alias:</span>
-                  <input
-                    type="text"
-                    value={tableAlias}
-                    onChange={(e) => setTableAlias(e.target.value)}
-                    className="w-10 bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-xs text-center font-mono text-slate-200"
-                  />
+                <div className="flex items-center gap-1.5 text-[11px] shrink-0 bg-slate-950 border border-slate-750 rounded px-2 py-0.5">
+                  <label className="flex items-center gap-1 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={useTableAlias}
+                      onChange={(e) => setUseTableAlias(e.target.checked)}
+                      className="rounded bg-slate-900 border-slate-700 text-indigo-500 focus:ring-0 w-3 h-3"
+                    />
+                    <span className="text-slate-300">Alias:</span>
+                  </label>
+                  {useTableAlias ? (
+                    <input
+                      type="text"
+                      value={tableAlias}
+                      onChange={(e) => setTableAlias(e.target.value)}
+                      placeholder="t"
+                      className="w-9 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-xs text-center font-mono text-indigo-300 focus:outline-none focus:border-indigo-500"
+                      title="Table alias (e.g. FROM table AS alias)"
+                    />
+                  ) : (
+                    <span className="text-[10px] text-amber-400 font-mono italic">no alias</span>
+                  )}
                 </div>
               </div>
 
@@ -943,6 +995,61 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
                   </div>
                 </div>
 
+                {/* ORDER BY MATCH CRITERIA LIST (PRESERVE INPUT SEQUENCE) */}
+                <div className="bg-slate-950/70 border border-slate-800 rounded-md p-2.5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+                      <ArrowUpDown className="w-3.5 h-3.5 text-indigo-400" />
+                      Order by Match Criteria List:
+                    </label>
+                    {orderByMatchColumnId && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                        Preserving match criteria list sequence
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <select
+                        value={orderByMatchColumnId}
+                        onChange={(e) => setOrderByMatchColumnId(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-750 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="">None (Custom ORDER BY or DB default)</option>
+                        {listMatchColumns.map((col) => (
+                          <option key={col.id} value={col.id}>
+                            Order by &quot;{col.name}&quot; ({col.values.filter(Boolean).length} values in list)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {orderByMatchColumnId ? (
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={orderByMatchDirection}
+                          onChange={(e) => setOrderByMatchDirection(e.target.value as 'ASC' | 'DESC')}
+                          className="flex-1 bg-slate-900 border border-slate-750 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                        >
+                          <option value="ASC">ASC (Original input sequence 1 → N)</option>
+                          <option value="DESC">DESC (Reverse input sequence N → 1)</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => setOrderByMatchColumnId('')}
+                          className="px-2 py-1.5 rounded bg-slate-850 hover:bg-slate-800 text-slate-400 hover:text-slate-200 text-xs border border-slate-750 cursor-pointer"
+                          title="Clear match list ordering"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-slate-500 flex items-center px-1 italic">
+                        Select a list match column to keep results in the exact input sequence.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 {/* Modifiers: ORDER BY, LIMIT, OFFSET */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs pt-1">
                   <div>
@@ -1147,6 +1254,10 @@ export const DbSelectQueryGeneratorTool: React.FC<DbSelectQueryGeneratorToolProp
         initialTab={configModalTab}
         currentConfigData={{
           tableName,
+          useTableAlias,
+          tableAlias,
+          orderByMatchColumnId,
+          orderByMatchDirection,
           matchColumns,
           selectColumns,
           selectAllColumns,
