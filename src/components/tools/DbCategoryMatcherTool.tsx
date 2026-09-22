@@ -197,12 +197,20 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
     return allMismatchedEntities.filter((r) => selectedMismatchedIds.has(r.id));
   }, [allMismatchedEntities, selectedMismatchedIds]);
 
+  // Effective target column to update (priority: user manual override in drawer -> Category Rules categoryColumn -> newCategoryColumn -> fallback)
+  const effectiveTargetColumn = useMemo(() => {
+    return (
+      fixTargetColumn.trim() ||
+      targetTable.categoryColumn?.trim() ||
+      targetTable.newCategoryColumn?.trim() ||
+      'current_category'
+    );
+  }, [fixTargetColumn, targetTable.categoryColumn, targetTable.newCategoryColumn]);
+
   // Generate Category Mismatch Fix Queries
   const fixQueries = useMemo(() => {
-    const actualTargetCol =
-      fixTargetColumn.trim() || targetTable.newCategoryColumn || targetTable.categoryColumn || 'current_category';
     return generateCategoryMismatchFixQueries(currentFullConfig, {
-      targetColumn: actualTargetCol,
+      targetColumn: effectiveTargetColumn,
       dialect: fixDialect,
       includeUnclassified: fixIncludeUnclassified,
       transactionMode: fixTransactionMode,
@@ -216,9 +224,7 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
     });
   }, [
     currentFullConfig,
-    fixTargetColumn,
-    targetTable.newCategoryColumn,
-    targetTable.categoryColumn,
+    effectiveTargetColumn,
     fixDialect,
     fixIncludeUnclassified,
     fixTransactionMode,
@@ -275,6 +281,7 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
     setRuleLogic(preset.config.ruleLogic);
     setPgConnection(preset.config.pgConnection);
     setSampleRows(preset.sampleRows);
+    setFixTargetColumn(''); // Clear manual override so preset's category column is used
   };
 
   // Apply Imported Config
@@ -285,6 +292,7 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
     setRuleLogic(config.ruleLogic);
     if (config.pgConnection) setPgConnection(config.pgConnection);
     setActivePresetId('custom');
+    setFixTargetColumn(''); // Clear manual override so imported config's category column is used
   };
 
   // Category Manipulation
@@ -711,16 +719,23 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Recorded Category Column (Validation)
+                    Recorded Category Column (Validation &amp; Target)
                   </label>
                   <input
                     type="text"
                     value={targetTable.categoryColumn || ''}
-                    onChange={(e) => setTargetTable({ ...targetTable, categoryColumn: e.target.value })}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setTargetTable({
+                        ...targetTable,
+                        categoryColumn: val,
+                        newCategoryColumn: val,
+                      });
+                    }}
                     className="w-full text-xs font-mono p-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500"
                     placeholder="current_category"
                   />
-                  <span className="text-[10px] text-slate-400">Used for discrepancy checking</span>
+                  <span className="text-[10px] text-slate-400">Target column for category rules, discrepancy validation, and UPDATE queries</span>
                 </div>
 
                 <div>
@@ -1303,7 +1318,7 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
                 <div className="text-xs">
                   <span className="text-slate-400 block text-[10px]">Target Table & Column</span>
                   <span className="font-mono font-semibold text-slate-800 dark:text-slate-200 truncate block">
-                    {targetTable.tableName}.{fixTargetColumn.trim() || targetTable.newCategoryColumn || targetTable.categoryColumn || 'current_category'}
+                    {targetTable.tableName}.{effectiveTargetColumn}
                   </span>
                 </div>
                 <div className="text-xs">
@@ -1348,18 +1363,32 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
                   {/* Target Column */}
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                      Column to UPDATE
+                      Override Column to UPDATE
                     </label>
                     <input
                       type="text"
                       value={fixTargetColumn}
                       onChange={(e) => setFixTargetColumn(e.target.value)}
-                      placeholder={targetTable.categoryColumn || 'current_category'}
+                      placeholder={targetTable.categoryColumn || targetTable.newCategoryColumn || 'current_category'}
                       className="w-full text-xs font-mono p-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
                     />
-                    <span className="text-[10px] text-slate-400 mt-1 block">
-                      Default: {targetTable.categoryColumn || 'current_category'}
-                    </span>
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
+                      <span>
+                        Rules Default:{' '}
+                        <strong className="font-mono text-indigo-600 dark:text-indigo-400">
+                          {targetTable.categoryColumn || targetTable.newCategoryColumn || 'current_category'}
+                        </strong>
+                      </span>
+                      {fixTargetColumn.trim() && (
+                        <button
+                          type="button"
+                          onClick={() => setFixTargetColumn('')}
+                          className="text-indigo-500 hover:underline cursor-pointer font-medium"
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* SQL Dialect */}
@@ -1592,10 +1621,8 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                       {allMismatchedEntities.map((ent) => {
                         const isSelected = selectedMismatchedIds.has(ent.id);
-                        const actualTargetCol =
-                          fixTargetColumn.trim() || targetTable.newCategoryColumn || targetTable.categoryColumn || 'current_category';
                         const idLiteral = isNaN(Number(ent.id)) ? `'${ent.id.replace(/'/g, "''")}'` : ent.id;
-                        const singleSql = `UPDATE "${targetTable.tableName}" SET "${actualTargetCol}" = '${ent.expectedCategory.replace(/'/g, "''")}' WHERE "${targetTable.idColumn}" = ${idLiteral};`;
+                        const singleSql = `UPDATE "${targetTable.tableName}" SET "${effectiveTargetColumn}" = '${ent.expectedCategory.replace(/'/g, "''")}' WHERE "${targetTable.idColumn}" = ${idLiteral};`;
 
                         return (
                           <tr

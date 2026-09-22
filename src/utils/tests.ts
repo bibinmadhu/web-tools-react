@@ -2611,6 +2611,33 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     const keyBasedSql = fixResult.sampleKeyBasedUpdateSql;
     assertTrue(keyBasedSql.includes('RETURNING t."id", t."current_category" AS new_category;'), 'PostgreSQL Method A join must include RETURNING before semicolon');
     assertTrue(!keyBasedSql.includes(';\nRETURNING'), 'Key-based join must not have semicolon before RETURNING');
+
+    // 5. Verify target column is correctly picked from Category Rules (not defaulting to current_category)
+    const customConfig = {
+      ...DEFAULT_MATCHER_CONFIG,
+      targetTable: {
+        ...DEFAULT_MATCHER_CONFIG.targetTable,
+        categoryColumn: 'account_tier', // Configured in Category Rules
+        newCategoryColumn: 'current_category', // Even if stale/un-synced newCategoryColumn exists
+      },
+    };
+
+    const rulesTargetResult = generateCategoryMismatchFixQueries(customConfig, {
+      dialect: 'postgres',
+      // note: targetColumn option is NOT provided here, so it must pick from customConfig.targetTable.categoryColumn
+    });
+
+    assertTrue(rulesTargetResult.dynamicFullTableUpdateSql.includes('UPDATE "business_entities"\nSET "account_tier" = CASE'), 'Should pick target column "account_tier" from targetTable.categoryColumn');
+    assertTrue(rulesTargetResult.dynamicFullTableUpdateSql.includes('RETURNING "id", "account_tier" AS new_category;'), 'RETURNING clause should use "account_tier"');
+    assertTrue(rulesTargetResult.perCategoryUpdateSql.includes('UPDATE "business_entities"\nSET "account_tier" = \'Micro Enterprise\''), 'Per-category query should use "account_tier"');
+    assertTrue(rulesTargetResult.verificationSelectSql.includes('WHERE "account_tier" IS NULL'), 'Verification SELECT query should use "account_tier"');
+
+    // 6. Verify explicit option override takes precedence
+    const overrideResult = generateCategoryMismatchFixQueries(customConfig, {
+      dialect: 'postgres',
+      targetColumn: 'custom_override_column',
+    });
+    assertTrue(overrideResult.dynamicFullTableUpdateSql.includes('SET "custom_override_column"'), 'Explicit targetColumn option should override rules column');
   });
 
   // =========================================================================

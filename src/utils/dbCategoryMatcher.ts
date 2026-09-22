@@ -741,7 +741,10 @@ FROM ${tName} AS ${tAlias}
 ORDER BY entity_id ASC;`;
 
   // 4. Update Target Table Query
-  const updateTargetCol = targetTable.newCategoryColumn || targetTable.categoryColumn || 'category';
+  const updateTargetCol =
+    targetTable.categoryColumn?.trim() ||
+    targetTable.newCategoryColumn?.trim() ||
+    'category';
   const targetColClean = `"${updateTargetCol}"`;
   const updateCaseLadder = sortedCategories.map((rule) => {
     // in UPDATE, reference table without alias if preferred or with target column
@@ -992,8 +995,16 @@ export function generateCategoryMismatchFixQueries(
 ): CategoryMismatchFixResult {
   const { targetTable, metricColumns, categories, ruleLogic } = config;
   const dialect = options.dialect || 'postgres';
+  // Target column priority:
+  // 1. Explicit targetColumn option passed
+  // 2. targetTable.categoryColumn configured in Category Rules
+  // 3. targetTable.newCategoryColumn
+  // 4. Default fallback 'current_category'
   const targetColName =
-    options.targetColumn || targetTable.newCategoryColumn || targetTable.categoryColumn || 'current_category';
+    options.targetColumn?.trim() ||
+    targetTable.categoryColumn?.trim() ||
+    targetTable.newCategoryColumn?.trim() ||
+    'current_category';
   const includeUnclassified = options.includeUnclassified !== false; // default true
   const transactionMode = options.transactionMode || 'commit';
   const includeReturning = options.includeReturning !== false;
