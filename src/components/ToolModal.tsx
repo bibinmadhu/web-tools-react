@@ -32,6 +32,7 @@ import { DbSelectQueryGeneratorTool } from './tools/DbSelectQueryGeneratorTool';
 import { DbCategoryMatcherTool } from './tools/DbCategoryMatcherTool';
 import { DbQueryBuilderTool } from './tools/DbQueryBuilderTool';
 import { DataGridConverterTool } from './tools/DataGridConverterTool';
+import { DataSetMatcherTool } from './tools/DataSetMatcherTool';
 import { GenericTool } from './tools/GenericTool';
 
 interface ToolModalProps {
@@ -97,6 +98,14 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return false;
       }
     }
+    if (tool.id === 'data-set-matcher') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_data_set_matcher');
+        return saved !== null ? saved === 'true' : false;
+      } catch (e) {
+        return false;
+      }
+    }
     return false;
   });
 
@@ -150,6 +159,13 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       } catch (e) {
         setIsFullScreen(false);
       }
+    } else if (tool?.id === 'data-set-matcher') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_data_set_matcher');
+        setIsFullScreen(saved !== null ? saved === 'true' : false);
+      } catch (e) {
+        setIsFullScreen(false);
+      }
     } else {
       setIsFullScreen(false);
     }
@@ -197,6 +213,12 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       } else if (tool?.id === 'data-grid-converter') {
         try {
           localStorage.setItem('devhub_fullscreen_data_grid', String(next));
+        } catch (e) {
+          // ignore
+        }
+      } else if (tool?.id === 'data-set-matcher') {
+        try {
+          localStorage.setItem('devhub_fullscreen_data_set_matcher', String(next));
         } catch (e) {
           // ignore
         }
@@ -306,6 +328,13 @@ export const ToolModal: React.FC<ToolModalProps> = ({
             onToggleFullScreen={handleToggleFullScreen}
           />
         );
+      case 'data-set-matcher':
+        return (
+          <DataSetMatcherTool
+            isFullScreen={isFullScreen}
+            onToggleFullScreen={handleToggleFullScreen}
+          />
+        );
       default:
         return <GenericTool tool={tool} />;
     }
@@ -327,6 +356,7 @@ export const ToolModal: React.FC<ToolModalProps> = ({
     'db-category-matcher',
     'db-query-builder',
     'data-grid-converter',
+    'data-set-matcher',
     'java-formatter',
     'multi-obfuscator',
     'qr-generator'

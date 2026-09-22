@@ -134,6 +134,17 @@ import {
   validateAndParseDbQueryBuilderConfig,
   QUERY_BUILDER_PRESETS,
 } from './dbQueryBuilder';
+import {
+  matchDataSets,
+  generateReconciliationSql,
+  exportDiffToCsv,
+  exportDiffToMarkdown,
+  parseDelimitedText,
+  toCanonicalHeaderKey,
+  areValuesEqual,
+  DEFAULT_DATA_SET_MATCHER_CONFIG,
+  SAMPLE_DATASETS,
+} from './dataSetMatcher';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -2633,6 +2644,103 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     // Invalid JSON
     const bad = validateAndParseDbQueryBuilderConfig('{ bad json }');
     assertTrue(!bad.success, 'Should reject malformed JSON');
+  });
+
+  // =========================================================================
+  // DATA SET MATCHER & COMPARATOR TESTS
+  // =========================================================================
+  test('Data Set Matcher', 'Delimited Parsing & Header Canonicalization', () => {
+    // CSV
+    const csv = `id,name,role\n1,"Alice, Jr",Admin\n2,Bob,Dev`;
+    const parsedCsv = parseDelimitedText(csv, 'comma');
+    assertEqual(parsedCsv.headers.length, 3, 'CSV should have 3 headers');
+    assertEqual(parsedCsv.rows.length, 2, 'CSV should have 2 rows');
+    assertEqual(parsedCsv.rows[0][1], 'Alice, Jr', 'Quoted comma should be preserved');
+
+    // TSV
+    const tsv = `id\tname\trole\n1\tAlice\tAdmin`;
+    const parsedTsv = parseDelimitedText(tsv, 'tab');
+    assertEqual(parsedTsv.headers.length, 3, 'TSV should have 3 headers');
+    assertEqual(parsedTsv.rows.length, 1, 'TSV should have 1 row');
+
+    // Space-separated
+    const space = `id name role\n101 Alice Admin\n102 Bob Dev`;
+    const parsedSpace = parseDelimitedText(space, 'space');
+    assertEqual(parsedSpace.headers.length, 3, 'Space-separated should have 3 headers');
+    assertEqual(parsedSpace.rows.length, 2, 'Space-separated should have 2 rows');
+
+    // Canonical Header key
+    assertEqual(toCanonicalHeaderKey('Customer_ID', false, true), 'customerid', 'Canonical header should strip underscores & lowercase');
+    assertEqual(toCanonicalHeaderKey('First Name', false, true), 'firstname', 'Canonical header should strip spaces');
+  });
+
+  test('Data Set Matcher', 'Scrambled Headers & Matching Engine', () => {
+    // Set A has headers: id, name, status, amount
+    const setA = `id,name,status,amount\n101,Alice,ACTIVE,100.00\n102,Bob,PENDING,50.0\n103,Carol,ACTIVE,75.00`;
+    // Set B has headers scrambled: amount, id, role, status, name
+    // 101: identical (with numeric/case tolerance)
+    // 102: status mismatch ('SUSPENDED' vs 'PENDING')
+    // 104: only in B
+    // 103 is missing in B (only in A)
+    const setB = `amount\tid\trole\tstatus\tname\n100\t101\tAdmin\tactive\tAlice\n50.00\t102\tDev\tSUSPENDED\tBob\n200.00\t104\tManager\tACTIVE\tDavid`;
+
+    const result = matchDataSets(setA, setB, {
+      ...DEFAULT_DATA_SET_MATCHER_CONFIG,
+      keyColumns: ['id'],
+      ignoreValueCase: true,
+      numericTolerance: true,
+    });
+
+    assertEqual(result.summary.totalRecordsEvaluated, 4, 'Should evaluate 4 unique keys: 101, 102, 103, 104');
+    assertEqual(result.summary.exactMatches, 1, 'Key 101 should be an exact match (with case & numeric tolerance)');
+    assertEqual(result.summary.valueMismatches, 1, 'Key 102 should be a value mismatch');
+    assertEqual(result.summary.onlyInA, 1, 'Key 103 should be only in Set A');
+    assertEqual(result.summary.onlyInB, 1, 'Key 104 should be only in Set B');
+
+    // Check common columns vs extra columns
+    assertTrue(result.commonColumns.includes('id'), 'id should be common');
+    assertTrue(result.commonColumns.includes('name'), 'name should be common');
+    assertTrue(result.commonColumns.includes('status'), 'status should be common');
+    assertTrue(result.commonColumns.includes('amount'), 'amount should be common');
+    assertTrue(result.onlyInBColumns.includes('role'), 'role should be recognized as only in B');
+  });
+
+  test('Data Set Matcher', 'Tolerance & Normalization Rules', () => {
+    // Numeric tolerance
+    const eqNum = areValuesEqual('150.00', '150.0', { ...DEFAULT_DATA_SET_MATCHER_CONFIG, numericTolerance: true });
+    assertTrue(eqNum.isEqual, '150.00 and 150.0 should be equal under numeric tolerance');
+
+    // Case insensitive
+    const eqCase = areValuesEqual('DELIVERED', 'delivered', { ...DEFAULT_DATA_SET_MATCHER_CONFIG, ignoreValueCase: true });
+    assertTrue(eqCase.isEqual, 'DELIVERED and delivered should be equal under case insensitivity');
+
+    // Date normalization
+    const eqDate = areValuesEqual('24/10/2023', '2023-10-24', { ...DEFAULT_DATA_SET_MATCHER_CONFIG, normalizeDates: true });
+    assertTrue(eqDate.isEqual, '24/10/2023 and 2023-10-24 should be normalized to equal dates');
+
+    // Null and empty equivalence
+    const eqNull = areValuesEqual('', 'NULL', { ...DEFAULT_DATA_SET_MATCHER_CONFIG, treatNullAndEmptyAsEqual: true });
+    assertTrue(eqNull.isEqual, 'Empty string and NULL should be treated as equal');
+  });
+
+  test('Data Set Matcher', 'SQL Reconciliation & Export Generation', () => {
+    const setA = SAMPLE_DATASETS.ecommerce.dataA;
+    const setB = SAMPLE_DATASETS.ecommerce.dataB;
+    const result = matchDataSets(setA, setB, DEFAULT_DATA_SET_MATCHER_CONFIG);
+
+    // SQL Generation
+    const sql = generateReconciliationSql(result, 'customer_orders', 'update_b_to_match_a');
+    assertTrue(sql.includes('UPDATE customer_orders'), 'SQL should contain UPDATE statements');
+    assertTrue(sql.includes('BEGIN;') && sql.includes('COMMIT;'), 'SQL should be wrapped in transaction');
+
+    // CSV Diff Export
+    const csvDiff = exportDiffToCsv(result);
+    assertTrue(csvDiff.includes('Status,Key,Row_in_A,Row_in_B'), 'CSV Diff should contain header columns');
+
+    // Markdown Report
+    const md = exportDiffToMarkdown(result);
+    assertTrue(md.includes('### Data Comparison Summary'), 'Markdown should have summary title');
+    assertTrue(md.includes('| Status | Key |'), 'Markdown should have comparison table');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;

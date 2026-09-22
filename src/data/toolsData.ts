@@ -321,4 +321,14 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'database',
     isPopular: true,
   },
+  {
+    id: 'data-set-matcher',
+    name: 'Data Set Matcher & Comparator',
+    description: 'Match and compare two sets of CSV, TSV, or space-separated data with reordered headers, missing columns, single/composite key alignment, cell-level discrepancy highlighting, and automated SQL reconciliation generators.',
+    category: 'testing',
+    tags: ['Testing', 'Data Matcher', 'CSV', 'TSV', 'Space Separated', 'Tab Separated', 'Diff', 'Comparator', 'SQL Reconciliation', 'Headers'],
+    iconText: 'DIFF',
+    iconType: 'table',
+    isPopular: true,
+  },
 ];
