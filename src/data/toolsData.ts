@@ -301,4 +301,14 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'table',
     isPopular: true,
   },
+  {
+    id: 'db-category-matcher',
+    name: 'Database Category Matcher',
+    description: 'Match and validate business entity categories (Micro SME, SME, Small Midcap, etc.) using configurable multi-condition AND/OR rules, PostgreSQL discrepancy queries, and pg8000 Python scripts with import/export support',
+    category: 'testing',
+    tags: ['Testing', 'Database', 'PostgreSQL', 'Category Matcher', 'SME', 'pg8000', 'Python', 'Validation', 'Rules Engine', 'SQL'],
+    iconText: 'CAT',
+    iconType: 'database',
+    isPopular: true,
+  },
 ];

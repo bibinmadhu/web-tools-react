@@ -29,6 +29,7 @@ import { CurlChainConverterTool } from './tools/CurlChainConverterTool';
 import { CurlDbChainConverterTool } from './tools/CurlDbChainConverterTool';
 import { DbUpdateQueryGeneratorTool } from './tools/DbUpdateQueryGeneratorTool';
 import { DbSelectQueryGeneratorTool } from './tools/DbSelectQueryGeneratorTool';
+import { DbCategoryMatcherTool } from './tools/DbCategoryMatcherTool';
 import { DataGridConverterTool } from './tools/DataGridConverterTool';
 import { GenericTool } from './tools/GenericTool';
 
@@ -79,6 +80,14 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return false;
       }
     }
+    if (tool.id === 'db-category-matcher') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_db_category_matcher');
+        return saved !== null ? saved === 'true' : false;
+      } catch (e) {
+        return false;
+      }
+    }
     return false;
   });
 
@@ -107,6 +116,13 @@ export const ToolModal: React.FC<ToolModalProps> = ({
     } else if (tool?.id === 'db-select-query-generator') {
       try {
         const saved = localStorage.getItem('devhub_fullscreen_db_select');
+        setIsFullScreen(saved !== null ? saved === 'true' : false);
+      } catch (e) {
+        setIsFullScreen(false);
+      }
+    } else if (tool?.id === 'db-category-matcher') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_db_category_matcher');
         setIsFullScreen(saved !== null ? saved === 'true' : false);
       } catch (e) {
         setIsFullScreen(false);
@@ -147,6 +163,12 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       } else if (tool?.id === 'db-select-query-generator') {
         try {
           localStorage.setItem('devhub_fullscreen_db_select', String(next));
+        } catch (e) {
+          // ignore
+        }
+      } else if (tool?.id === 'db-category-matcher') {
+        try {
+          localStorage.setItem('devhub_fullscreen_db_category_matcher', String(next));
         } catch (e) {
           // ignore
         }
@@ -241,6 +263,13 @@ export const ToolModal: React.FC<ToolModalProps> = ({
             onToggleFullScreen={handleToggleFullScreen}
           />
         );
+      case 'db-category-matcher':
+        return (
+          <DbCategoryMatcherTool
+            isFullScreen={isFullScreen}
+            onToggleFullScreen={handleToggleFullScreen}
+          />
+        );
       case 'data-grid-converter':
         return (
           <DataGridConverterTool
@@ -266,6 +295,7 @@ export const ToolModal: React.FC<ToolModalProps> = ({
     'curl-db-chain-to-python',
     'db-update-query-generator',
     'db-select-query-generator',
+    'db-category-matcher',
     'data-grid-converter',
     'java-formatter',
     'multi-obfuscator',

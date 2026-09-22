@@ -493,8 +493,13 @@ export function calculateColumnStats(grid: DataGridModel, columnIndex: number): 
         }
       }
 
-      // Check date
-      if (!isNaN(Date.parse(val)) && !/^\d+$/.test(val)) {
+      // Check date (including ISO format and DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY)
+      const isDateCandidate = (v: string): boolean => {
+        if (!isNaN(Date.parse(v)) && !/^\d+$/.test(v)) return true;
+        if (/^\d{1,2}[-/.]\d{1,2}[-/.](\d{4}|\d{2})/.test(v.trim())) return true;
+        return false;
+      };
+      if (isDateCandidate(val)) {
         dateCount++;
       }
     }

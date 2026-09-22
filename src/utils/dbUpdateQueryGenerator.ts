@@ -105,6 +105,131 @@ export function sanitizeIdentifier(identifier: string): string {
 }
 
 /**
+ * Detects if a date string is in non-ISO format (e.g. DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, MM/DD/YYYY)
+ */
+export function isNonIsoDateFormat(rawVal: string | undefined | null): boolean {
+  if (!rawVal) return false;
+  const trimmed = rawVal.trim().replace(/^['"]|['"]$/g, '').trim();
+  // e.g. "24/10/2023", "24-10-2023", "24.10.2023", "24/10/23"
+  return /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})/.test(trimmed);
+}
+
+/**
+ * Normalizes a date string to standard ISO 'YYYY-MM-DD' for PostgreSQL.
+ * Seamlessly handles DD/MM/YYYY (e.g., '24/10/2023'), DD-MM-YYYY, DD.MM.YYYY,
+ * MM/DD/YYYY (when day > 12), 2-digit years, and strings with timestamps.
+ */
+export function normalizePostgresDate(rawVal: string): string {
+  if (!rawVal) return rawVal;
+  const trimmed = rawVal.trim().replace(/^['"]|['"]$/g, '').trim();
+  if (!trimmed) return trimmed;
+
+  const upper = trimmed.toUpperCase();
+  if (
+    upper === 'NULL' ||
+    upper === 'NOW()' ||
+    upper === 'CURRENT_DATE' ||
+    upper === 'CURRENT_TIMESTAMP' ||
+    upper === 'DEFAULT'
+  ) {
+    return trimmed;
+  }
+
+  // Split date and time (if any)
+  const parts = trimmed.split(/[ T]+/);
+  const datePart = parts[0];
+
+  const parsed = parseDateParts(datePart);
+  if (!parsed) {
+    return trimmed;
+  }
+
+  return `${parsed.year}-${parsed.month.padStart(2, '0')}-${parsed.day.padStart(2, '0')}`;
+}
+
+/**
+ * Normalizes a timestamp string to standard ISO 'YYYY-MM-DD HH:MM:SS' for PostgreSQL.
+ * Converts date components like '24/10/2023' to '2023-10-24' and preserves or defaults time components.
+ */
+export function normalizePostgresTimestamp(rawVal: string): string {
+  if (!rawVal) return rawVal;
+  const trimmed = rawVal.trim().replace(/^['"]|['"]$/g, '').trim();
+  if (!trimmed) return trimmed;
+
+  const upper = trimmed.toUpperCase();
+  if (
+    upper === 'NULL' ||
+    upper === 'NOW()' ||
+    upper === 'CURRENT_DATE' ||
+    upper === 'CURRENT_TIMESTAMP' ||
+    upper === 'DEFAULT'
+  ) {
+    return trimmed;
+  }
+
+  const parts = trimmed.split(/[ T]+/);
+  const datePart = parts[0];
+  const timePart = parts.length > 1 ? parts.slice(1).join(' ') : '';
+
+  const parsed = parseDateParts(datePart);
+  if (!parsed) {
+    return trimmed;
+  }
+
+  const isoDate = `${parsed.year}-${parsed.month.padStart(2, '0')}-${parsed.day.padStart(2, '0')}`;
+  if (!timePart) {
+    return `${isoDate} 00:00:00`;
+  }
+
+  let cleanTime = timePart;
+  if (/^\d{1,2}:\d{2}$/.test(cleanTime)) {
+    cleanTime = `${cleanTime}:00`;
+  }
+  return `${isoDate} ${cleanTime}`;
+}
+
+function parseDateParts(dateStr: string): { year: string; month: string; day: string } | null {
+  // Pattern 1: YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD
+  const ymdMatch = dateStr.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (ymdMatch) {
+    return {
+      year: ymdMatch[1],
+      month: ymdMatch[2],
+      day: ymdMatch[3],
+    };
+  }
+
+  // Pattern 2: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, or with 2-digit year (e.g. 24/10/2023, 24/10/23)
+  const dmyMatch = dateStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})$/);
+  if (dmyMatch) {
+    const p1 = parseInt(dmyMatch[1], 10);
+    const p2 = parseInt(dmyMatch[2], 10);
+    let yearNum = parseInt(dmyMatch[3], 10);
+
+    // Expand 2-digit year (e.g., 23 -> 2023, 99 -> 1999)
+    if (yearNum < 100) {
+      yearNum = yearNum >= 70 ? 1900 + yearNum : 2000 + yearNum;
+    }
+
+    let day = p1;
+    let month = p2;
+    // If second part > 12 and first part <= 12, it is MM/DD/YYYY (e.g. 10/24/2023)
+    if (p2 > 12 && p1 <= 12) {
+      day = p2;
+      month = p1;
+    }
+
+    return {
+      year: String(yearNum),
+      month: String(month),
+      day: String(day),
+    };
+  }
+
+  return null;
+}
+
+/**
  * Formats a value according to its PostgreSQL column data type
  */
 export function formatPostgresValue(
@@ -155,12 +280,22 @@ export function formatPostgresValue(
     }
 
     case 'timestamp': {
-      const escaped = val.replace(/'/g, "''");
+      const upper = val.toUpperCase();
+      if (upper === 'NOW()' || upper === 'CURRENT_TIMESTAMP' || upper === 'DEFAULT') {
+        return val;
+      }
+      const normalized = normalizePostgresTimestamp(val);
+      const escaped = normalized.replace(/'/g, "''");
       return `'${escaped}'::timestamp`;
     }
 
     case 'date': {
-      const escaped = val.replace(/'/g, "''");
+      const upper = val.toUpperCase();
+      if (upper === 'CURRENT_DATE' || upper === 'NOW()' || upper === 'DEFAULT') {
+        return val;
+      }
+      const normalized = normalizePostgresDate(val);
+      const escaped = normalized.replace(/'/g, "''");
       return `'${escaped}'::date`;
     }
 
@@ -271,10 +406,28 @@ export function inferColumnType(values: string[]): ColumnType {
   );
   if (allUuid) return 'uuid';
 
-  // Check Date/Timestamp (ISO format)
-  const allTimestamp = nonEmpties.every((v) =>
-    /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?/.test(v)
-  );
+  // Check Date/Timestamp (ISO format and DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, etc.)
+  const isDateOrTimestampStr = (v: string) => {
+    const trimmed = v.trim().replace(/^['"]|['"]$/g, '').trim();
+    if (
+      trimmed.toUpperCase() === 'NOW()' ||
+      trimmed.toUpperCase() === 'CURRENT_DATE' ||
+      trimmed.toUpperCase() === 'CURRENT_TIMESTAMP'
+    ) {
+      return true;
+    }
+    // ISO format: YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD
+    if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?)?/.test(trimmed)) {
+      return true;
+    }
+    // DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY or 2-digit year (e.g. 24/10/2023, 24/10/23)
+    if (/^\d{1,2}[-/.]\d{1,2}[-/.](\d{4}|\d{2})([ T]\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?)?/.test(trimmed)) {
+      return true;
+    }
+    return false;
+  };
+
+  const allTimestamp = nonEmpties.every(isDateOrTimestampStr);
   if (allTimestamp) {
     const hasTime = nonEmpties.some((v) => v.includes(':'));
     return hasTime ? 'timestamp' : 'date';
@@ -440,6 +593,29 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
         `Found duplicate match key(s) in "${listMatchCols[0].name}": ${Array.from(duplicates).slice(0, 5).join(', ')}${duplicates.size > 5 ? '...' : ''}. In batch updates, duplicate keys will overwrite each other.`
       );
     }
+  }
+
+  // Check for non-ISO date formats (e.g. DD/MM/YYYY) and notify user of safe conversion
+  const convertedDateCols: string[] = [];
+  matchCols.forEach((col) => {
+    if (col.type === 'date' || col.type === 'timestamp') {
+      const vals = col.valueMode === 'single' ? [col.singleValue || ''] : col.values;
+      if (vals.some((v) => isNonIsoDateFormat(v))) {
+        convertedDateCols.push(col.name);
+      }
+    }
+  });
+  updateCols.forEach((col) => {
+    if (col.type === 'date' || col.type === 'timestamp') {
+      if (col.values.some((v) => isNonIsoDateFormat(v))) {
+        convertedDateCols.push(col.name);
+      }
+    }
+  });
+  if (convertedDateCols.length > 0) {
+    warnings.push(
+      `Detected DD/MM/YYYY date format in column(s) ${convertedDateCols.map((c) => `"${c}"`).join(', ')}. Values (e.g. "24/10/2023") have been safely converted to standard PostgreSQL ISO format ("2023-10-24") to prevent "date/time field value out of range" errors.`
+    );
   }
 
   let generatedSql = '';
@@ -1074,6 +1250,45 @@ export const DB_UPDATE_PRESETS: DbUpdatePreset[] = [
         name: 'expires_at',
         type: 'date',
         values: ['2027-12-31', '2027-06-30', '2027-09-30'],
+      },
+    ],
+  },
+  {
+    id: 'customer-subscriptions-dates',
+    name: 'Subscription Renewal & Effective Dates (DD/MM/YYYY Format)',
+    description: 'Bulk update customer subscription renewals using DD/MM/YYYY dates (e.g. 24/10/2023) safely converted to PostgreSQL ISO format',
+    tableName: 'customer_subscriptions',
+    executionMode: 'batch',
+    strategy: 'batch_values',
+    transactionMode: 'commit',
+    returningClause: 'subscription_id, plan_code, effective_date, next_billing_date',
+    matchColumns: [
+      {
+        id: 'match-sub-id',
+        name: 'subscription_id',
+        type: 'text',
+        valueMode: 'list',
+        values: ['SUB-2001', 'SUB-2002', 'SUB-2003', 'SUB-2004'],
+      },
+    ],
+    updateColumns: [
+      {
+        id: 'upd-plan-code',
+        name: 'plan_code',
+        type: 'text',
+        values: ['PREMIUM_ANNUAL', 'GROWTH_MONTHLY', 'ENTERPRISE_ANNUAL', 'STARTER_MONTHLY'],
+      },
+      {
+        id: 'upd-effective-date',
+        name: 'effective_date',
+        type: 'date',
+        values: ['24/10/2023', '05/11/2023', '15/12/2023', '01/01/2024'],
+      },
+      {
+        id: 'upd-billing-date',
+        name: 'next_billing_date',
+        type: 'date',
+        values: ['24/10/2024', '05/12/2023', '15/12/2024', '01/02/2024'],
       },
     ],
   },

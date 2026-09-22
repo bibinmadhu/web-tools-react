@@ -113,6 +113,17 @@ import {
   exportDataGrid,
   DATA_GRID_PRESETS,
 } from './dataGridConverter';
+import {
+  DEFAULT_MATCHER_CONFIG,
+  DEFAULT_SAMPLE_ROWS,
+  evaluateLocalRow,
+  generatePostgresCategoryQueries,
+  generatePg8000PythonScript,
+  parseCategoryMetadataInput,
+  createMatcherConfigExport,
+  validateAndParseMatcherConfig,
+  CATEGORY_MATCHER_PRESETS,
+} from './dbCategoryMatcher';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -1624,9 +1635,18 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     const boolVal = formatPostgresValue("true", 'boolean', false);
     assertTrue(boolVal === 'TRUE', `Expected TRUE, got ${boolVal}`);
 
-    // Date & Timestamp
+    // Date & Timestamp (ISO and DD/MM/YYYY formats)
     const tsVal = formatPostgresValue("2026-09-18 10:00:00", 'timestamp', false);
     assertTrue(tsVal === "'2026-09-18 10:00:00'::timestamp", `Expected timestamp cast, got ${tsVal}`);
+
+    const dateDdmmyyyy = formatPostgresValue("24/10/2023", 'date', false);
+    assertTrue(dateDdmmyyyy === "'2023-10-24'::date", `Expected '2023-10-24'::date, got ${dateDdmmyyyy}`);
+
+    const tsDdmmyyyy = formatPostgresValue("24/10/2023 15:30:00", 'timestamp', false);
+    assertTrue(tsDdmmyyyy === "'2023-10-24 15:30:00'::timestamp", `Expected '2023-10-24 15:30:00'::timestamp, got ${tsDdmmyyyy}`);
+
+    const dateDashedDdmmyyyy = formatPostgresValue("24-10-2023", 'date', false);
+    assertTrue(dateDashedDdmmyyyy === "'2023-10-24'::date", `Expected '2023-10-24'::date, got ${dateDashedDdmmyyyy}`);
 
     // Null
     const nullVal = formatPostgresValue("NULL", 'text', false);
@@ -1648,6 +1668,29 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
 
     const inferredBool = inferColumnType(['true', 'false', 'true']);
     assertTrue(inferredBool === 'boolean', `Expected boolean, got ${inferredBool}`);
+
+    const inferredDate = inferColumnType(['24/10/2023', '05/11/2023', '15/12/2023']);
+    assertTrue(inferredDate === 'date', `Expected date for DD/MM/YYYY, got ${inferredDate}`);
+  });
+
+  test('Database Update Query Generator', 'Handles DD/MM/YYYY Dates without Range Errors', () => {
+    const result = generatePostgresUpdateQuery({
+      tableName: 'customer_subscriptions',
+      matchColumns: [
+        { id: 'm1', name: 'id', type: 'integer', values: ['101', '102'], valueMode: 'list' },
+      ],
+      updateColumns: [
+        { id: 'u1', name: 'renewal_date', type: 'date', values: ['24/10/2023', '05/11/2023'] },
+      ],
+      strategy: 'batch_values',
+      executionMode: 'batch',
+      transactionMode: 'none',
+    });
+
+    assertTrue(result.sql.includes("'2023-10-24'::date"), 'Must convert 24/10/2023 to 2023-10-24::date');
+    assertTrue(result.sql.includes("'2023-11-05'"), 'Must convert 05/11/2023 to 2023-11-05');
+    assertTrue(!result.sql.includes('24/10/2023'), 'Must NOT contain unconverted 24/10/2023');
+    assertTrue(result.warnings.some((w) => w.includes('DD/MM/YYYY')), 'Must emit warning about DD/MM/YYYY conversion');
   });
 
   test('Database Update Query Generator', 'Multiple Match Columns with Single-Value and List-Value Modes', () => {
@@ -1839,6 +1882,32 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
 
     assertTrue(tupleIn.sql.includes('(o.store_id, o.sku) IN ('), 'Should use tuple IN for multiple list match columns');
     assertTrue(tupleIn.sql.includes("('east', 'SKU-1')"), 'Should format tuple values');
+  });
+
+  test('Database Select Query Generator', 'Handles DD/MM/YYYY Dates in Match Columns without Range Errors', () => {
+    const dateSelect = generatePostgresSelectQuery({
+      tableName: 'customer_orders',
+      tableAlias: 'o',
+      matchColumns: [
+        {
+          id: 'm1',
+          name: 'order_date',
+          type: 'date',
+          valueMode: 'list',
+          singleValue: '',
+          values: ['24/10/2023', '05/11/2023'],
+        },
+      ],
+      selectColumns: [{ id: 's1', name: '*' }],
+      selectAllColumns: true,
+      strategy: 'in_clause',
+      executionMode: 'batch',
+    });
+
+    assertTrue(dateSelect.sql.includes("'2023-10-24'::date"), 'Must convert 24/10/2023 to 2023-10-24::date in IN clause');
+    assertTrue(dateSelect.sql.includes("'2023-11-05'::date"), 'Must convert 05/11/2023 to 2023-11-05::date');
+    assertTrue(!dateSelect.sql.includes('24/10/2023'), 'Must NOT contain unconverted 24/10/2023');
+    assertTrue(dateSelect.warnings.some((w) => w.includes('DD/MM/YYYY')), 'Must emit warning about DD/MM/YYYY conversion');
   });
 
   test('Database Select Query Generator', 'CTE and Individual Statements and UNION ALL', () => {
@@ -2366,6 +2435,118 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     // ASCII Box
     const asciiExport = exportDataGrid(grid, 'ascii');
     assertTrue(asciiExport.includes('+'), 'ASCII export should render bordered box grid');
+  });
+
+  // =========================================================================
+  // DATABASE CATEGORY MATCHER TESTS
+  // =========================================================================
+  test('Category Matcher', 'SME Compound Rule Logic Evaluation', () => {
+    const config = DEFAULT_MATCHER_CONFIG;
+
+    // Micro SME: <=9 employees AND (turnover <= 2M OR balance <= 2M)
+    const microSmeRow = {
+      id: '1',
+      name: 'Micro Test Co',
+      recordedCategory: 'Micro SME',
+      metrics: {
+        no_of_employees: 6,
+        annual_turnover: 1500000,
+        balance_sheet: 1800000,
+      },
+    };
+    const resMicro = evaluateLocalRow(microSmeRow, config.metricColumns, config.categories, config.ruleLogic);
+    assertEqual(resMicro.expectedCategory, 'Micro SME', 'Should evaluate to Micro SME');
+    assertEqual(resMicro.status, 'MATCH', 'Should report status as MATCH');
+
+    // Mismatched Row: in DB recorded as Micro SME, but employees is 15 -> should be SME
+    const mismatchRow = {
+      id: '2',
+      name: 'Growing Tech Ltd',
+      recordedCategory: 'Micro SME',
+      metrics: {
+        no_of_employees: 15,
+        annual_turnover: 4000000,
+        balance_sheet: 3000000,
+      },
+    };
+    const resMismatch = evaluateLocalRow(mismatchRow, config.metricColumns, config.categories, config.ruleLogic);
+    assertEqual(resMismatch.expectedCategory, 'SME', 'Expected category should be SME');
+    assertEqual(resMismatch.status, 'MISMATCH', 'Should detect category mismatch');
+
+    // Small Midcap: <=499 employees, turnover & balance unbounded
+    const midcapRow = {
+      id: '3',
+      name: 'Midcap Industrial',
+      recordedCategory: 'Small Midcap',
+      metrics: {
+        no_of_employees: 350,
+        annual_turnover: 120000000,
+        balance_sheet: 95000000,
+      },
+    };
+    const resMidcap = evaluateLocalRow(midcapRow, config.metricColumns, config.categories, config.ruleLogic);
+    assertEqual(resMidcap.expectedCategory, 'Small Midcap', 'Should classify as Small Midcap');
+
+    // Fallback: > 499 employees
+    const largeRow = {
+      id: '4',
+      name: 'Global Conglomerate',
+      recordedCategory: 'Large Enterprise',
+      metrics: {
+        no_of_employees: 1200,
+        annual_turnover: 500000000,
+        balance_sheet: 400000000,
+      },
+    };
+    const resLarge = evaluateLocalRow(largeRow, config.metricColumns, config.categories, config.ruleLogic);
+    assertEqual(resLarge.expectedCategory, 'Large Enterprise', 'Should fallback to Large Enterprise');
+  });
+
+  test('Category Matcher', 'Metadata TSV/CSV Parser', () => {
+    const rawInput = `1\t"Micro SME"\t9\t2000000\t2000000
+2\t"SME"\t249\t50000000\t43000000
+3\t"Small Midcap"\t499`;
+
+    const parsed = parseCategoryMetadataInput(rawInput, DEFAULT_MATCHER_CONFIG.metricColumns);
+    assertEqual(parsed.categories.length, 3, 'Should parse 3 category rules');
+    assertEqual(parsed.categories[0].categoryName, 'Micro SME', 'First category should be Micro SME');
+    assertEqual(parsed.categories[0].criteria.no_of_employees.value, '9', 'Micro SME employees threshold should be 9');
+    assertEqual(parsed.categories[1].categoryName, 'SME', 'Second category should be SME');
+    assertEqual(parsed.categories[1].criteria.no_of_employees.value, '249', 'SME employees threshold should be 249');
+    assertEqual(parsed.categories[2].categoryName, 'Small Midcap', 'Third category should be Small Midcap');
+    assertEqual(parsed.categories[2].criteria.no_of_employees.value, '499', 'Small Midcap employees threshold should be 499');
+    assertEqual(parsed.categories[2].criteria.annual_turnover.value, '', 'Small Midcap turnover should be empty/unbounded');
+  });
+
+  test('Category Matcher', 'PostgreSQL Queries & pg8000 Script Generation', () => {
+    const queries = generatePostgresCategoryQueries(DEFAULT_MATCHER_CONFIG);
+    assertTrue(queries.discrepancySelectQuery.includes('SELECT'), 'Discrepancy query should contain SELECT');
+    assertTrue(queries.discrepancySelectQuery.includes('CASE'), 'Discrepancy query should contain CASE statement');
+    assertTrue(queries.discrepancySelectQuery.includes('WHERE'), 'Discrepancy query should filter mismatches');
+    assertTrue(queries.classificationSelectQuery.includes('expected_category'), 'Classification query should project expected_category');
+    assertTrue(queries.updateTargetTableQuery.includes('UPDATE business_entities'), 'Update query should target business_entities table');
+    assertTrue(queries.createPostgresViewQuery.includes('CREATE OR REPLACE VIEW'), 'View query should create or replace view');
+    assertTrue(queries.cteRulesJoinQuery.includes('category_rules AS'), 'CTE query should define category_rules CTE');
+
+    const pythonScript = generatePg8000PythonScript(DEFAULT_MATCHER_CONFIG);
+    assertTrue(pythonScript.includes('import pg8000.native'), 'Python script should import pg8000.native');
+    assertTrue(pythonScript.includes('def validate_categories'), 'Python script should define validate_categories');
+    assertTrue(pythonScript.includes('argparse.ArgumentParser'), 'Python script should have CLI argument parser');
+  });
+
+  test('Category Matcher', 'Configuration Export & Import Validation', () => {
+    const exportedJson = createMatcherConfigExport(DEFAULT_MATCHER_CONFIG);
+    assertTrue(typeof exportedJson === 'string', 'Export should return string');
+    assertTrue(exportedJson.includes('"targetTable"'), 'Export should include targetTable');
+
+    const parseResult = validateAndParseMatcherConfig(exportedJson);
+    assertTrue(parseResult.success, 'Parsing valid export should succeed');
+    assertEqual(parseResult.config?.categories.length, DEFAULT_MATCHER_CONFIG.categories.length, 'Category count should match');
+
+    // Invalid JSON test
+    const invalidResult = validateAndParseMatcherConfig('{ invalid: json');
+    assertTrue(!invalidResult.success, 'Invalid JSON should return failure');
+    assertTrue(invalidResult.error !== undefined, 'Invalid JSON should have error message');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
