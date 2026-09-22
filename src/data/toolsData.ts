@@ -311,4 +311,14 @@ export const TOOLS_DATA: DevTool[] = [
     iconType: 'database',
     isPopular: true,
   },
+  {
+    id: 'db-query-builder',
+    name: 'Database Query Builder (Single & List Conditions)',
+    description: 'Build PostgreSQL queries with single conditions and bulk list conditions pasted directly from Excel/spreadsheets. Includes auto date/time normalization, CTE joins, pg8000 Python scripts, and configuration import/export.',
+    category: 'testing',
+    tags: ['Testing', 'Database', 'PostgreSQL', 'Query Builder', 'Excel', 'Spreadsheet', 'List Conditions', 'Date Conversion', 'SQL', 'pg8000', 'Import/Export'],
+    iconText: 'SQL',
+    iconType: 'database',
+    isPopular: true,
+  },
 ];

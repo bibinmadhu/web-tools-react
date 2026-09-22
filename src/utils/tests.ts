@@ -124,6 +124,16 @@ import {
   validateAndParseMatcherConfig,
   CATEGORY_MATCHER_PRESETS,
 } from './dbCategoryMatcher';
+import {
+  DEFAULT_QUERY_BUILDER_CONFIG,
+  generatePostgresQueries,
+  parseExcelListInput,
+  normalizePostgresDate,
+  formatSqlValue,
+  createDbQueryBuilderExport,
+  validateAndParseDbQueryBuilderConfig,
+  QUERY_BUILDER_PRESETS,
+} from './dbQueryBuilder';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -2547,6 +2557,82 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     const invalidResult = validateAndParseMatcherConfig('{ invalid: json');
     assertTrue(!invalidResult.success, 'Invalid JSON should return failure');
     assertTrue(invalidResult.error !== undefined, 'Invalid JSON should have error message');
+  });
+
+  // =========================================================================
+  // DATABASE QUERY BUILDER TESTS (SINGLE & LIST CONDITIONS)
+  // =========================================================================
+  test('Database Query Builder', 'Date & Time Normalization for PostgreSQL', () => {
+    // DD/MM/YYYY
+    const dmy = normalizePostgresDate('24/10/2023');
+    assertEqual(dmy.normalized, '2023-10-24', 'DD/MM/YYYY should convert to ISO YYYY-MM-DD');
+    assertEqual(dmy.isTimestamp, false, 'Should be date not timestamp');
+
+    // DD-MM-YYYY with time
+    const dmyTime = normalizePostgresDate('24-10-2023 15:30:00');
+    assertEqual(dmyTime.normalized, '2023-10-24 15:30:00', 'Should convert to ISO timestamp');
+    assertEqual(dmyTime.isTimestamp, true, 'Should detect timestamp');
+
+    // formatSqlValue
+    const sqlDate = formatSqlValue('24/10/2023', 'date');
+    assertEqual(sqlDate, "'2023-10-24'::date", 'Should format valid date literal with cast');
+
+    const sqlTime = formatSqlValue('24/10/2023 15:30:00', 'timestamp');
+    assertEqual(sqlTime, "'2023-10-24 15:30:00'::timestamp", 'Should format valid timestamp literal');
+
+    // SQL Expression preservation
+    const kw = normalizePostgresDate("CURRENT_DATE - INTERVAL '7 days'");
+    assertTrue(kw.isKeyword, 'Should detect SQL date expression keyword');
+  });
+
+  test('Database Query Builder', 'Excel & Spreadsheet List Parser', () => {
+    // Excel column copy (newlines)
+    const excelCol = `1001\r\n1002\r\n1003\r\n1002\r\n1004`;
+    const parsedCol = parseExcelListInput(excelCol, { deduplicate: true });
+    assertEqual(parsedCol.count, 4, 'Should parse 4 unique items after deduplication');
+    assertEqual(parsedCol.duplicatesRemoved, 1, 'Should record 1 duplicate removed');
+    assertEqual(parsedCol.detectedType, 'integer', 'Should detect integer column type');
+
+    // Quoted strings from spreadsheet
+    const quoted = `"sarah@company.com"\n"david@company.com"\n"alex@company.com"`;
+    const parsedQuoted = parseExcelListInput(quoted, { trimQuotes: true });
+    assertEqual(parsedQuoted.count, 3, 'Should parse 3 emails');
+    assertEqual(parsedQuoted.values[0], 'sarah@company.com', 'Should strip double quotes');
+
+    // Tab-separated row copy
+    const tabRow = `alpha\tbeta\tgamma`;
+    const parsedTab = parseExcelListInput(tabRow, { delimiter: 'tab' });
+    assertEqual(parsedTab.count, 3, 'Should parse 3 tab-separated items');
+  });
+
+  test('Database Query Builder', 'PostgreSQL Query & CTE Generation', () => {
+    const bundle = generatePostgresQueries(DEFAULT_QUERY_BUILDER_CONFIG);
+    assertTrue(bundle.mainSql.includes('SELECT'), 'Main SQL should contain SELECT');
+    assertTrue(bundle.mainSql.includes('FROM customer_orders'), 'Should query customer_orders');
+    assertTrue(bundle.mainSql.includes("'2023-10-24'::date"), 'Should have converted date format in WHERE');
+    assertTrue(bundle.mainSql.includes('customer_id IN'), 'Should generate IN list condition');
+
+    // CTE Bulk Join
+    assertTrue(bundle.cteJoinSql.includes('WITH filter_values'), 'CTE query should declare filter_values CTE');
+    assertTrue(bundle.cteJoinSql.includes('JOIN filter_values'), 'CTE query should join filter_values');
+
+    // Python script with pg8000
+    assertTrue(bundle.pythonScript.includes('import pg8000.native'), 'Python script should import pg8000.native');
+    assertTrue(bundle.pythonScript.includes('def execute_query'), 'Python script should define execute_query');
+  });
+
+  test('Database Query Builder', 'Configuration Export & Import Roundtrip', () => {
+    const jsonStr = createDbQueryBuilderExport(DEFAULT_QUERY_BUILDER_CONFIG);
+    assertTrue(jsonStr.includes('customer_orders'), 'Exported JSON should include table name');
+
+    const res = validateAndParseDbQueryBuilderConfig(jsonStr);
+    assertTrue(res.success, 'Valid JSON should parse successfully');
+    assertEqual(res.config?.targetTable.tableName, 'customer_orders', 'Table name should match');
+    assertEqual(res.config?.singleConditions.length, DEFAULT_QUERY_BUILDER_CONFIG.singleConditions.length, 'Single conditions count match');
+
+    // Invalid JSON
+    const bad = validateAndParseDbQueryBuilderConfig('{ bad json }');
+    assertTrue(!bad.success, 'Should reject malformed JSON');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
