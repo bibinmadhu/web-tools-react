@@ -1017,31 +1017,52 @@ export function generateCategoryMismatchFixQueries(
   // 1. Dynamic Full-Table UPDATE Query
   const mismatchWhere = buildMismatchWhereClause(targetCol, caseWhenExpr, dialect, includeUnclassified);
   
-  let returningClause = '';
-  if (includeReturning) {
-    if (dialect === 'postgres' || dialect === 'sqlite') {
-      returningClause = `\nRETURNING ${idCol}, ${targetCol} AS new_category;`;
-    } else if (dialect === 'sqlserver') {
-      // In T-SQL, OUTPUT is placed before WHERE
-    } else if (dialect === 'mysql') {
-      returningClause = `\n-- Note: MySQL does not support RETURNING; inspect ROW_COUNT() or run the verification SELECT below.`;
-    }
-  }
-
   let updateCoreStmt = '';
-  if (dialect === 'sqlserver' && includeReturning) {
-    updateCoreStmt = `UPDATE ${tName}
+  if (dialect === 'sqlserver') {
+    if (includeReturning) {
+      updateCoreStmt = `UPDATE ${tName}
 SET ${targetCol} = 
 ${caseWhenExpr}
 OUTPUT inserted.${idCol}, inserted.${targetCol} AS new_category
 WHERE 
   ${mismatchWhere};`;
+    } else {
+      updateCoreStmt = `UPDATE ${tName}
+SET ${targetCol} = 
+${caseWhenExpr}
+WHERE 
+  ${mismatchWhere};`;
+    }
+  } else if (dialect === 'postgres' || dialect === 'sqlite') {
+    if (includeReturning) {
+      updateCoreStmt = `UPDATE ${tName}
+SET ${targetCol} = 
+${caseWhenExpr}
+WHERE 
+  ${mismatchWhere}
+RETURNING ${idCol}, ${targetCol} AS new_category;`;
+    } else {
+      updateCoreStmt = `UPDATE ${tName}
+SET ${targetCol} = 
+${caseWhenExpr}
+WHERE 
+  ${mismatchWhere};`;
+    }
+  } else if (dialect === 'mysql') {
+    const mysqlNote = includeReturning
+      ? `\n-- Note: MySQL does not support the RETURNING clause in UPDATE. Inspect ROW_COUNT() or execute the verification SELECT below.`
+      : '';
+    updateCoreStmt = `UPDATE ${tName}
+SET ${targetCol} = 
+${caseWhenExpr}
+WHERE 
+  ${mismatchWhere};${mysqlNote}`;
   } else {
     updateCoreStmt = `UPDATE ${tName}
 SET ${targetCol} = 
 ${caseWhenExpr}
 WHERE 
-  ${mismatchWhere};${returningClause}`;
+  ${mismatchWhere};`;
   }
 
   const dynamicFullTableUpdateSql = `-- ============================================================================
@@ -1077,11 +1098,20 @@ ${wrapTransaction(updateCoreStmt, transactionMode, dialect)}`;
     }
     accumulatedConditions.push(currentRuleCond);
 
+    const perCatReturning =
+      includeReturning && (dialect === 'postgres' || dialect === 'sqlite')
+        ? `\nRETURNING ${idCol}, ${targetCol} AS new_category`
+        : '';
+    const sqlServerOutput =
+      includeReturning && dialect === 'sqlserver'
+        ? `\nOUTPUT inserted.${idCol}, inserted.${targetCol} AS new_category`
+        : '';
+
     perCategoryStatements.push(`-- Priority ${rule.priority}: Fix records qualifying for '${rule.categoryName}'
 UPDATE ${tName}
-SET ${targetCol} = ${catLiteral}
+SET ${targetCol} = ${catLiteral}${sqlServerOutput}
 WHERE 
-  ${whereCond};`);
+  ${whereCond}${perCatReturning};`);
   });
 
   // Fallback category statement
@@ -1096,11 +1126,20 @@ WHERE
       fallbackWhere = `${targetCol} IS NOT ${fallbackStr}\n    AND ${allExclusions}`;
     }
 
+    const perCatReturning =
+      includeReturning && (dialect === 'postgres' || dialect === 'sqlite')
+        ? `\nRETURNING ${idCol}, ${targetCol} AS new_category`
+        : '';
+    const sqlServerOutput =
+      includeReturning && dialect === 'sqlserver'
+        ? `\nOUTPUT inserted.${idCol}, inserted.${targetCol} AS new_category`
+        : '';
+
     perCategoryStatements.push(`-- Priority ${sortedCategories.length + 1} (Default): Fix records qualifying for Fallback '${ruleLogic.fallbackCategory}'
 UPDATE ${tName}
-SET ${targetCol} = ${fallbackStr}
+SET ${targetCol} = ${fallbackStr}${sqlServerOutput}
 WHERE 
-  ${fallbackWhere};`);
+  ${fallbackWhere}${perCatReturning};`);
   }
 
   const perCategoryUpdateSql = `-- ============================================================================
@@ -1123,12 +1162,20 @@ ${wrapTransaction(perCategoryStatements.join('\n\n'), transactionMode, dialect)}
     const individualStatements = mismatchedRows.map((r) => {
       const idLiteral = isNaN(Number(r.id)) ? `'${r.id.replace(/'/g, "''")}'` : r.id;
       const expectedLiteral = `'${r.expectedCategory.replace(/'/g, "''")}'`;
-      const recordedComment = r.recordedCategory ? ` (was: "${r.recordedCategory}")` : '';
-      return `UPDATE ${tName} SET ${targetCol} = ${expectedLiteral} WHERE ${idCol} = ${idLiteral};${recordedComment}`;
+      const returningPart =
+        includeReturning && (dialect === 'postgres' || dialect === 'sqlite')
+          ? ` RETURNING ${idCol}, ${targetCol} AS new_category`
+          : '';
+      const recordedComment = r.recordedCategory ? ` -- was: "${r.recordedCategory}"` : '';
+      return `UPDATE ${tName} SET ${targetCol} = ${expectedLiteral} WHERE ${idCol} = ${idLiteral}${returningPart};${recordedComment}`;
     });
 
     let bulkJoinSql = '';
     if (dialect === 'postgres') {
+      const pgJoinReturning = includeReturning
+        ? `\nRETURNING t.${idCol}, t.${targetCol} AS new_category;`
+        : ';';
+
       bulkJoinSql = `-- Method A: High-Performance PostgreSQL VALUES Table Join Update
 UPDATE ${tName} AS t
 SET ${targetCol} = v.new_category
@@ -1136,7 +1183,7 @@ FROM (
   VALUES
 ${valuesRows.join(',\n')}
 ) AS v(entity_id, new_category)
-WHERE t.${idCol}::text = v.entity_id::text;\n\n`;
+WHERE t.${idCol}::text = v.entity_id::text${pgJoinReturning}\n\n`;
     } else if (dialect === 'mysql') {
       bulkJoinSql = `-- Method A: MySQL Bulk JOIN Update
 UPDATE ${tName} AS t

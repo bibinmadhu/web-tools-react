@@ -122,6 +122,7 @@ import {
   parseCategoryMetadataInput,
   createMatcherConfigExport,
   validateAndParseMatcherConfig,
+  generateCategoryMismatchFixQueries,
   CATEGORY_MATCHER_PRESETS,
 } from './dbCategoryMatcher';
 import {
@@ -2568,6 +2569,48 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     const invalidResult = validateAndParseMatcherConfig('{ invalid: json');
     assertTrue(!invalidResult.success, 'Invalid JSON should return failure');
     assertTrue(invalidResult.error !== undefined, 'Invalid JSON should have error message');
+  });
+
+  test('Category Matcher', 'Category Mismatch Fix UPDATE Queries PostgreSQL Compatibility', () => {
+    // 1. PostgreSQL with RETURNING clause enabled
+    const fixResult = generateCategoryMismatchFixQueries(DEFAULT_MATCHER_CONFIG, {
+      dialect: 'postgres',
+      targetColumn: 'current_category',
+      includeReturning: true,
+      transactionMode: 'commit',
+      mismatchedRows: [
+        { id: '102', name: 'Sample A', recordedCategory: 'Retail', expectedCategory: 'Mid-Market Merchant' },
+        { id: '104', name: 'Sample B', recordedCategory: 'Mid-Market', expectedCategory: 'Enterprise Merchant' },
+      ],
+    });
+
+    const dynamicSql = fixResult.dynamicFullTableUpdateSql;
+    // CRITICAL: Ensure there is NO semicolon immediately before RETURNING
+    assertTrue(!dynamicSql.includes(';\nRETURNING'), 'PostgreSQL dynamic UPDATE must not have a semicolon before RETURNING');
+    assertTrue(!dynamicSql.includes('; RETURNING'), 'PostgreSQL dynamic UPDATE must not have semicolon right before RETURNING');
+    assertTrue(dynamicSql.includes('RETURNING "id", "current_category" AS new_category;'), 'Must properly format RETURNING clause');
+    assertTrue(dynamicSql.includes('BEGIN;\n\nUPDATE "business_entities"'), 'Must start transaction and update target table');
+    assertTrue(dynamicSql.includes('COMMIT;'), 'Must commit transaction');
+
+    // 2. PostgreSQL with RETURNING clause disabled
+    const noReturningResult = generateCategoryMismatchFixQueries(DEFAULT_MATCHER_CONFIG, {
+      dialect: 'postgres',
+      targetColumn: 'current_category',
+      includeReturning: false,
+      transactionMode: 'commit',
+    });
+    assertTrue(!noReturningResult.dynamicFullTableUpdateSql.includes('RETURNING'), 'When includeReturning is false, RETURNING must not appear');
+    assertTrue(noReturningResult.dynamicFullTableUpdateSql.includes(');\n\nCOMMIT;'), 'Update statement must end cleanly before COMMIT');
+
+    // 3. Category-by-Category with RETURNING enabled
+    const perCatSql = fixResult.perCategoryUpdateSql;
+    assertTrue(!perCatSql.includes(';\nRETURNING'), 'Per-category statements must not place semicolon before RETURNING');
+    assertTrue(perCatSql.includes('RETURNING "id", "current_category" AS new_category;'), 'Per-category statements must end with RETURNING clause');
+
+    // 4. Sample Key-Based join update with RETURNING enabled
+    const keyBasedSql = fixResult.sampleKeyBasedUpdateSql;
+    assertTrue(keyBasedSql.includes('RETURNING t."id", t."current_category" AS new_category;'), 'PostgreSQL Method A join must include RETURNING before semicolon');
+    assertTrue(!keyBasedSql.includes(';\nRETURNING'), 'Key-based join must not have semicolon before RETURNING');
   });
 
   // =========================================================================
