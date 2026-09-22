@@ -929,3 +929,192 @@ Sales Manager true Sam Smith USR-103
 Marketing Specialist true Lucas Vance USR-105`,
   },
 };
+
+// ============================================================================
+// COLUMN SORTING & COMPARATOR ENGINE
+// ============================================================================
+
+export type MatchedRowSortField =
+  | 'index'       // Original row position
+  | 'status'      // Match status (Discrepancies / Only in A / Only in B / Exact)
+  | 'key'         // Primary key value
+  | 'rowA'        // 1-based Row number in Dataset A
+  | 'rowB'        // 1-based Row number in Dataset B
+  | string;       // Dynamic compared column key (e.g. 'total_amount', 'email')
+
+export type SortDirection = 'asc' | 'desc';
+
+/**
+ * Attempts to parse numeric value supporting commas, currency symbols, and percentages.
+ * Returns null if the value is non-numeric or empty.
+ */
+export function tryParseNumericValue(val: string | number | null | undefined): number | null {
+  if (val === null || val === undefined) return null;
+  if (typeof val === 'number') return isFinite(val) ? val : null;
+  const str = String(val).trim();
+  if (!str) return null;
+
+  // Clean currency symbols, commas, and percentage
+  const clean = str
+    .replace(/^[-+]/, (m) => (m === '-' ? '-' : ''))
+    .replace(/[$€£¥₹]/g, '')
+    .replace(/%$/, '')
+    .replace(/,/g, '')
+    .trim();
+
+  if (clean !== '' && !isNaN(Number(clean))) {
+    const num = Number(clean);
+    return str.trim().startsWith('-') ? -Math.abs(num) : num;
+  }
+  return null;
+}
+
+/**
+ * Compares two values ensuring empty/null values always sink to the bottom
+ * regardless of ascending or descending order.
+ */
+function compareWithEmptyAtBottom<T>(
+  valA: T | null | undefined,
+  valB: T | null | undefined,
+  isEmpty: (v: T | null | undefined) => boolean,
+  compareFn: (a: T, b: T) => number,
+  direction: SortDirection
+): number {
+  const emptyA = isEmpty(valA);
+  const emptyB = isEmpty(valB);
+
+  if (emptyA && emptyB) return 0;
+  if (emptyA) return 1;  // empty always goes to bottom
+  if (emptyB) return -1; // empty always goes to bottom
+
+  const result = compareFn(valA as T, valB as T);
+  return direction === 'asc' ? result : -result;
+}
+
+/**
+ * Sorts matched rows by any column field (index, status, key, row numbers, or compared data columns).
+ * Supports natural alphanumeric sorting, numeric/currency parsing, and custom status discrepancy hierarchy.
+ */
+export function sortMatchedRows(
+  rows: MatchedRow[],
+  sortField: MatchedRowSortField | null,
+  sortDirection: SortDirection = 'asc',
+  originalOrderRows?: MatchedRow[]
+): MatchedRow[] {
+  if (!sortField) return rows;
+
+  const result = [...rows];
+  const orderMap = new Map<string, number>();
+  const referenceRows = originalOrderRows && originalOrderRows.length > 0 ? originalOrderRows : rows;
+  referenceRows.forEach((r, idx) => orderMap.set(r.rowId, idx));
+
+  return result.sort((a, b) => {
+    // 1. Original Row Index
+    if (sortField === 'index') {
+      const idxA = orderMap.get(a.rowId) ?? 0;
+      const idxB = orderMap.get(b.rowId) ?? 0;
+      const diff = idxA - idxB;
+      return sortDirection === 'asc' ? diff : -diff;
+    }
+
+    // 2. Status Column
+    if (sortField === 'status') {
+      const statusWeight: Record<RowMatchStatus, number> = {
+        DUPLICATE_KEY: 0,
+        VALUE_MISMATCH: 1,
+        ONLY_IN_A: 2,
+        ONLY_IN_B: 3,
+        EXACT_MATCH: 4,
+      };
+      const wA = statusWeight[a.status] ?? 99;
+      const wB = statusWeight[b.status] ?? 99;
+      if (wA !== wB) {
+        const diff = wA - wB;
+        return sortDirection === 'asc' ? diff : -diff;
+      }
+      // If both have VALUE_MISMATCH, prioritize rows with more discrepancies
+      if (a.status === 'VALUE_MISMATCH') {
+        const mDiff = b.mismatchCount - a.mismatchCount;
+        if (mDiff !== 0) return sortDirection === 'asc' ? mDiff : -mDiff;
+      }
+      return a.keyValue.localeCompare(b.keyValue, undefined, { numeric: true });
+    }
+
+    // 3. Primary Key
+    if (sortField === 'key') {
+      const numA = tryParseNumericValue(a.keyValue);
+      const numB = tryParseNumericValue(b.keyValue);
+      let diff = 0;
+      if (numA !== null && numB !== null) {
+        diff = numA - numB;
+      } else {
+        diff = a.keyValue.localeCompare(b.keyValue, undefined, { numeric: true, sensitivity: 'base' });
+      }
+      return sortDirection === 'asc' ? diff : -diff;
+    }
+
+    // 4. Row Number in Dataset A
+    if (sortField === 'rowA') {
+      return compareWithEmptyAtBottom(
+        a.rowNumberA,
+        b.rowNumberA,
+        (v) => v === null || v === undefined,
+        (nA, nB) => nA - nB,
+        sortDirection
+      );
+    }
+
+    // 5. Row Number in Dataset B
+    if (sortField === 'rowB') {
+      return compareWithEmptyAtBottom(
+        a.rowNumberB,
+        b.rowNumberB,
+        (v) => v === null || v === undefined,
+        (nA, nB) => nA - nB,
+        sortDirection
+      );
+    }
+
+    // 6. Dynamic Compared Column (by col.key)
+    const diffA = a.cellDiffs[sortField];
+    const diffB = b.cellDiffs[sortField];
+
+    const valA = diffA
+      ? (diffA.valueA !== null && diffA.valueA !== '' ? diffA.valueA : (diffA.valueB ?? ''))
+      : (a.dataA?.[sortField] ?? a.dataB?.[sortField] ?? '');
+    const valB = diffB
+      ? (diffB.valueA !== null && diffB.valueA !== '' ? diffB.valueA : (diffB.valueB ?? ''))
+      : (b.dataA?.[sortField] ?? b.dataB?.[sortField] ?? '');
+
+    return compareWithEmptyAtBottom(
+      valA,
+      valB,
+      (v) => v === null || v === undefined || v === '',
+      (strA, strB) => {
+        const numA = tryParseNumericValue(strA);
+        const numB = tryParseNumericValue(strB);
+        if (numA !== null && numB !== null) {
+          const nDiff = numA - numB;
+          if (nDiff !== 0) return nDiff;
+        } else {
+          const sDiff = strA.localeCompare(strB, undefined, { numeric: true, sensitivity: 'base' });
+          if (sDiff !== 0) return sDiff;
+        }
+
+        // Secondary tie-breaker: compare valueB if different
+        if (diffA && diffB) {
+          const bA = diffA.valueB ?? '';
+          const bB = diffB.valueB ?? '';
+          if (bA !== bB) {
+            return bA.localeCompare(bB, undefined, { numeric: true, sensitivity: 'base' });
+          }
+        }
+
+        // Final tie-breaker by key
+        return a.keyValue.localeCompare(b.keyValue, undefined, { numeric: true });
+      },
+      sortDirection
+    );
+  });
+}
+

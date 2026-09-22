@@ -25,6 +25,10 @@ import {
   ChevronUp,
   SlidersHorizontal,
   Table,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  X,
 } from 'lucide-react';
 import {
   DataSetMatcherConfig,
@@ -38,6 +42,9 @@ import {
   MatchedRow,
   DelimiterChoice,
   CellDiff,
+  sortMatchedRows,
+  MatchedRowSortField,
+  SortDirection,
 } from '../../utils/dataSetMatcher';
 
 interface DataSetMatcherToolProps {
@@ -118,6 +125,42 @@ export const DataSetMatcherTool: React.FC<DataSetMatcherToolProps> = ({
       return true;
     });
   }, [matchResult.rows, statusFilter, searchQuery]);
+
+  // Column Sorting State (Comparison Grid)
+  const [sortColumn, setSortColumn] = useState<MatchedRowSortField | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
+  const handleSort = (columnKey: MatchedRowSortField) => {
+    if (sortColumn === columnKey) {
+      if (sortDirection === 'asc') {
+        setSortDirection('desc');
+      } else {
+        // Third click clears sort back to default
+        setSortColumn(null);
+        setSortDirection('asc');
+      }
+    } else {
+      setSortColumn(columnKey);
+      setSortDirection('asc');
+    }
+  };
+
+  // Sorted rows for the comparison grid
+  const sortedRows = useMemo(() => {
+    return sortMatchedRows(filteredRows, sortColumn, sortDirection, matchResult.rows);
+  }, [filteredRows, sortColumn, sortDirection, matchResult.rows]);
+
+  // Friendly name for active sort column
+  const activeSortLabel = useMemo(() => {
+    if (!sortColumn) return null;
+    if (sortColumn === 'index') return 'Row Position (#)';
+    if (sortColumn === 'status') return 'Match Status';
+    if (sortColumn === 'key') return `Key (${effectiveKeyColumns.join(' + ') || 'PK'})`;
+    if (sortColumn === 'rowA') return 'Row # in Dataset A';
+    if (sortColumn === 'rowB') return 'Row # in Dataset B';
+    const col = matchResult.columnMappings.find((m) => m.key === sortColumn);
+    return col ? (col.headerA || col.headerB || col.key) : sortColumn;
+  }, [sortColumn, effectiveKeyColumns, matchResult.columnMappings]);
 
   // Reconciliation SQL
   const reconciliationSql = useMemo(() => {
@@ -451,8 +494,8 @@ export const DataSetMatcherTool: React.FC<DataSetMatcherToolProps> = ({
         {/* TAB 1: COMPARISON GRID & CELL-LEVEL DIFF TABLE */}
         {/* ========================================================================= */}
         {activeTab === 'comparison' && (
-          <div className="space-y-4">
-            {/* Filter & Search Bar */}
+          <div className="space-y-3">
+            {/* Filter, Search & Sort Bar */}
             <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
               {/* Status Filter Buttons */}
               <div className="flex flex-wrap items-center gap-1.5">
@@ -516,35 +559,117 @@ export const DataSetMatcherTool: React.FC<DataSetMatcherToolProps> = ({
                 </button>
               </div>
 
-              {/* Search Box */}
-              <div className="relative min-w-[240px]">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Search key or cell value..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-teal-500 focus:outline-none"
-                />
+              {/* Search & Sort Controls */}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Search Box */}
+                <div className="relative min-w-[200px]">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search key or cell value..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-teal-500 focus:outline-none"
+                  />
+                </div>
+
+                {/* Sort Selector Dropdown */}
+                <div className="flex items-center space-x-1.5 bg-slate-50 dark:bg-slate-800/80 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <ArrowUpDown className="w-3.5 h-3.5 text-slate-400 ml-1.5" />
+                  <span className="text-[11px] font-semibold text-slate-500 hidden sm:inline">Sort:</span>
+                  <select
+                    id="dataset-matcher-sort-select"
+                    value={sortColumn || ''}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val) {
+                        setSortColumn(val as MatchedRowSortField);
+                      } else {
+                        setSortColumn(null);
+                        setSortDirection('asc');
+                      }
+                    }}
+                    className="text-xs py-1 px-2 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 focus:ring-1 focus:ring-teal-500 focus:outline-none cursor-pointer"
+                  >
+                    <option value="">Default (Order in Dataset)</option>
+                    <option value="status">Status (Discrepancies First)</option>
+                    <option value="key">Key ({effectiveKeyColumns.join(' + ')})</option>
+                    <option value="rowA">Row # in Dataset A</option>
+                    <option value="rowB">Row # in Dataset B</option>
+                    <optgroup label="Compared Columns">
+                      {matchResult.columnMappings
+                        .filter((m) => !m.isKey)
+                        .map((col) => (
+                          <option key={col.key} value={col.key}>
+                            {col.headerA || col.headerB}
+                          </option>
+                        ))}
+                    </optgroup>
+                  </select>
+
+                  {sortColumn && (
+                    <>
+                      <button
+                        id="dataset-matcher-sort-dir-btn"
+                        onClick={() => setSortDirection((d) => (d === 'asc' ? 'desc' : 'asc'))}
+                        className="px-2 py-1 rounded bg-teal-50 dark:bg-teal-950/80 text-teal-700 dark:text-teal-300 hover:bg-teal-100 dark:hover:bg-teal-900 text-[11px] font-mono font-bold flex items-center space-x-1 border border-teal-200 dark:border-teal-800 transition"
+                        title={`Current sort direction: ${sortDirection.toUpperCase()} (Click to toggle)`}
+                      >
+                        {sortDirection === 'asc' ? (
+                          <>
+                            <ArrowUp className="w-3 h-3" />
+                            <span>ASC</span>
+                          </>
+                        ) : (
+                          <>
+                            <ArrowDown className="w-3 h-3" />
+                            <span>DESC</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        id="dataset-matcher-reset-sort-btn"
+                        onClick={() => {
+                          setSortColumn(null);
+                          setSortDirection('asc');
+                        }}
+                        className="p-1 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+                        title="Reset to default order"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
 
-            {/* Column Discrepancy Breakdown Pill Strip */}
+            {/* Column Discrepancy Breakdown Pill Strip with Quick Sort on Click */}
             <div className="flex flex-wrap items-center gap-1.5 p-2.5 bg-slate-50 dark:bg-slate-900/40 rounded-lg border border-slate-200 dark:border-slate-800 text-xs">
-              <span className="font-semibold text-slate-500 mr-1">Column Discrepancy Breakdown:</span>
+              <span className="font-semibold text-slate-500 mr-1">Column Breakdown (Click to sort):</span>
               {matchResult.columnStats.map((col) => {
                 const isKey = effectiveKeyColumns.includes(col.columnKey);
                 const hasMismatch = col.mismatchCount > 0;
+                const isCurrentSort = sortColumn === col.columnKey;
+
                 return (
-                  <span
+                  <button
+                    type="button"
                     key={col.columnKey}
-                    className={`px-2 py-0.5 rounded text-[11px] font-mono flex items-center space-x-1 border ${
+                    onClick={() => handleSort(col.columnKey)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-mono flex items-center space-x-1 border transition cursor-pointer hover:opacity-85 ${
+                      isCurrentSort
+                        ? 'ring-2 ring-teal-500 shadow-xs'
+                        : ''
+                    } ${
                       isKey
                         ? 'bg-teal-50 dark:bg-teal-950/80 border-teal-300 dark:border-teal-800 text-teal-800 dark:text-teal-300 font-bold'
                         : hasMismatch
                         ? 'bg-amber-50 dark:bg-amber-950/80 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300'
                         : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
                     }`}
+                    title={`Click to sort comparison table by ${col.headerName}`}
                   >
                     <span>{col.headerName}</span>
                     {isKey ? (
@@ -556,9 +681,51 @@ export const DataSetMatcherTool: React.FC<DataSetMatcherToolProps> = ({
                         ({col.mismatchCount} diffs)
                       </span>
                     )}
-                  </span>
+                    {isCurrentSort && (
+                      sortDirection === 'asc' ? (
+                        <ArrowUp className="w-2.5 h-2.5 text-teal-600 dark:text-teal-400" />
+                      ) : (
+                        <ArrowDown className="w-2.5 h-2.5 text-teal-600 dark:text-teal-400" />
+                      )
+                    )}
+                  </button>
                 );
               })}
+            </div>
+
+            {/* Active Sort & Record Count Bar */}
+            <div className="flex items-center justify-between text-xs px-1 text-slate-500 dark:text-slate-400">
+              <div className="flex items-center space-x-2">
+                <span>
+                  Showing <strong>{sortedRows.length}</strong> of <strong>{matchResult.rows.length}</strong> records
+                </span>
+                {sortColumn && (
+                  <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full bg-teal-50 dark:bg-teal-950/80 border border-teal-200 dark:border-teal-800 text-teal-700 dark:text-teal-300 font-medium text-[11px]">
+                    <span>Sorted by: <strong>{activeSortLabel}</strong> ({sortDirection.toUpperCase()})</span>
+                    <button
+                      onClick={() => {
+                        setSortColumn(null);
+                        setSortDirection('asc');
+                      }}
+                      className="hover:text-teal-900 dark:hover:text-white ml-0.5 transition"
+                      title="Clear sort and restore default order"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                )}
+              </div>
+              {sortColumn && (
+                <button
+                  onClick={() => {
+                    setSortColumn(null);
+                    setSortDirection('asc');
+                  }}
+                  className="text-teal-600 hover:text-teal-700 dark:text-teal-400 text-[11px] underline cursor-pointer"
+                >
+                  Reset sort
+                </button>
+              )}
             </div>
 
             {/* Main Interactive Table */}
@@ -567,34 +734,186 @@ export const DataSetMatcherTool: React.FC<DataSetMatcherToolProps> = ({
                 <table className="w-full text-xs text-left border-collapse">
                   <thead className="bg-slate-100 dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 font-semibold sticky top-0 z-10">
                     <tr>
-                      <th className="py-2.5 px-3 w-10 text-center">#</th>
-                      <th className="py-2.5 px-3 w-32">Status</th>
-                      <th className="py-2.5 px-3 font-mono">
-                        Key ({effectiveKeyColumns.join(' + ')})
+                      {/* # Index Column Header */}
+                      <th
+                        onClick={() => handleSort('index')}
+                        className={`py-2.5 px-3 w-12 text-center cursor-pointer select-none transition group ${
+                          sortColumn === 'index'
+                            ? 'bg-teal-100/70 dark:bg-teal-950/70 text-teal-900 dark:text-teal-200 font-bold border-b-2 border-teal-500'
+                            : 'hover:bg-slate-200/80 dark:hover:bg-slate-700/80'
+                        }`}
+                        title="Click to sort by original row position"
+                      >
+                        <div className="flex items-center justify-center space-x-1">
+                          <span>#</span>
+                          {sortColumn === 'index' ? (
+                            sortDirection === 'asc' ? (
+                              <ArrowUp className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+                            ) : (
+                              <ArrowDown className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-2.5 h-2.5 text-slate-400 opacity-20 group-hover:opacity-100 transition-opacity shrink-0" />
+                          )}
+                        </div>
                       </th>
-                      <th className="py-2.5 px-2 text-center text-slate-400 w-16">Row A</th>
-                      <th className="py-2.5 px-2 text-center text-slate-400 w-16">Row B</th>
 
-                      {/* Common & Compared Columns */}
+                      {/* Status Column Header */}
+                      <th
+                        onClick={() => handleSort('status')}
+                        className={`py-2.5 px-3 w-36 cursor-pointer select-none transition group ${
+                          sortColumn === 'status'
+                            ? 'bg-teal-100/70 dark:bg-teal-950/70 text-teal-900 dark:text-teal-200 font-bold border-b-2 border-teal-500'
+                            : 'hover:bg-slate-200/80 dark:hover:bg-slate-700/80'
+                        }`}
+                        title="Click to sort by match status (mismatches first)"
+                      >
+                        <div className="flex items-center justify-between space-x-1">
+                          <span>Status</span>
+                          {sortColumn === 'status' ? (
+                            sortDirection === 'asc' ? (
+                              <ArrowUp className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                            ) : (
+                              <ArrowDown className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-20 group-hover:opacity-100 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
+
+                      {/* Primary Key Column Header */}
+                      <th
+                        onClick={() => handleSort('key')}
+                        className={`py-2.5 px-3 font-mono cursor-pointer select-none transition group ${
+                          sortColumn === 'key'
+                            ? 'bg-teal-100/70 dark:bg-teal-950/70 text-teal-900 dark:text-teal-200 font-bold border-b-2 border-teal-500'
+                            : 'hover:bg-slate-200/80 dark:hover:bg-slate-700/80'
+                        }`}
+                        title="Click to sort by Primary Key value"
+                      >
+                        <div className="flex items-center justify-between space-x-1">
+                          <span>Key ({effectiveKeyColumns.join(' + ')})</span>
+                          {sortColumn === 'key' ? (
+                            sortDirection === 'asc' ? (
+                              <ArrowUp className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                            ) : (
+                              <ArrowDown className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-20 group-hover:opacity-100 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
+
+                      {/* Row A Column Header */}
+                      <th
+                        onClick={() => handleSort('rowA')}
+                        className={`py-2.5 px-2 text-center w-20 cursor-pointer select-none transition group ${
+                          sortColumn === 'rowA'
+                            ? 'bg-teal-100/70 dark:bg-teal-950/70 text-teal-900 dark:text-teal-200 font-bold border-b-2 border-teal-500'
+                            : 'hover:bg-slate-200/80 dark:hover:bg-slate-700/80 text-slate-500 dark:text-slate-400'
+                        }`}
+                        title="Click to sort by Row Number in Dataset A"
+                      >
+                        <div className="flex items-center justify-center space-x-1">
+                          <span>Row A</span>
+                          {sortColumn === 'rowA' ? (
+                            sortDirection === 'asc' ? (
+                              <ArrowUp className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+                            ) : (
+                              <ArrowDown className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-2.5 h-2.5 text-slate-400 opacity-20 group-hover:opacity-100 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
+
+                      {/* Row B Column Header */}
+                      <th
+                        onClick={() => handleSort('rowB')}
+                        className={`py-2.5 px-2 text-center w-20 cursor-pointer select-none transition group ${
+                          sortColumn === 'rowB'
+                            ? 'bg-teal-100/70 dark:bg-teal-950/70 text-teal-900 dark:text-teal-200 font-bold border-b-2 border-teal-500'
+                            : 'hover:bg-slate-200/80 dark:hover:bg-slate-700/80 text-slate-500 dark:text-slate-400'
+                        }`}
+                        title="Click to sort by Row Number in Dataset B"
+                      >
+                        <div className="flex items-center justify-center space-x-1">
+                          <span>Row B</span>
+                          {sortColumn === 'rowB' ? (
+                            sortDirection === 'asc' ? (
+                              <ArrowUp className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+                            ) : (
+                              <ArrowDown className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-2.5 h-2.5 text-slate-400 opacity-20 group-hover:opacity-100 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
+
+                      {/* Common & Compared Columns Headers */}
                       {matchResult.columnMappings
                         .filter((m) => !m.isKey)
                         .map((col) => {
                           const isOnlyA = !col.headerB;
                           const isOnlyB = !col.headerA;
+                          const isSorted = sortColumn === col.key;
+                          const colStat = matchResult.columnStats.find((s) => s.columnKey === col.key);
+                          const hasDiffs = (colStat?.mismatchCount ?? 0) > 0;
+
                           return (
-                            <th key={col.key} className="py-2.5 px-3 min-w-[150px]">
-                              <div className="flex items-center space-x-1">
-                                <span className="font-mono">{col.headerA || col.headerB}</span>
-                                {isOnlyA && (
-                                  <span className="text-[9px] px-1 rounded bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300">
-                                    Only in A
-                                  </span>
-                                )}
-                                {isOnlyB && (
-                                  <span className="text-[9px] px-1 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
-                                    Only in B
-                                  </span>
-                                )}
+                            <th
+                              key={col.key}
+                              onClick={() => handleSort(col.key)}
+                              className={`py-2.5 px-3 min-w-[160px] cursor-pointer select-none transition group ${
+                                isSorted
+                                  ? 'bg-teal-100/70 dark:bg-teal-950/70 text-teal-900 dark:text-teal-200 font-bold border-b-2 border-teal-500'
+                                  : 'hover:bg-slate-200/80 dark:hover:bg-slate-700/80'
+                              }`}
+                              title={`Click to sort by ${col.headerA || col.headerB} (${
+                                isSorted
+                                  ? sortDirection === 'asc'
+                                    ? 'Ascending: click for Descending'
+                                    : 'Descending: click to reset sort'
+                                  : 'Click for Ascending sort'
+                              })`}
+                            >
+                              <div className="flex items-center justify-between space-x-1.5">
+                                <div className="flex items-center space-x-1 truncate">
+                                  <span className="font-mono truncate">{col.headerA || col.headerB}</span>
+                                  {isOnlyA && (
+                                    <span className="text-[9px] px-1 rounded bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 font-normal">
+                                      Only A
+                                    </span>
+                                  )}
+                                  {isOnlyB && (
+                                    <span className="text-[9px] px-1 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 font-normal">
+                                      Only B
+                                    </span>
+                                  )}
+                                  {hasDiffs && (
+                                    <span
+                                      className="text-[9px] px-1 rounded bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 font-normal"
+                                      title={`${colStat?.mismatchCount} value mismatches in this column`}
+                                    >
+                                      {colStat?.mismatchCount}Δ
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex-shrink-0">
+                                  {isSorted ? (
+                                    sortDirection === 'asc' ? (
+                                      <ArrowUp className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                                    ) : (
+                                      <ArrowDown className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                                    )
+                                  ) : (
+                                    <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-20 group-hover:opacity-100 transition-opacity" />
+                                  )}
+                                </div>
                               </div>
                             </th>
                           );
@@ -603,7 +922,7 @@ export const DataSetMatcherTool: React.FC<DataSetMatcherToolProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                    {filteredRows.length === 0 ? (
+                    {sortedRows.length === 0 ? (
                       <tr>
                         <td
                           colSpan={matchResult.columnMappings.length + 5}
@@ -613,7 +932,7 @@ export const DataSetMatcherTool: React.FC<DataSetMatcherToolProps> = ({
                         </td>
                       </tr>
                     ) : (
-                      filteredRows.map((row, idx) => {
+                      sortedRows.map((row, idx) => {
                         const isExpanded = expandedRowId === row.rowId;
                         const isMismatch = row.status === 'VALUE_MISMATCH';
                         const isOnlyA = row.status === 'ONLY_IN_A';

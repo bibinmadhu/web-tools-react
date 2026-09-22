@@ -145,6 +145,8 @@ import {
   areValuesEqual,
   DEFAULT_DATA_SET_MATCHER_CONFIG,
   SAMPLE_DATASETS,
+  sortMatchedRows,
+  tryParseNumericValue,
 } from './dataSetMatcher';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
@@ -2811,6 +2813,50 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     const md = exportDiffToMarkdown(result);
     assertTrue(md.includes('### Data Comparison Summary'), 'Markdown should have summary title');
     assertTrue(md.includes('| Status | Key |'), 'Markdown should have comparison table');
+  });
+
+  test('Data Set Matcher', 'Interactive Column Sorting on Matched Rows', () => {
+    const setA = `id,name,amount\n101,Charlie,150.00\n102,Alice,50.00\n103,Bob,200.00\n104,David,75.00`;
+    const setB = `id,name,amount\n101,Charlie,150.00\n102,Alice,55.00\n103,Bob,200.00\n105,Emma,300.00`;
+
+    const result = matchDataSets(setA, setB, {
+      ...DEFAULT_DATA_SET_MATCHER_CONFIG,
+      keyColumns: ['id'],
+    });
+
+    // 1. Sort by Key ascending
+    const sortedByKeyAsc = sortMatchedRows(result.rows, 'key', 'asc', result.rows);
+    assertEqual(sortedByKeyAsc[0].keyValue, '101', 'First row should be 101');
+    assertEqual(sortedByKeyAsc[sortedByKeyAsc.length - 1].keyValue, '105', 'Last row should be 105');
+
+    // 2. Sort by Key descending
+    const sortedByKeyDesc = sortMatchedRows(result.rows, 'key', 'desc', result.rows);
+    assertEqual(sortedByKeyDesc[0].keyValue, '105', 'First row descending should be 105');
+    assertEqual(sortedByKeyDesc[sortedByKeyDesc.length - 1].keyValue, '101', 'Last row descending should be 101');
+
+    // 3. Sort by Status (mismatches and diffs first)
+    const sortedByStatus = sortMatchedRows(result.rows, 'status', 'asc', result.rows);
+    // 102 is VALUE_MISMATCH (amount 50 vs 55)
+    assertEqual(sortedByStatus[0].status, 'VALUE_MISMATCH', 'First status sorted should be VALUE_MISMATCH');
+    assertEqual(sortedByStatus[0].keyValue, '102', 'Row 102 has mismatch');
+
+    // 4. Sort by numeric column 'amount'
+    const sortedByAmountAsc = sortMatchedRows(result.rows, 'amount', 'asc', result.rows);
+    const firstAmountVal = sortedByAmountAsc[0].dataA?.amount || sortedByAmountAsc[0].dataB?.amount;
+    assertEqual(firstAmountVal, '50.00', 'Lowest amount should be 50.00');
+
+    const sortedByAmountDesc = sortMatchedRows(result.rows, 'amount', 'desc', result.rows);
+    const highestAmountVal = sortedByAmountDesc[0].dataB?.amount || sortedByAmountDesc[0].dataA?.amount;
+    assertEqual(highestAmountVal, '300.00', 'Highest amount should be 300.00');
+
+    // 5. Test numeric parser helper
+    assertEqual(tryParseNumericValue('$1,250.50'), 1250.5, 'Should parse currency formatted string');
+    assertEqual(tryParseNumericValue('98.5%'), 98.5, 'Should parse percentage formatted string');
+    assertEqual(tryParseNumericValue('non-numeric'), null, 'Should return null for non-numeric string');
+
+    // 6. Reset to original order when sortField is null
+    const originalOrder = sortMatchedRows(sortedByKeyDesc, null, 'asc', result.rows);
+    assertEqual(originalOrder[0].rowId, result.rows[0].rowId, 'Should restore original index');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
