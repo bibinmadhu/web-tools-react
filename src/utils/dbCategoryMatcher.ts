@@ -861,6 +861,415 @@ LEFT JOIN LATERAL (
 }
 
 // ==========================================
+// Category Mismatch Fix Queries Generator
+// Generates dedicated, production-grade UPDATE queries specifically to fix
+// discrepancies between recorded categories and calculated categories.
+// ==========================================
+
+export type SupportedSqlDialect = 'postgres' | 'mysql' | 'sqlserver' | 'sqlite';
+
+export interface CategoryMismatchFixOptions {
+  targetColumn?: string;
+  includeUnclassified?: boolean; // if true, updates NULL / empty categories as well
+  transactionMode?: 'commit' | 'dry_run' | 'none';
+  includeReturning?: boolean;
+  dialect?: SupportedSqlDialect;
+  mismatchedRows?: Array<{
+    id: string;
+    name?: string;
+    recordedCategory?: string;
+    expectedCategory: string;
+  }>;
+}
+
+export interface CategoryMismatchFixResult {
+  dynamicFullTableUpdateSql: string;
+  perCategoryUpdateSql: string;
+  sampleKeyBasedUpdateSql: string;
+  safeAuditBackupUpdateSql: string;
+  verificationSelectSql: string;
+  summary: {
+    targetTable: string;
+    targetColumn: string;
+    dialect: SupportedSqlDialect;
+    categoryCount: number;
+    mismatchedRowsCount: number;
+  };
+}
+
+/**
+ * Escapes an identifier based on target SQL dialect
+ */
+function escapeSqlIdentifier(name: string, dialect: SupportedSqlDialect): string {
+  const clean = name.replace(/["`\[\]]/g, '');
+  if (dialect === 'mysql') return `\`${clean}\``;
+  if (dialect === 'sqlserver') return `[${clean}]`;
+  // postgres and sqlite
+  return `"${clean}"`;
+}
+
+/**
+ * Generates an inequality expression between a column and a CASE expression
+ * handling NULL / UNCLASSIFIED appropriately for each dialect.
+ */
+function buildMismatchWhereClause(
+  columnExpr: string,
+  caseExpr: string,
+  dialect: SupportedSqlDialect,
+  includeUnclassified: boolean
+): string {
+  if (dialect === 'postgres') {
+    if (includeUnclassified) {
+      return `${columnExpr} IS DISTINCT FROM (\n${caseExpr}\n)`;
+    }
+    return `${columnExpr} IS NOT NULL AND TRIM(${columnExpr}::text) <> '' AND ${columnExpr} IS DISTINCT FROM (\n${caseExpr}\n)`;
+  }
+
+  if (dialect === 'sqlite') {
+    if (includeUnclassified) {
+      return `${columnExpr} IS NOT (\n${caseExpr}\n)`;
+    }
+    return `${columnExpr} IS NOT NULL AND TRIM(${columnExpr}) <> '' AND ${columnExpr} IS NOT (\n${caseExpr}\n)`;
+  }
+
+  if (dialect === 'mysql') {
+    if (includeUnclassified) {
+      return `NOT (${columnExpr} <=> (\n${caseExpr}\n))`;
+    }
+    return `${columnExpr} IS NOT NULL AND TRIM(${columnExpr}) <> '' AND ${columnExpr} <> (\n${caseExpr}\n)`;
+  }
+
+  // sqlserver (T-SQL)
+  if (includeUnclassified) {
+    return `(\n    ${columnExpr} <> (\n${caseExpr}\n    )\n    OR (${columnExpr} IS NULL)\n    OR (${columnExpr} IS NOT NULL AND (\n${caseExpr}\n    ) IS NULL)\n  )`;
+  }
+  return `${columnExpr} IS NOT NULL AND RTRIM(LTRIM(${columnExpr})) <> '' AND ${columnExpr} <> (\n${caseExpr}\n)`;
+}
+
+/**
+ * Wraps SQL statements with transaction controls based on dialect and mode
+ */
+function wrapTransaction(
+  statements: string,
+  mode: 'commit' | 'dry_run' | 'none',
+  dialect: SupportedSqlDialect
+): string {
+  if (mode === 'none') {
+    return statements;
+  }
+
+  let beginStmt = 'BEGIN;';
+  let commitStmt = 'COMMIT;';
+  let rollbackStmt = 'ROLLBACK;';
+
+  if (dialect === 'mysql') {
+    beginStmt = 'START TRANSACTION;';
+    commitStmt = 'COMMIT;';
+    rollbackStmt = 'ROLLBACK;';
+  } else if (dialect === 'sqlserver') {
+    beginStmt = 'BEGIN TRANSACTION;';
+    commitStmt = 'COMMIT TRANSACTION;';
+    rollbackStmt = 'ROLLBACK TRANSACTION;';
+  } else if (dialect === 'sqlite') {
+    beginStmt = 'BEGIN TRANSACTION;';
+    commitStmt = 'COMMIT;';
+    rollbackStmt = 'ROLLBACK;';
+  }
+
+  if (mode === 'dry_run') {
+    return `${beginStmt}\n\n${statements}\n\n-- ============================================================================\n-- DRY-RUN SAFETY: Rollback prevents any permanent changes to the database\n-- ============================================================================\n${rollbackStmt}`;
+  }
+
+  return `${beginStmt}\n\n${statements}\n\n${commitStmt}`;
+}
+
+/**
+ * Main generator for category mismatch fix queries
+ */
+export function generateCategoryMismatchFixQueries(
+  config: CategoryMatcherConfig,
+  options: CategoryMismatchFixOptions = {}
+): CategoryMismatchFixResult {
+  const { targetTable, metricColumns, categories, ruleLogic } = config;
+  const dialect = options.dialect || 'postgres';
+  const targetColName =
+    options.targetColumn || targetTable.newCategoryColumn || targetTable.categoryColumn || 'current_category';
+  const includeUnclassified = options.includeUnclassified !== false; // default true
+  const transactionMode = options.transactionMode || 'commit';
+  const includeReturning = options.includeReturning !== false;
+  const mismatchedRows = options.mismatchedRows || [];
+
+  const tName = escapeSqlIdentifier(targetTable.tableName, dialect);
+  const targetCol = escapeSqlIdentifier(targetColName, dialect);
+  const idCol = escapeSqlIdentifier(targetTable.idColumn, dialect);
+
+  // Sort categories by priority ascending
+  const sortedCategories = [...categories].sort((a, b) => a.priority - b.priority);
+
+  // Format CASE ladder for UPDATE (without table alias prefix)
+  const caseBranches = sortedCategories.map((rule) => {
+    const cond = buildRuleSqlCondition(rule, metricColumns, '', ruleLogic);
+    return `    WHEN ${cond} THEN '${rule.categoryName.replace(/'/g, "''")}'`;
+  });
+  const fallbackStr = `'${(ruleLogic.fallbackCategory || 'Unclassified').replace(/'/g, "''")}'`;
+  const caseWhenExpr = `  CASE\n${caseBranches.join('\n')}\n    ELSE ${fallbackStr}\n  END`;
+
+  // 1. Dynamic Full-Table UPDATE Query
+  const mismatchWhere = buildMismatchWhereClause(targetCol, caseWhenExpr, dialect, includeUnclassified);
+  
+  let returningClause = '';
+  if (includeReturning) {
+    if (dialect === 'postgres' || dialect === 'sqlite') {
+      returningClause = `\nRETURNING ${idCol}, ${targetCol} AS new_category;`;
+    } else if (dialect === 'sqlserver') {
+      // In T-SQL, OUTPUT is placed before WHERE
+    } else if (dialect === 'mysql') {
+      returningClause = `\n-- Note: MySQL does not support RETURNING; inspect ROW_COUNT() or run the verification SELECT below.`;
+    }
+  }
+
+  let updateCoreStmt = '';
+  if (dialect === 'sqlserver' && includeReturning) {
+    updateCoreStmt = `UPDATE ${tName}
+SET ${targetCol} = 
+${caseWhenExpr}
+OUTPUT inserted.${idCol}, inserted.${targetCol} AS new_category
+WHERE 
+  ${mismatchWhere};`;
+  } else {
+    updateCoreStmt = `UPDATE ${tName}
+SET ${targetCol} = 
+${caseWhenExpr}
+WHERE 
+  ${mismatchWhere};${returningClause}`;
+  }
+
+  const dynamicFullTableUpdateSql = `-- ============================================================================
+-- 1. Full-Table Dynamic Category Mismatch Fix UPDATE
+-- Target Table:  ${tName}
+-- Target Column: ${targetCol}
+-- Scope:         ${includeUnclassified ? 'Fixes all mismatches + unclassified/null categories' : 'Fixes recorded mismatches only (excludes blank/null)'}
+-- Dialect:       ${dialect.toUpperCase()}
+-- ============================================================================
+${wrapTransaction(updateCoreStmt, transactionMode, dialect)}`;
+
+  // 2. Category-by-Category Targeted UPDATEs
+  const perCategoryStatements: string[] = [];
+  const accumulatedConditions: string[] = [];
+
+  sortedCategories.forEach((rule, idx) => {
+    const currentRuleCond = buildRuleSqlCondition(rule, metricColumns, '', ruleLogic);
+    const catLiteral = `'${rule.categoryName.replace(/'/g, "''")}'`;
+
+    let whereCond = `${targetCol} IS DISTINCT FROM ${catLiteral}\n    AND (${currentRuleCond})`;
+    if (dialect === 'mysql') {
+      whereCond = `NOT (${targetCol} <=> ${catLiteral})\n    AND (${currentRuleCond})`;
+    } else if (dialect === 'sqlserver') {
+      whereCond = `(${targetCol} <> ${catLiteral} OR ${targetCol} IS NULL)\n    AND (${currentRuleCond})`;
+    } else if (dialect === 'sqlite') {
+      whereCond = `${targetCol} IS NOT ${catLiteral}\n    AND (${currentRuleCond})`;
+    }
+
+    // Exclude prior higher-priority matches if needed
+    if (accumulatedConditions.length > 0) {
+      const priorExclusions = accumulatedConditions.map((c) => `NOT (${c})`).join('\n    AND ');
+      whereCond += `\n    AND ${priorExclusions}`;
+    }
+    accumulatedConditions.push(currentRuleCond);
+
+    perCategoryStatements.push(`-- Priority ${rule.priority}: Fix records qualifying for '${rule.categoryName}'
+UPDATE ${tName}
+SET ${targetCol} = ${catLiteral}
+WHERE 
+  ${whereCond};`);
+  });
+
+  // Fallback category statement
+  if (accumulatedConditions.length > 0) {
+    const allExclusions = accumulatedConditions.map((c) => `NOT (${c})`).join('\n    AND ');
+    let fallbackWhere = `${targetCol} IS DISTINCT FROM ${fallbackStr}\n    AND ${allExclusions}`;
+    if (dialect === 'mysql') {
+      fallbackWhere = `NOT (${targetCol} <=> ${fallbackStr})\n    AND ${allExclusions}`;
+    } else if (dialect === 'sqlserver') {
+      fallbackWhere = `(${targetCol} <> ${fallbackStr} OR ${targetCol} IS NULL)\n    AND ${allExclusions}`;
+    } else if (dialect === 'sqlite') {
+      fallbackWhere = `${targetCol} IS NOT ${fallbackStr}\n    AND ${allExclusions}`;
+    }
+
+    perCategoryStatements.push(`-- Priority ${sortedCategories.length + 1} (Default): Fix records qualifying for Fallback '${ruleLogic.fallbackCategory}'
+UPDATE ${tName}
+SET ${targetCol} = ${fallbackStr}
+WHERE 
+  ${fallbackWhere};`);
+  }
+
+  const perCategoryUpdateSql = `-- ============================================================================
+-- 2. Targeted Category-by-Category UPDATE Queries
+-- Executes atomic corrections category by category in strict priority order.
+-- Recommended for large datasets to monitor progress and maintain index isolation.
+-- ============================================================================
+${wrapTransaction(perCategoryStatements.join('\n\n'), transactionMode, dialect)}`;
+
+  // 3. Sample Key-Based UPDATE Query (from detected mismatches or passed IDs)
+  let sampleKeyBasedUpdateSql = '';
+  if (mismatchedRows.length > 0) {
+    const valuesRows = mismatchedRows.map((r) => {
+      const idLiteral = isNaN(Number(r.id)) ? `'${r.id.replace(/'/g, "''")}'` : r.id;
+      const expectedLiteral = `'${r.expectedCategory.replace(/'/g, "''")}'`;
+      const nameComment = r.name ? ` -- ${r.name} (recorded: "${r.recordedCategory || 'NULL'}")` : '';
+      return `    (${idLiteral}, ${expectedLiteral})${nameComment}`;
+    });
+
+    const individualStatements = mismatchedRows.map((r) => {
+      const idLiteral = isNaN(Number(r.id)) ? `'${r.id.replace(/'/g, "''")}'` : r.id;
+      const expectedLiteral = `'${r.expectedCategory.replace(/'/g, "''")}'`;
+      const recordedComment = r.recordedCategory ? ` (was: "${r.recordedCategory}")` : '';
+      return `UPDATE ${tName} SET ${targetCol} = ${expectedLiteral} WHERE ${idCol} = ${idLiteral};${recordedComment}`;
+    });
+
+    let bulkJoinSql = '';
+    if (dialect === 'postgres') {
+      bulkJoinSql = `-- Method A: High-Performance PostgreSQL VALUES Table Join Update
+UPDATE ${tName} AS t
+SET ${targetCol} = v.new_category
+FROM (
+  VALUES
+${valuesRows.join(',\n')}
+) AS v(entity_id, new_category)
+WHERE t.${idCol}::text = v.entity_id::text;\n\n`;
+    } else if (dialect === 'mysql') {
+      bulkJoinSql = `-- Method A: MySQL Bulk JOIN Update
+UPDATE ${tName} AS t
+JOIN (
+  SELECT 'sample_id' AS entity_id, 'sample_cat' AS new_category
+  -- Populate with detected IDs or use the individual statements below
+) AS v ON t.${idCol} = v.entity_id
+SET t.${targetCol} = v.new_category;\n\n`;
+    }
+
+    const keyBasedCore = `${bulkJoinSql}-- Method B: Explicit Individual UPDATE Statements (${mismatchedRows.length} entities)
+${individualStatements.join('\n')}`;
+
+    sampleKeyBasedUpdateSql = `-- ============================================================================
+-- 3. Targeted Entity Key-Based UPDATE for Detected Mismatches
+-- Specifically fixes the ${mismatchedRows.length} entities identified with category defects.
+-- ============================================================================
+${wrapTransaction(keyBasedCore, transactionMode, dialect)}`;
+  } else {
+    sampleKeyBasedUpdateSql = `-- ============================================================================
+-- 3. Targeted Entity Key-Based UPDATE (Template)
+-- (No specific mismatches currently selected or detected in sample data)
+-- Use this template to fix specific primary key IDs directly:
+-- ============================================================================
+${wrapTransaction(
+  `UPDATE ${tName} 
+SET ${targetCol} = 'TargetCategory' 
+WHERE ${idCol} IN ('ENTITY_ID_1', 'ENTITY_ID_2');`,
+  transactionMode,
+  dialect
+)}`;
+  }
+
+  // 4. Safe Staging & Audit Backup Table UPDATE
+  const auditTableName = escapeSqlIdentifier(`${targetTable.tableName}_category_fix_audit`, dialect);
+  let safeAuditCore = '';
+
+  if (dialect === 'postgres') {
+    safeAuditCore = `-- Step 1: Snapshot defective rows into an audit backup table before making changes
+CREATE TABLE IF NOT EXISTS ${auditTableName} (
+  audit_id SERIAL PRIMARY KEY,
+  entity_id VARCHAR(255),
+  old_category VARCHAR(255),
+  new_category VARCHAR(255),
+  fixed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO ${auditTableName} (entity_id, old_category, new_category)
+SELECT
+  ${idCol}::text,
+  ${targetCol}::text,
+${caseWhenExpr}
+FROM ${tName}
+WHERE 
+  ${mismatchWhere};
+
+-- Step 2: Apply the category fix safely
+UPDATE ${tName}
+SET ${targetCol} = 
+${caseWhenExpr}
+WHERE ${idCol}::text IN (
+  SELECT entity_id FROM ${auditTableName}
+  WHERE fixed_at >= CURRENT_DATE
+);
+
+-- Step 3: Verify zero discrepancies remaining
+SELECT COUNT(*) AS remaining_mismatches
+FROM ${tName}
+WHERE 
+  ${mismatchWhere};`;
+  } else {
+    safeAuditCore = `-- Step 1: Create backup snapshot of mismatched rows
+CREATE TABLE IF NOT EXISTS ${auditTableName} AS
+SELECT
+  ${idCol} AS entity_id,
+  ${targetCol} AS old_category,
+${caseWhenExpr} AS new_category
+FROM ${tName}
+WHERE 
+  ${mismatchWhere};
+
+-- Step 2: Apply the correction
+UPDATE ${tName}
+SET ${targetCol} = 
+${caseWhenExpr}
+WHERE 
+  ${mismatchWhere};`;
+  }
+
+  const safeAuditBackupUpdateSql = `-- ============================================================================
+-- 4. Safe Staging & Audit Backup Table UPDATE
+-- Pre-creates a backup audit snapshot before applying corrections to live data.
+-- Allows instant rollbacks or post-fix verification.
+-- ============================================================================
+${wrapTransaction(safeAuditCore, transactionMode, dialect)}`;
+
+  // 5. Pre/Post Verification SELECT Query
+  const verificationSelectSql = `-- ============================================================================
+-- 5. Category Verification & Discrepancy Audit SELECT Query
+-- Run this BEFORE fixing to count defects, and AFTER fixing to confirm zero mismatches.
+-- ============================================================================
+WITH evaluated_audit AS (
+  SELECT
+    ${idCol} AS entity_id,
+    ${targetCol} AS recorded_category,
+${caseWhenExpr} AS expected_category
+  FROM ${tName}
+)
+SELECT
+  COUNT(*) AS total_records,
+  COUNT(CASE WHEN recorded_category = expected_category THEN 1 END) AS verified_matches,
+  COUNT(CASE WHEN recorded_category IS DISTINCT FROM expected_category AND recorded_category IS NOT NULL AND TRIM(recorded_category::text) <> '' THEN 1 END) AS active_mismatches,
+  COUNT(CASE WHEN recorded_category IS NULL OR TRIM(recorded_category::text) = '' THEN 1 END) AS unclassified_blank,
+  ROUND(COUNT(CASE WHEN recorded_category = expected_category THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0), 2) AS category_accuracy_pct
+FROM evaluated_audit;`;
+
+  return {
+    dynamicFullTableUpdateSql,
+    perCategoryUpdateSql,
+    sampleKeyBasedUpdateSql,
+    safeAuditBackupUpdateSql,
+    verificationSelectSql,
+    summary: {
+      targetTable: targetTable.tableName,
+      targetColumn: targetColName,
+      dialect,
+      categoryCount: categories.length,
+      mismatchedRowsCount: mismatchedRows.length,
+    },
+  };
+}
+
+// ==========================================
 // Python Script Generator using pg8000
 // ==========================================
 

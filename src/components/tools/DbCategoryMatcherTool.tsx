@@ -33,6 +33,9 @@ import {
   Search,
   ExternalLink,
   X,
+  CheckSquare,
+  Square,
+  Wrench,
 } from 'lucide-react';
 import {
   CategoryRule,
@@ -55,6 +58,10 @@ import {
   createMatcherConfigExport,
   RuleOperator,
   MetricType,
+  SupportedSqlDialect,
+  CategoryMismatchFixOptions,
+  CategoryMismatchFixResult,
+  generateCategoryMismatchFixQueries,
 } from '../../utils/dbCategoryMatcher';
 import { CategoryMatcherConfigModal } from './CategoryMatcherConfigModal';
 
@@ -81,8 +88,18 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
   const [sampleRows, setSampleRows] = useState<TestSampleRow[]>(DEFAULT_SAMPLE_ROWS);
 
   // UI Navigation Tabs
-  const [activeMainTab, setActiveMainTab] = useState<'rules' | 'queries' | 'python' | 'simulator'>('rules');
+  const [activeMainTab, setActiveMainTab] = useState<'rules' | 'queries' | 'fix-mismatches' | 'python' | 'simulator'>('rules');
   const [activeQuerySubTab, setActiveQuerySubTab] = useState<'discrepancy' | 'classification' | 'update' | 'view' | 'distribution' | 'cte'>('discrepancy');
+
+  // Fix Mismatches Sub-tab and Options State
+  const [fixSubTab, setFixSubTab] = useState<'dynamic' | 'per-category' | 'sample-keys' | 'audit-backup' | 'verification'>('dynamic');
+  const [fixDialect, setFixDialect] = useState<SupportedSqlDialect>('postgres');
+  const [fixTargetColumn, setFixTargetColumn] = useState<string>('');
+  const [fixIncludeUnclassified, setFixIncludeUnclassified] = useState<boolean>(true);
+  const [fixTransactionMode, setFixTransactionMode] = useState<'commit' | 'dry_run' | 'none'>('commit');
+  const [fixIncludeReturning, setFixIncludeReturning] = useState<boolean>(true);
+  const [selectedMismatchedIds, setSelectedMismatchedIds] = useState<Set<string>>(new Set(['102', '104']));
+  const [showFixOptionsDrawer, setShowFixOptionsDrawer] = useState<boolean>(false);
 
   // Metadata Paste Modal State
   const [isPasteModalOpen, setIsPasteModalOpen] = useState<boolean>(false);
@@ -167,6 +184,67 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
       return true;
     });
   }, [simulationResults, simulatorStatusFilter, simulatorSearch]);
+
+  // All detected mismatched or unclassified entities from the simulation
+  const allMismatchedEntities = useMemo(() => {
+    return simulationResults.filter(
+      (r) => r.status === 'MISMATCH' || (fixIncludeUnclassified && r.status === 'UNCLASSIFIED')
+    );
+  }, [simulationResults, fixIncludeUnclassified]);
+
+  // Subset of mismatched entities selected by the user for key-based query generation
+  const activeMismatchedEntities = useMemo(() => {
+    return allMismatchedEntities.filter((r) => selectedMismatchedIds.has(r.id));
+  }, [allMismatchedEntities, selectedMismatchedIds]);
+
+  // Generate Category Mismatch Fix Queries
+  const fixQueries = useMemo(() => {
+    const actualTargetCol =
+      fixTargetColumn.trim() || targetTable.newCategoryColumn || targetTable.categoryColumn || 'current_category';
+    return generateCategoryMismatchFixQueries(currentFullConfig, {
+      targetColumn: actualTargetCol,
+      dialect: fixDialect,
+      includeUnclassified: fixIncludeUnclassified,
+      transactionMode: fixTransactionMode,
+      includeReturning: fixIncludeReturning,
+      mismatchedRows: activeMismatchedEntities.map((r) => ({
+        id: r.id,
+        name: r.name,
+        recordedCategory: r.recordedCategory,
+        expectedCategory: r.expectedCategory,
+      })),
+    });
+  }, [
+    currentFullConfig,
+    fixTargetColumn,
+    targetTable.newCategoryColumn,
+    targetTable.categoryColumn,
+    fixDialect,
+    fixIncludeUnclassified,
+    fixTransactionMode,
+    fixIncludeReturning,
+    activeMismatchedEntities,
+  ]);
+
+  const handleToggleMismatchedId = (id: string) => {
+    setSelectedMismatchedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllMismatches = () => {
+    if (selectedMismatchedIds.size === allMismatchedEntities.length) {
+      setSelectedMismatchedIds(new Set());
+    } else {
+      setSelectedMismatchedIds(new Set(allMismatchedEntities.map((r) => r.id)));
+    }
+  };
 
   const handleCopyText = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -529,6 +607,22 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
             PostgreSQL Queries
           </button>
           <button
+            onClick={() => setActiveMainTab('fix-mismatches')}
+            className={`py-3 px-3 sm:px-4 text-xs font-semibold border-b-2 flex items-center gap-2 whitespace-nowrap transition-colors cursor-pointer ${
+              activeMainTab === 'fix-mismatches'
+                ? 'border-indigo-600 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400'
+                : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+            }`}
+          >
+            <RefreshCw className="w-4 h-4 text-amber-500" />
+            <span>Fix Mismatches (UPDATE)</span>
+            {simulationStats.mismatches > 0 && (
+              <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300">
+                {simulationStats.mismatches} to fix
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => setActiveMainTab('python')}
             className={`py-3 px-3 sm:px-4 text-xs font-semibold border-b-2 flex items-center gap-2 whitespace-nowrap transition-colors ${
               activeMainTab === 'python'
@@ -554,10 +648,14 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
 
         {/* Quick Discrepancy Badge */}
         {simulationStats.mismatches > 0 && (
-          <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-900/40 text-[11px] font-semibold animate-pulse">
+          <button
+            onClick={() => setActiveMainTab('fix-mismatches')}
+            className="hidden lg:flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-900/40 text-[11px] font-semibold transition-all cursor-pointer"
+            title="Click to view and generate UPDATE queries for these mismatches"
+          >
             <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
-            <span>{simulationStats.mismatches} Category Mismatches Detected in Sample Data</span>
-          </div>
+            <span>{simulationStats.mismatches} Mismatches Detected &bull; Generate Fix SQL &rarr;</span>
+          </button>
         )}
       </div>
 
@@ -1115,6 +1213,495 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
         )}
 
         {/* ========================================================================= */}
+        {/* NEW TAB: FIX MISMATCHED CATEGORIES (UPDATE QUERIES) */}
+        {/* ========================================================================= */}
+        {activeMainTab === 'fix-mismatches' && (
+          <div className="space-y-5 max-w-7xl mx-auto">
+            {/* Header / Summary Card */}
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className="w-5 h-5 text-amber-500" />
+                    <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                      Fix Category Mismatches (Database UPDATE Queries)
+                    </h2>
+                    <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300">
+                      {fixDialect.toUpperCase()} UPDATE
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                    Generates atomic, production-safe SQL queries specifically targeted to reconcile and update records where the stored category deviates from your rule definitions.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setShowFixOptionsDrawer(!showFixOptionsDrawer)}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-xl border flex items-center gap-1.5 transition-colors cursor-pointer ${
+                      showFixOptionsDrawer
+                        ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300'
+                        : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Sliders className="w-3.5 h-3.5" />
+                    <span>Options & Dialect</span>
+                    {showFixOptionsDrawer ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  </button>
+                  <button
+                    onClick={() => {
+                      const query =
+                        fixSubTab === 'dynamic'
+                          ? fixQueries.dynamicFullTableUpdateSql
+                          : fixSubTab === 'per-category'
+                          ? fixQueries.perCategoryUpdateSql
+                          : fixSubTab === 'sample-keys'
+                          ? fixQueries.sampleKeyBasedUpdateSql
+                          : fixSubTab === 'audit-backup'
+                          ? fixQueries.safeAuditBackupUpdateSql
+                          : fixQueries.verificationSelectSql;
+                      handleCopyText(query, 'fix-sql');
+                    }}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    {copiedKey === 'fix-sql' ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        <span className="text-emerald-600">Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy Query</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => {
+                      const query =
+                        fixSubTab === 'dynamic'
+                          ? fixQueries.dynamicFullTableUpdateSql
+                          : fixSubTab === 'per-category'
+                          ? fixQueries.perCategoryUpdateSql
+                          : fixSubTab === 'sample-keys'
+                          ? fixQueries.sampleKeyBasedUpdateSql
+                          : fixSubTab === 'audit-backup'
+                          ? fixQueries.safeAuditBackupUpdateSql
+                          : fixQueries.verificationSelectSql;
+                      handleDownloadFile(query, `fix_category_mismatches_${fixSubTab}_${fixDialect}.sql`, 'application/sql');
+                    }}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download .sql</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Stat Indicators */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 pt-4 border-t border-slate-100 dark:border-slate-800/80">
+                <div className="text-xs">
+                  <span className="text-slate-400 block text-[10px]">Target Table & Column</span>
+                  <span className="font-mono font-semibold text-slate-800 dark:text-slate-200 truncate block">
+                    {targetTable.tableName}.{fixTargetColumn.trim() || targetTable.newCategoryColumn || targetTable.categoryColumn || 'current_category'}
+                  </span>
+                </div>
+                <div className="text-xs">
+                  <span className="text-slate-400 block text-[10px]">Discrepancies in Test Data</span>
+                  <span className="font-mono font-semibold text-rose-600 dark:text-rose-400 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    {allMismatchedEntities.length} identified ({activeMismatchedEntities.length} selected)
+                  </span>
+                </div>
+                <div className="text-xs">
+                  <span className="text-slate-400 block text-[10px]">Transaction Protection</span>
+                  <span className="font-mono font-semibold text-indigo-600 dark:text-indigo-400">
+                    {fixTransactionMode === 'commit' ? 'BEGIN ... COMMIT' : fixTransactionMode === 'dry_run' ? 'DRY-RUN (ROLLBACK)' : 'None'}
+                  </span>
+                </div>
+                <div className="text-xs">
+                  <span className="text-slate-400 block text-[10px]">Target Engine Dialect</span>
+                  <span className="font-mono font-semibold text-slate-700 dark:text-slate-300 uppercase">
+                    {fixDialect}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Collapsible Options Drawer */}
+            {showFixOptionsDrawer && (
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-indigo-100 dark:border-indigo-950/60 p-4 shadow-xs space-y-4">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800 text-xs font-bold text-slate-800 dark:text-slate-200">
+                  <div className="flex items-center gap-1.5">
+                    <Sliders className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>UPDATE Query Customization Options</span>
+                  </div>
+                  <button
+                    onClick={() => setShowFixOptionsDrawer(false)}
+                    className="text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+                  {/* Target Column */}
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      Column to UPDATE
+                    </label>
+                    <input
+                      type="text"
+                      value={fixTargetColumn}
+                      onChange={(e) => setFixTargetColumn(e.target.value)}
+                      placeholder={targetTable.categoryColumn || 'current_category'}
+                      className="w-full text-xs font-mono p-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+                    />
+                    <span className="text-[10px] text-slate-400 mt-1 block">
+                      Default: {targetTable.categoryColumn || 'current_category'}
+                    </span>
+                  </div>
+
+                  {/* SQL Dialect */}
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      Database Dialect
+                    </label>
+                    <div className="grid grid-cols-2 gap-1">
+                      {(['postgres', 'mysql', 'sqlserver', 'sqlite'] as SupportedSqlDialect[]).map((d) => (
+                        <button
+                          key={d}
+                          onClick={() => setFixDialect(d)}
+                          className={`py-1.5 px-2 rounded-lg text-xs font-mono text-center font-semibold cursor-pointer transition-colors ${
+                            fixDialect === d
+                              ? 'bg-indigo-600 text-white shadow-xs'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200'
+                          }`}
+                        >
+                          {d === 'postgres' ? 'PostgreSQL' : d === 'mysql' ? 'MySQL' : d === 'sqlserver' ? 'SQL Server' : 'SQLite'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Discrepancy Scope */}
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      Mismatch Scope
+                    </label>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
+                        <input
+                          type="radio"
+                          name="fixScope"
+                          checked={fixIncludeUnclassified}
+                          onChange={() => setFixIncludeUnclassified(true)}
+                          className="text-indigo-600"
+                        />
+                        <span>Mismatches + NULL/Blank rows</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
+                        <input
+                          type="radio"
+                          name="fixScope"
+                          checked={!fixIncludeUnclassified}
+                          onChange={() => setFixIncludeUnclassified(false)}
+                          className="text-indigo-600"
+                        />
+                        <span>Strict Mismatches Only (Ignore blank)</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Transaction Safety & Returning */}
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      Transaction Safety Mode
+                    </label>
+                    <select
+                      value={fixTransactionMode}
+                      onChange={(e) => setFixTransactionMode(e.target.value as any)}
+                      className="w-full text-xs p-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 cursor-pointer"
+                    >
+                      <option value="commit">Atomic Commit (BEGIN ... COMMIT)</option>
+                      <option value="dry_run">Dry-Run Simulation (BEGIN ... ROLLBACK)</option>
+                      <option value="none">No Transaction Wrapper (Raw SQL)</option>
+                    </select>
+
+                    <label className="flex items-center gap-2 mt-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={fixIncludeReturning}
+                        onChange={(e) => setFixIncludeReturning(e.target.checked)}
+                        className="rounded text-indigo-600"
+                      />
+                      <span>Append RETURNING / OUTPUT clause</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Sub-Tabs Navigation */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  onClick={() => setFixSubTab('dynamic')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    fixSubTab === 'dynamic'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                  }`}
+                >
+                  1. Bulk Dynamic UPDATE (CASE WHEN)
+                </button>
+                <button
+                  onClick={() => setFixSubTab('per-category')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    fixSubTab === 'per-category'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                  }`}
+                >
+                  2. Category-by-Category UPDATEs
+                </button>
+                <button
+                  onClick={() => setFixSubTab('sample-keys')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    fixSubTab === 'sample-keys'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                  }`}
+                >
+                  3. Key-Based Fix ({activeMismatchedEntities.length} Entities)
+                </button>
+                <button
+                  onClick={() => setFixSubTab('audit-backup')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    fixSubTab === 'audit-backup'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                  }`}
+                >
+                  4. Safe Staging & Audit Backup
+                </button>
+                <button
+                  onClick={() => setFixSubTab('verification')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    fixSubTab === 'verification'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                  }`}
+                >
+                  5. Pre/Post Audit Verification SELECT
+                </button>
+              </div>
+
+              <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
+                {fixSubTab === 'dynamic'
+                  ? 'Reconciles entire table with 1 query'
+                  : fixSubTab === 'per-category'
+                  ? 'Iterative priority statements'
+                  : fixSubTab === 'sample-keys'
+                  ? 'High-performance VALUES join'
+                  : fixSubTab === 'audit-backup'
+                  ? 'Zero-loss snapshot before write'
+                  : 'Diagnostic discrepancy counter'}
+              </span>
+            </div>
+
+            {/* SQL Code Display Box */}
+            <div className="relative rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 overflow-hidden shadow-xs">
+              <div className="px-4 py-2 bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500 font-mono">
+                <span className="flex items-center gap-1.5">
+                  <Code2 className="w-3.5 h-3.5 text-indigo-500" />
+                  fix_category_mismatches_{fixSubTab}_{fixDialect}.sql
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400">
+                    {fixDialect.toUpperCase()}
+                  </span>
+                  <span>UTF-8</span>
+                </div>
+              </div>
+              <pre className="p-4 sm:p-6 overflow-x-auto font-mono text-xs text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre">
+                {fixSubTab === 'dynamic' && fixQueries.dynamicFullTableUpdateSql}
+                {fixSubTab === 'per-category' && fixQueries.perCategoryUpdateSql}
+                {fixSubTab === 'sample-keys' && fixQueries.sampleKeyBasedUpdateSql}
+                {fixSubTab === 'audit-backup' && fixQueries.safeAuditBackupUpdateSql}
+                {fixSubTab === 'verification' && fixQueries.verificationSelectSql}
+              </pre>
+            </div>
+
+            {/* Detected Discrepancies Reconciliation Table */}
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+                <div>
+                  <h3 className="font-bold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-500" />
+                    <span>Detected Discrepancies in Test / Ingested Dataset ({allMismatchedEntities.length})</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Check or uncheck entities to customize the Key-Based UPDATE query (Method 3), or copy a single fix statement below.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleSelectAllMismatches}
+                    className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
+                  >
+                    {selectedMismatchedIds.size === allMismatchedEntities.length ? 'Deselect All' : 'Select All'}
+                  </button>
+                  <button
+                    onClick={() => setActiveMainTab('simulator')}
+                    className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 transition-colors cursor-pointer flex items-center gap-1"
+                  >
+                    <span>View in Simulator</span>
+                    <ArrowRight className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+
+              {allMismatchedEntities.length === 0 ? (
+                <div className="text-center py-8 text-slate-400 text-xs">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-2 opacity-80" />
+                  <p className="font-semibold text-slate-700 dark:text-slate-300">All sample records currently match their expected categories!</p>
+                  <p className="text-[11px] text-slate-500 mt-1">Import new test data or adjust category rule thresholds to simulate and fix discrepancies.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 font-semibold border-b border-slate-200 dark:border-slate-800">
+                      <tr>
+                        <th className="py-2.5 px-3 w-10 text-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedMismatchedIds.size === allMismatchedEntities.length && allMismatchedEntities.length > 0}
+                            onChange={handleSelectAllMismatches}
+                            className="rounded text-indigo-600 cursor-pointer"
+                          />
+                        </th>
+                        <th className="py-2.5 px-3 w-20">ID</th>
+                        <th className="py-2.5 px-3">Entity Name</th>
+                        <th className="py-2.5 px-3">Current Category (Recorded)</th>
+                        <th className="py-2.5 px-3">Correct Category (To Set)</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3 text-right">Quick Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {allMismatchedEntities.map((ent) => {
+                        const isSelected = selectedMismatchedIds.has(ent.id);
+                        const actualTargetCol =
+                          fixTargetColumn.trim() || targetTable.newCategoryColumn || targetTable.categoryColumn || 'current_category';
+                        const idLiteral = isNaN(Number(ent.id)) ? `'${ent.id.replace(/'/g, "''")}'` : ent.id;
+                        const singleSql = `UPDATE "${targetTable.tableName}" SET "${actualTargetCol}" = '${ent.expectedCategory.replace(/'/g, "''")}' WHERE "${targetTable.idColumn}" = ${idLiteral};`;
+
+                        return (
+                          <tr
+                            key={ent.id}
+                            className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${
+                              isSelected ? 'bg-indigo-50/20 dark:bg-indigo-950/10' : ''
+                            }`}
+                          >
+                            <td className="py-2.5 px-3 text-center">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => handleToggleMismatchedId(ent.id)}
+                                className="rounded text-indigo-600 cursor-pointer"
+                              />
+                            </td>
+                            <td className="py-2.5 px-3 font-mono font-bold text-slate-800 dark:text-slate-200">
+                              {ent.id}
+                            </td>
+                            <td className="py-2.5 px-3 font-medium text-slate-900 dark:text-slate-100">
+                              {ent.name || '—'}
+                            </td>
+                            <td className="py-2.5 px-3">
+                              {ent.recordedCategory ? (
+                                <span className="line-through text-rose-500 font-semibold mr-1 font-mono">
+                                  {ent.recordedCategory}
+                                </span>
+                              ) : (
+                                <span className="text-amber-500 italic text-[11px]">&lt;NULL / Blank&gt;</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3">
+                              <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono">
+                                {ent.expectedCategory}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3">
+                              {ent.status === 'MISMATCH' ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300">
+                                  MISMATCH
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300">
+                                  UNCLASSIFIED
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-right">
+                              <button
+                                onClick={() => handleCopyText(singleSql, `single-${ent.id}`)}
+                                className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                title={singleSql}
+                              >
+                                {copiedKey === `single-${ent.id}` ? (
+                                  <>
+                                    <Check className="w-3 h-3 text-emerald-600" />
+                                    <span className="text-emerald-600">Copied</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="w-3 h-3" />
+                                    <span>Copy Single UPDATE</span>
+                                  </>
+                                )}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Production Execution Best Practices */}
+            <div className="bg-slate-50 dark:bg-slate-900/60 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 space-y-3">
+              <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+                <Wrench className="w-4 h-4 text-indigo-500" />
+                <span>DBA Best Practice: Production Safe Execution Workflow</span>
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-slate-600 dark:text-slate-400">
+                <div className="p-3 bg-white dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-800">
+                  <div className="font-semibold text-slate-800 dark:text-slate-200 mb-1">1. Run Pre-Check Query</div>
+                  <p className="text-[11px] leading-relaxed">
+                    Execute Sub-tab 5 (Verification SELECT) first to record the exact count of discrepancies and calculate initial category accuracy.
+                  </p>
+                </div>
+                <div className="p-3 bg-white dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-800">
+                  <div className="font-semibold text-slate-800 dark:text-slate-200 mb-1">2. Use Safe Staging Table</div>
+                  <p className="text-[11px] leading-relaxed">
+                    Sub-tab 4 creates an audit snapshot table before applying updates, guaranteeing complete auditability and instant rollback if required.
+                  </p>
+                </div>
+                <div className="p-3 bg-white dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-800">
+                  <div className="font-semibold text-slate-800 dark:text-slate-200 mb-1">3. Dry-Run First</div>
+                  <p className="text-[11px] leading-relaxed">
+                    In the Options drawer, toggle "Dry-Run Simulation (ROLLBACK)" to test table locking and statement runtime without persisting changes.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
         {/* TAB 3: PYTHON PG8000 SCRIPT */}
         {/* ========================================================================= */}
         {activeMainTab === 'python' && (
@@ -1297,6 +1884,16 @@ export const DbCategoryMatcherTool: React.FC<DbCategoryMatcherToolProps> = ({
 
               {/* Data Import / Export Buttons */}
               <div className="flex items-center gap-2">
+                {simulationStats.mismatches > 0 && (
+                  <button
+                    onClick={() => setActiveMainTab('fix-mismatches')}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-xl bg-amber-500 hover:bg-amber-600 text-white flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                    title="Switch to Fix Mismatches tab to generate database UPDATE queries"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Generate Fix UPDATE ({simulationStats.mismatches})</span>
+                  </button>
+                )}
                 <button
                   onClick={() => setIsSampleImportOpen(true)}
                   className="px-3 py-1.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 flex items-center gap-1.5 transition-colors cursor-pointer"
