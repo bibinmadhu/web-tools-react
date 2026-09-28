@@ -1,39 +1,42 @@
 import React, { useState, useEffect } from 'react';
 import { X, Star, Maximize2, Minimize2 } from 'lucide-react';
 import { DevTool } from '../types';
-import { JsonBeautifierTool } from './tools/JsonBeautifierTool';
-import { CodeObfuscatorTool } from './tools/CodeObfuscatorTool';
-import { Base64Tool } from './tools/Base64Tool';
-import { RegexTesterTool } from './tools/RegexTesterTool';
-import { JwtDecoderTool } from './tools/JwtDecoderTool';
-import { HashGeneratorTool } from './tools/HashGeneratorTool';
-import { ColorConverterTool } from './tools/ColorConverterTool';
-import { UuidGeneratorTool } from './tools/UuidGeneratorTool';
-import { UrlEncoderTool } from './tools/UrlEncoderTool';
-import { CronParserTool } from './tools/CronParserTool';
-import { MarkdownPreviewTool } from './tools/MarkdownPreviewTool';
-import { CodeFormatterTool } from './tools/CodeFormatterTool';
-import { JavaObfuscatorTool } from './tools/JavaObfuscatorTool';
-import { DualJavaObfuscatorTool } from './tools/DualJavaObfuscatorTool';
-import { MultiObfuscatorTool } from './tools/MultiObfuscatorTool';
-import { PdfSignerTool } from './tools/PdfSignerTool';
-import { PdfConverterTool } from './tools/PdfConverterTool';
-import { JavaFormatterTool } from './tools/JavaFormatterTool';
-import { CurlConverterTool } from './tools/CurlConverterTool';
-import { CurlFlattenerTool } from './tools/CurlFlattenerTool';
-import { InvoiceGeneratorTool } from './tools/InvoiceGeneratorTool';
-import { PdfToMarkdownTool } from './tools/PdfToMarkdownTool';
-import { AgreementGeneratorTool } from './tools/AgreementGeneratorTool';
-import { QrCodeGeneratorTool } from './tools/QrCodeGeneratorTool';
-import { CurlChainConverterTool } from './tools/CurlChainConverterTool';
-import { CurlDbChainConverterTool } from './tools/CurlDbChainConverterTool';
-import { DbUpdateQueryGeneratorTool } from './tools/DbUpdateQueryGeneratorTool';
-import { DbSelectQueryGeneratorTool } from './tools/DbSelectQueryGeneratorTool';
-import { DbCategoryMatcherTool } from './tools/DbCategoryMatcherTool';
-import { DbQueryBuilderTool } from './tools/DbQueryBuilderTool';
-import { DataGridConverterTool } from './tools/DataGridConverterTool';
-import { DataSetMatcherTool } from './tools/DataSetMatcherTool';
-import { GenericTool } from './tools/GenericTool';
+import {
+  JsonBeautifierTool,
+  CodeObfuscatorTool,
+  Base64Tool,
+  RegexTesterTool,
+  JwtDecoderTool,
+  HashGeneratorTool,
+  ColorConverterTool,
+  UuidGeneratorTool,
+  UrlEncoderTool,
+  CronParserTool,
+  MarkdownPreviewTool,
+  CodeFormatterTool,
+  JavaObfuscatorTool,
+  DualJavaObfuscatorTool,
+  MultiObfuscatorTool,
+  PdfSignerTool,
+  PdfConverterTool,
+  JavaFormatterTool,
+  CurlConverterTool,
+  CurlFlattenerTool,
+  InvoiceGeneratorTool,
+  PdfToMarkdownTool,
+  AgreementGeneratorTool,
+  QrCodeGeneratorTool,
+  CurlChainConverterTool,
+  CurlDbChainConverterTool,
+  DbUpdateQueryGeneratorTool,
+  DbSelectQueryGeneratorTool,
+  DbCategoryMatcherTool,
+  DbQueryBuilderTool,
+  DataGridConverterTool,
+  DataSetMatcherTool,
+  QueryObfuscatorTool,
+  GenericTool,
+} from './tools';
 
 interface ToolModalProps {
   tool: DevTool | null;
@@ -106,6 +109,14 @@ export const ToolModal: React.FC<ToolModalProps> = ({
         return false;
       }
     }
+    if (tool.id === 'query-obfuscator') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_query_obfuscator');
+        return saved !== null ? saved === 'true' : false;
+      } catch (e) {
+        return false;
+      }
+    }
     return false;
   });
 
@@ -166,6 +177,13 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       } catch (e) {
         setIsFullScreen(false);
       }
+    } else if (tool?.id === 'query-obfuscator') {
+      try {
+        const saved = localStorage.getItem('devhub_fullscreen_query_obfuscator');
+        setIsFullScreen(saved !== null ? saved === 'true' : false);
+      } catch (e) {
+        setIsFullScreen(false);
+      }
     } else {
       setIsFullScreen(false);
     }
@@ -219,6 +237,12 @@ export const ToolModal: React.FC<ToolModalProps> = ({
       } else if (tool?.id === 'data-set-matcher') {
         try {
           localStorage.setItem('devhub_fullscreen_data_set_matcher', String(next));
+        } catch (e) {
+          // ignore
+        }
+      } else if (tool?.id === 'query-obfuscator') {
+        try {
+          localStorage.setItem('devhub_fullscreen_query_obfuscator', String(next));
         } catch (e) {
           // ignore
         }
@@ -335,6 +359,13 @@ export const ToolModal: React.FC<ToolModalProps> = ({
             onToggleFullScreen={handleToggleFullScreen}
           />
         );
+      case 'query-obfuscator':
+        return (
+          <QueryObfuscatorTool
+            isFullScreen={isFullScreen}
+            onToggleFullScreen={handleToggleFullScreen}
+          />
+        );
       default:
         return <GenericTool tool={tool} />;
     }
@@ -343,6 +374,7 @@ export const ToolModal: React.FC<ToolModalProps> = ({
   const isWideModal = [
     'java-dual-obfuscator',
     'java-obfuscator',
+    'query-obfuscator',
     'pdf-signer',
     'pdf-converter',
     'pdf-to-markdown',

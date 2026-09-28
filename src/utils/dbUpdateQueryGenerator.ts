@@ -41,7 +41,9 @@ export interface UpdateColumn {
   id: string;
   name: string;
   type: ColumnType;
-  values: string[];
+  valueMode?: ValueMode; // 'single' (constant update applied to all matching rows) or 'list' (per-row values)
+  singleValue?: string;  // value used when valueMode === 'single'
+  values: string[];      // list of values used when valueMode === 'list'
 }
 
 export interface UpdateQueryOptions {
@@ -66,6 +68,8 @@ export interface UpdateQueryResult {
   matchColumnCount: number;
   singleMatchCount: number;
   listMatchCount: number;
+  singleUpdateCount: number;
+  listUpdateCount: number;
   warnings: string[];
   executionMode: QueryExecutionMode;
   strategy: UpdateStrategy;
@@ -83,6 +87,41 @@ export function getMatchColumnValue(col: MatchColumn, rowIndex = 0): string {
     return col.values && col.values.length > 0 ? col.values[0] : '';
   }
   return col.values && col.values[rowIndex] !== undefined ? col.values[rowIndex] : '';
+}
+
+/**
+ * Helper to retrieve the effective value of an update column for a given row
+ */
+export function getUpdateColumnValue(col: UpdateColumn, rowIndex = 0): string {
+  if (col.valueMode === 'single') {
+    if (col.singleValue !== undefined && col.singleValue !== null) {
+      return col.singleValue;
+    }
+    return col.values && col.values.length > 0 ? col.values[0] : '';
+  }
+  return col.values && col.values[rowIndex] !== undefined ? col.values[rowIndex] : '';
+}
+
+/**
+ * Helper to compute default RETURNING clause from filter (match) columns and updated columns.
+ * Orders columns with match/filter keys first, followed by updated columns, deduplicated.
+ */
+export function getDefaultReturningClause(
+  matchColumns: Array<{ name: string }>,
+  updateColumns: Array<{ name: string }>
+): string {
+  const names: string[] = [];
+  const seen = new Set<string>();
+
+  [...(matchColumns || []), ...(updateColumns || [])].forEach((col) => {
+    const cleanName = col && typeof col.name === 'string' ? col.name.trim() : '';
+    if (cleanName && !seen.has(cleanName)) {
+      seen.add(cleanName);
+      names.push(cleanName);
+    }
+  });
+
+  return names.join(', ');
 }
 
 /**
@@ -466,6 +505,8 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
       matchColumnCount: 0,
       singleMatchCount: 0,
       listMatchCount: 0,
+      singleUpdateCount: 0,
+      listUpdateCount: 0,
       warnings: ['Target table name is required.'],
       executionMode,
       strategy: effectiveStrategy,
@@ -483,6 +524,9 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
   const singleMatchCols = matchCols.filter((c) => c.valueMode === 'single');
   const listMatchCols = matchCols.filter((c) => c.valueMode !== 'single');
 
+  const singleUpdateCols = updateCols.filter((c) => c.valueMode === 'single');
+  const listUpdateCols = updateCols.filter((c) => c.valueMode !== 'single');
+
   if (matchCols.length === 0) {
     return {
       sql: '-- Error: At least one match column (WHERE condition) is required.',
@@ -491,6 +535,8 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
       matchColumnCount: 0,
       singleMatchCount: 0,
       listMatchCount: 0,
+      singleUpdateCount: 0,
+      listUpdateCount: 0,
       warnings: ['At least one match column (WHERE condition) is required.'],
       executionMode,
       strategy: effectiveStrategy,
@@ -506,6 +552,8 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
       matchColumnCount: matchCols.length,
       singleMatchCount: singleMatchCols.length,
       listMatchCount: listMatchCols.length,
+      singleUpdateCount: 0,
+      listUpdateCount: 0,
       warnings: ['At least one column to update is required.'],
       executionMode,
       strategy: effectiveStrategy,
@@ -513,22 +561,22 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
     };
   }
 
-  // Determine total row count from longest list match column or update column list
+  // Determine total row count from longest list match column or list update column
   let maxRowCount = 0;
   listMatchCols.forEach((col) => {
     if (col.values.length > maxRowCount) maxRowCount = col.values.length;
   });
-  updateCols.forEach((col) => {
+  listUpdateCols.forEach((col) => {
     if (col.values.length > maxRowCount) maxRowCount = col.values.length;
   });
 
-  // If there are no list match columns, check if updateCols or singleMatchCols provide rows
-  if (listMatchCols.length === 0) {
-    if (maxRowCount === 0) {
-      const hasAnySingleVal = singleMatchCols.some((c) => getMatchColumnValue(c, 0).trim().length > 0);
-      if (hasAnySingleVal) {
-        maxRowCount = 1;
-      }
+  // If there are no list columns at all (all match columns are single and all update columns are single):
+  if (listMatchCols.length === 0 && listUpdateCols.length === 0) {
+    const hasAnyVal =
+      singleMatchCols.some((c) => getMatchColumnValue(c, 0).trim().length > 0) ||
+      singleUpdateCols.some((c) => getUpdateColumnValue(c, 0).trim().length > 0);
+    if (hasAnyVal) {
+      maxRowCount = 1;
     }
   }
 
@@ -540,6 +588,8 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
       matchColumnCount: matchCols.length,
       singleMatchCount: singleMatchCols.length,
       listMatchCount: listMatchCols.length,
+      singleUpdateCount: singleUpdateCols.length,
+      listUpdateCount: listUpdateCols.length,
       warnings: ['No row values were provided.'],
       executionMode,
       strategy: effectiveStrategy,
@@ -563,10 +613,17 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
     }
   });
 
-  updateCols.forEach((col) => {
+  singleUpdateCols.forEach((col) => {
+    const val = getUpdateColumnValue(col, 0);
+    if (!val || val.trim().length === 0) {
+      warnings.push(`Update column "${col.name}" is set to "Single Value" mode, but no value has been specified.`);
+    }
+  });
+
+  listUpdateCols.forEach((col) => {
     if (col.values.length < maxRowCount) {
       warnings.push(
-        `Update column "${col.name}" has ${col.values.length} values, but total rows is ${maxRowCount}. Remaining rows will default to NULL.`
+        `Update column "${col.name}" (List mode) has ${col.values.length} values, but total rows is ${maxRowCount}. Remaining rows will default to NULL.`
       );
     }
   });
@@ -607,7 +664,8 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
   });
   updateCols.forEach((col) => {
     if (col.type === 'date' || col.type === 'timestamp') {
-      if (col.values.some((v) => isNonIsoDateFormat(v))) {
+      const vals = col.valueMode === 'single' ? [getUpdateColumnValue(col, 0)] : col.values;
+      if (vals.some((v) => isNonIsoDateFormat(v))) {
         convertedDateCols.push(col.name);
       }
     }
@@ -620,9 +678,16 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
 
   let generatedSql = '';
 
+  // RETURNING clause defaults to columns which are updated and used for filtering
+  const defaultReturning = getDefaultReturningClause(matchCols, updateCols);
+  const effectiveReturning =
+    options.returningClause !== undefined
+      ? options.returningClause.trim()
+      : defaultReturning;
+
   const returningStr =
-    options.returningClause && options.returningClause.trim()
-      ? `\nRETURNING ${options.returningClause.trim().replace(/^RETURNING\s+/i, '')};`
+    effectiveReturning.length > 0
+      ? `\nRETURNING ${effectiveReturning.replace(/^RETURNING\s+/i, '')};`
       : ';';
 
   // Format single match column WHERE clauses: e.g. "tableAlias.col = 'val'" or "col = 'val'"
@@ -638,11 +703,21 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
   // 1. STRATEGY: BATCH VALUES (UPDATE ... FROM (VALUES ...) AS v(...) WHERE ...)
   if (effectiveStrategy === 'batch_values') {
     if (listMatchCols.length > 0) {
-      const allCols = [...listMatchCols, ...updateCols];
+      // Determine columns that vary per row (tuple columns)
+      const tupleCols = listUpdateCols.length > 0 ? [...listMatchCols, ...listUpdateCols] : listMatchCols;
+      const valueColNames = tupleCols.map((col) => sanitizeIdentifier(col.name)).join(', ');
 
       const setClauses = updateCols
         .map((col) => {
           const sanitizedCol = sanitizeIdentifier(col.name);
+          if (col.valueMode === 'single') {
+            const formattedVal = formatPostgresValue(
+              getUpdateColumnValue(col, 0),
+              col.type,
+              options.includeTypeCasts
+            );
+            return `  ${sanitizedCol} = ${formattedVal}`;
+          }
           const castStr =
             options.includeTypeCasts && col.type !== 'raw'
               ? `::${getPostgresTypeCast(col.type)}`
@@ -660,11 +735,10 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
 
       const constantClauses = formatSingleMatchClauses(tableAlias);
       const allWhereConditions = [joinClauses, ...constantClauses].filter(Boolean).join('\n  AND ');
-      const valueColNames = allCols.map((col) => sanitizeIdentifier(col.name)).join(', ');
 
       const valueTuples: string[] = [];
       for (let r = 0; r < maxRowCount; r++) {
-        const rowValues = allCols.map((col) => {
+        const rowValues = tupleCols.map((col) => {
           const raw = col.values[r];
           const isFirstRow = r === 0;
           const forceCast =
@@ -686,9 +760,16 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
         .filter(Boolean)
         .join(', ');
 
+      const updateDesc = [
+        singleUpdateCols.length > 0 ? `${singleUpdateCols.length} constant value(s)` : '',
+        listUpdateCols.length > 0 ? `${listUpdateCols.length} row-mapped list(s)` : '',
+      ]
+        .filter(Boolean)
+        .join(', ');
+
       generatedSql = [
         `-- Batch UPDATE for PostgreSQL using FROM (VALUES ...)`,
-        `-- Total Rows: ${maxRowCount} | Target Table: ${tableName} | Match: ${matchDesc}`,
+        `-- Total Rows: ${maxRowCount} | Target Table: ${tableName} | Match: ${matchDesc}${updateDesc ? ` | Updates: ${updateDesc}` : ''}`,
         `UPDATE ${tableName} AS ${tableAlias}`,
         `SET`,
         setClauses,
@@ -703,7 +784,7 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
       const setClauses = updateCols
         .map((col) => {
           const sanitizedCol = sanitizeIdentifier(col.name);
-          const val = formatPostgresValue(col.values[0], col.type, options.includeTypeCasts);
+          const val = formatPostgresValue(getUpdateColumnValue(col, 0), col.type, options.includeTypeCasts);
           return `  ${sanitizedCol} = ${val}`;
         })
         .join(',\n');
@@ -725,13 +806,13 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
   else if (effectiveStrategy === 'individual') {
     const statements: string[] = [];
     const inlineReturning =
-      options.returningClause && options.returningClause.trim()
-        ? ` RETURNING ${options.returningClause.trim().replace(/^RETURNING\s+/i, '')}`
+      effectiveReturning.length > 0
+        ? ` RETURNING ${effectiveReturning.replace(/^RETURNING\s+/i, '')}`
         : '';
 
     for (let r = 0; r < maxRowCount; r++) {
       const setParts = updateCols.map((col) => {
-        const valStr = formatPostgresValue(col.values[r], col.type, options.includeTypeCasts);
+        const valStr = formatPostgresValue(getUpdateColumnValue(col, r), col.type, options.includeTypeCasts);
         return `${sanitizeIdentifier(col.name)} = ${valStr}`;
       });
 
@@ -775,8 +856,12 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
       const setClauses = updateCols
         .map((col) => {
           const sanitizedCol = sanitizeIdentifier(col.name);
-          const whenClauses = [];
+          if (col.valueMode === 'single') {
+            const val = formatPostgresValue(getUpdateColumnValue(col, 0), col.type, options.includeTypeCasts);
+            return `  ${sanitizedCol} = ${val}`;
+          }
 
+          const whenClauses = [];
           for (let r = 0; r < maxRowCount; r++) {
             const matchVal = formatPostgresValue(primaryMatch.values[r], primaryMatch.type, false);
             const updateVal = formatPostgresValue(col.values[r], col.type, options.includeTypeCasts);
@@ -825,7 +910,7 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
       const setClauses = updateCols
         .map((col) => {
           const sanitizedCol = sanitizeIdentifier(col.name);
-          const val = formatPostgresValue(col.values[0], col.type, options.includeTypeCasts);
+          const val = formatPostgresValue(getUpdateColumnValue(col, 0), col.type, options.includeTypeCasts);
           return `  ${sanitizedCol} = ${val}`;
         })
         .join(',\n');
@@ -846,12 +931,16 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
   // 4. STRATEGY: CTE (WITH updates AS ...)
   else if (effectiveStrategy === 'cte') {
     if (listMatchCols.length > 0) {
-      const allCols = [...listMatchCols, ...updateCols];
-      const valueColNames = allCols.map((col) => sanitizeIdentifier(col.name)).join(', ');
+      const tupleCols = listUpdateCols.length > 0 ? [...listMatchCols, ...listUpdateCols] : listMatchCols;
+      const valueColNames = tupleCols.map((col) => sanitizeIdentifier(col.name)).join(', ');
 
       const setClauses = updateCols
         .map((col) => {
           const sanitizedCol = sanitizeIdentifier(col.name);
+          if (col.valueMode === 'single') {
+            const val = formatPostgresValue(getUpdateColumnValue(col, 0), col.type, options.includeTypeCasts);
+            return `  ${sanitizedCol} = ${val}`;
+          }
           return `  ${sanitizedCol} = updates.${sanitizedCol}`;
         })
         .join(',\n');
@@ -868,7 +957,7 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
 
       const valueTuples: string[] = [];
       for (let r = 0; r < maxRowCount; r++) {
-        const rowValues = allCols.map((col) => {
+        const rowValues = tupleCols.map((col) => {
           const raw = col.values[r];
           const isFirstRow = r === 0;
           const forceCast =
@@ -900,7 +989,7 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
       const setClauses = updateCols
         .map((col) => {
           const sanitizedCol = sanitizeIdentifier(col.name);
-          const val = formatPostgresValue(col.values[0], col.type, options.includeTypeCasts);
+          const val = formatPostgresValue(getUpdateColumnValue(col, 0), col.type, options.includeTypeCasts);
           return `  ${sanitizedCol} = ${val}`;
         })
         .join(',\n');
@@ -935,6 +1024,8 @@ export function generatePostgresUpdateQuery(options: UpdateQueryOptions): Update
     matchColumnCount: matchCols.length,
     singleMatchCount: singleMatchCols.length,
     listMatchCount: listMatchCols.length,
+    singleUpdateCount: singleUpdateCols.length,
+    listUpdateCount: listUpdateCols.length,
     warnings,
     executionMode,
     strategy: effectiveStrategy,
@@ -1122,7 +1213,7 @@ export const DB_UPDATE_PRESETS: DbUpdatePreset[] = [
     executionMode: 'batch',
     strategy: 'batch_values',
     transactionMode: 'commit',
-    returningClause: 'sku, stock_quantity, reorder_threshold',
+    returningClause: 'tenant_id, store_id, sku, stock_quantity, reorder_threshold, last_audit_date',
     matchColumns: [
       {
         id: 'match-tenant',
@@ -1177,7 +1268,7 @@ export const DB_UPDATE_PRESETS: DbUpdatePreset[] = [
     executionMode: 'individual',
     strategy: 'individual',
     transactionMode: 'commit',
-    returningClause: 'order_id, line_number, fulfillment_status',
+    returningClause: 'order_id, line_number, fulfillment_status, tracking_code',
     includeRowComments: true,
     matchColumns: [
       {
@@ -1218,7 +1309,7 @@ export const DB_UPDATE_PRESETS: DbUpdatePreset[] = [
     executionMode: 'batch',
     strategy: 'cte',
     transactionMode: 'commit',
-    returningClause: '*',
+    returningClause: 'account_id, plan_tier, api_quota_monthly, expires_at',
     matchColumns: [
       {
         id: 'match-acc',
@@ -1276,19 +1367,83 @@ export const DB_UPDATE_PRESETS: DbUpdatePreset[] = [
         id: 'upd-plan-code',
         name: 'plan_code',
         type: 'text',
+        valueMode: 'list',
         values: ['PREMIUM_ANNUAL', 'GROWTH_MONTHLY', 'ENTERPRISE_ANNUAL', 'STARTER_MONTHLY'],
       },
       {
         id: 'upd-effective-date',
         name: 'effective_date',
         type: 'date',
+        valueMode: 'list',
         values: ['24/10/2023', '05/11/2023', '15/12/2023', '01/01/2024'],
       },
       {
         id: 'upd-billing-date',
         name: 'next_billing_date',
         type: 'date',
+        valueMode: 'list',
         values: ['24/10/2024', '05/12/2023', '15/12/2024', '01/02/2024'],
+      },
+    ],
+  },
+  {
+    id: 'bulk-status-single-value',
+    name: 'Bulk Deactivation (Single Value Update for All Matched Keys)',
+    description: 'Apply single constant values (e.g. status = suspended, audit timestamp, reason) to all matching user accounts without repeating rows',
+    tableName: 'user_accounts',
+    executionMode: 'batch',
+    strategy: 'batch_values',
+    transactionMode: 'commit',
+    returningClause: 'tenant_id, user_id, status, suspension_reason, updated_at, failed_login_attempts',
+    matchColumns: [
+      {
+        id: 'match-tenant',
+        name: 'tenant_id',
+        type: 'text',
+        valueMode: 'single',
+        singleValue: 'tenant_eu_central',
+        values: ['tenant_eu_central'],
+      },
+      {
+        id: 'match-user',
+        name: 'user_id',
+        type: 'integer',
+        valueMode: 'list',
+        values: ['4021', '4022', '4023', '4024', '4025', '4026'],
+      },
+    ],
+    updateColumns: [
+      {
+        id: 'upd-status',
+        name: 'status',
+        type: 'text',
+        valueMode: 'single',
+        singleValue: 'suspended',
+        values: ['suspended'],
+      },
+      {
+        id: 'upd-reason',
+        name: 'suspension_reason',
+        type: 'text',
+        valueMode: 'single',
+        singleValue: 'Bulk security compliance remediation',
+        values: ['Bulk security compliance remediation'],
+      },
+      {
+        id: 'upd-updated-at',
+        name: 'updated_at',
+        type: 'timestamp',
+        valueMode: 'single',
+        singleValue: 'NOW()',
+        values: ['NOW()'],
+      },
+      {
+        id: 'upd-failed-count',
+        name: 'failed_login_attempts',
+        type: 'integer',
+        valueMode: 'single',
+        singleValue: '0',
+        values: ['0'],
       },
     ],
   },
@@ -1347,12 +1502,17 @@ export function createDbUpdateConfigExport(data: {
       id: col.id || `upd-${idx + 1}-${Date.now()}`,
       name: col.name ? col.name.trim() : `col_${idx + 1}`,
       type: col.type || 'text',
+      valueMode: col.valueMode === 'single' ? 'single' : 'list',
+      singleValue: col.singleValue !== undefined ? String(col.singleValue) : '',
       values: Array.isArray(col.values) ? col.values.map(String) : [],
     })),
     executionMode: data.executionMode === 'individual' ? 'individual' : 'batch',
     strategy: data.strategy || 'batch_values',
     transactionMode: data.transactionMode || 'commit',
-    returningClause: data.returningClause !== undefined ? data.returningClause : '*',
+    returningClause:
+      data.returningClause !== undefined
+        ? data.returningClause
+        : getDefaultReturningClause(data.matchColumns, data.updateColumns),
     includeTypeCasts: data.includeTypeCasts !== false,
     includeRowComments: data.includeRowComments !== false,
   };
@@ -1417,11 +1577,13 @@ export function validateAndParseDbUpdateConfig(input: string | unknown): {
         const id = uc.id || `upd-${idx + 1}-${Date.now()}`;
         const name = typeof uc.name === 'string' && uc.name.trim() ? uc.name.trim() : `column_${idx + 1}`;
         const type: ColumnType = validTypes.includes(uc.type) ? uc.type : 'text';
-        const values = Array.isArray(uc.values) ? uc.values.map(String) : [];
-        return { id, name, type, values };
+        const valueMode: ValueMode = uc.valueMode === 'single' ? 'single' : 'list';
+        const singleValue = uc.singleValue !== undefined && uc.singleValue !== null ? String(uc.singleValue) : (Array.isArray(uc.values) && uc.values[0] ? String(uc.values[0]) : '');
+        const values = Array.isArray(uc.values) ? uc.values.map(String) : (singleValue ? [singleValue] : []);
+        return { id, name, type, valueMode, singleValue, values };
       });
     } else {
-      updateCols = [{ id: 'upd-1', name: 'status', type: 'text', values: [] }];
+      updateCols = [{ id: 'upd-1', name: 'status', type: 'text', valueMode: 'list', singleValue: '', values: [] }];
     }
 
     // Execution Mode
@@ -1437,7 +1599,10 @@ export function validateAndParseDbUpdateConfig(input: string | unknown): {
     const validTransactions: TransactionMode[] = ['none', 'commit', 'rollback'];
     const transactionMode: TransactionMode = validTransactions.includes(raw.transactionMode) ? raw.transactionMode : 'commit';
 
-    const returningClause = typeof raw.returningClause === 'string' ? raw.returningClause : '*';
+    const returningClause =
+      typeof raw.returningClause === 'string'
+        ? raw.returningClause
+        : getDefaultReturningClause(matchCols, updateCols);
     const includeTypeCasts = raw.includeTypeCasts !== false;
     const includeRowComments = raw.includeRowComments !== false;
 

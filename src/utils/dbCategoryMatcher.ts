@@ -912,6 +912,29 @@ function escapeSqlIdentifier(name: string, dialect: SupportedSqlDialect): string
 }
 
 /**
+ * Resolves standard SQL column data type for audit table creation based on MetricType and SQL dialect
+ */
+function getMetricSqlType(type: MetricType, dialect: SupportedSqlDialect = 'postgres'): string {
+  switch (type) {
+    case 'integer':
+      return dialect === 'postgres' ? 'INTEGER' : 'INT';
+    case 'bigint':
+      return 'BIGINT';
+    case 'numeric':
+      return dialect === 'postgres' ? 'NUMERIC' : 'DECIMAL(18, 2)';
+    case 'date':
+      if (dialect === 'postgres') return 'DATE';
+      if (dialect === 'sqlserver') return 'DATETIME2';
+      return 'DATETIME';
+    case 'text':
+    default:
+      if (dialect === 'sqlserver') return 'NVARCHAR(255)';
+      if (dialect === 'postgres') return 'TEXT';
+      return 'VARCHAR(255)';
+  }
+}
+
+/**
  * Generates an inequality expression between a column and a CASE expression
  * handling NULL / UNCLASSIFIED appropriately for each dialect.
  */
@@ -1230,23 +1253,42 @@ WHERE ${idCol} IN ('ENTITY_ID_1', 'ENTITY_ID_2');`,
 
   // 4. Safe Staging & Audit Backup Table UPDATE
   const auditTableName = escapeSqlIdentifier(`${targetTable.tableName}_category_fix_audit`, dialect);
+  const nameCol = targetTable.nameColumn?.trim() ? escapeSqlIdentifier(targetTable.nameColumn.trim(), dialect) : null;
   let safeAuditCore = '';
 
   if (dialect === 'postgres') {
-    safeAuditCore = `-- Step 1: Snapshot defective rows into an audit backup table before making changes
+    const metricDefs = metricColumns
+      .map((c) => `  ${escapeSqlIdentifier(c.name, dialect)} ${getMetricSqlType(c.type, 'postgres')},`)
+      .join('\n');
+
+    const insertCols = [
+      'entity_id',
+      ...(nameCol ? ['entity_name'] : []),
+      'old_category',
+      'new_category',
+      ...metricColumns.map((c) => escapeSqlIdentifier(c.name, dialect)),
+    ].join(', ');
+
+    const selectExprs = [
+      `  ${idCol}::text`,
+      ...(nameCol ? [`  ${nameCol}::text`] : []),
+      `  ${targetCol}::text`,
+      caseWhenExpr,
+      ...metricColumns.map((c) => `  ${escapeSqlIdentifier(c.name, dialect)}`),
+    ].join(',\n');
+
+    safeAuditCore = `-- Step 1: Snapshot defective rows and all metric values into an audit backup table before making changes
 CREATE TABLE IF NOT EXISTS ${auditTableName} (
   audit_id SERIAL PRIMARY KEY,
   entity_id VARCHAR(255),
-  old_category VARCHAR(255),
+${nameCol ? `  entity_name VARCHAR(255),\n` : ''}  old_category VARCHAR(255),
   new_category VARCHAR(255),
-  fixed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+${metricDefs ? `${metricDefs}\n` : ''}  fixed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
-INSERT INTO ${auditTableName} (entity_id, old_category, new_category)
+INSERT INTO ${auditTableName} (${insertCols})
 SELECT
-  ${idCol}::text,
-  ${targetCol}::text,
-${caseWhenExpr}
+${selectExprs}
 FROM ${tName}
 WHERE 
   ${mismatchWhere};
@@ -1265,29 +1307,93 @@ SELECT COUNT(*) AS remaining_mismatches
 FROM ${tName}
 WHERE 
   ${mismatchWhere};`;
+  } else if (dialect === 'sqlserver') {
+    const metricSelects = metricColumns.map((c) => `    ${escapeSqlIdentifier(c.name, dialect)}`).join(',\n');
+    const insertCols = [
+      '    entity_id',
+      ...(nameCol ? ['    entity_name'] : []),
+      '    old_category',
+      '    new_category',
+      ...metricColumns.map((c) => `    ${escapeSqlIdentifier(c.name, dialect)}`),
+      '    fixed_at',
+    ].join(',\n');
+
+    safeAuditCore = `-- Step 1: Snapshot defective rows and all metric values into an audit backup table before making changes
+IF OBJECT_ID('${targetTable.tableName}_category_fix_audit', 'U') IS NULL
+BEGIN
+  SELECT
+    ${idCol} AS entity_id,
+${nameCol ? `    ${nameCol} AS entity_name,\n` : ''}    ${targetCol} AS old_category,
+${caseWhenExpr} AS new_category,
+${metricSelects ? `${metricSelects},\n` : ''}    GETDATE() AS fixed_at
+  INTO ${auditTableName}
+  FROM ${tName}
+  WHERE 
+    ${mismatchWhere};
+END
+ELSE
+BEGIN
+  INSERT INTO ${auditTableName} (
+${insertCols}
+  )
+  SELECT
+    ${idCol},
+${nameCol ? `    ${nameCol},\n` : ''}    ${targetCol},
+${caseWhenExpr},
+${metricSelects ? `${metricSelects},\n` : ''}    GETDATE()
+  FROM ${tName}
+  WHERE 
+    ${mismatchWhere};
+END;
+
+-- Step 2: Apply the category fix safely
+UPDATE ${tName}
+SET ${targetCol} = 
+${caseWhenExpr}
+WHERE ${idCol} IN (
+  SELECT entity_id FROM ${auditTableName}
+  WHERE fixed_at >= CAST(GETDATE() AS DATE)
+);
+
+-- Step 3: Verify zero discrepancies remaining
+SELECT COUNT(*) AS remaining_mismatches
+FROM ${tName}
+WHERE 
+  ${mismatchWhere};`;
   } else {
-    safeAuditCore = `-- Step 1: Create backup snapshot of mismatched rows
+    // MySQL, SQLite
+    const metricSelects = metricColumns.map((c) => `  ${escapeSqlIdentifier(c.name, dialect)}`).join(',\n');
+
+    safeAuditCore = `-- Step 1: Create backup snapshot of mismatched rows including all metric properties
 CREATE TABLE IF NOT EXISTS ${auditTableName} AS
 SELECT
   ${idCol} AS entity_id,
-  ${targetCol} AS old_category,
-${caseWhenExpr} AS new_category
+${nameCol ? `  ${nameCol} AS entity_name,\n` : ''}  ${targetCol} AS old_category,
+${caseWhenExpr} AS new_category,
+${metricSelects ? `${metricSelects},\n` : ''}  CURRENT_TIMESTAMP AS fixed_at
 FROM ${tName}
 WHERE 
   ${mismatchWhere};
 
--- Step 2: Apply the correction
+-- Step 2: Apply the category fix safely
 UPDATE ${tName}
 SET ${targetCol} = 
 ${caseWhenExpr}
+WHERE 
+  ${mismatchWhere};
+
+-- Step 3: Verify zero discrepancies remaining
+SELECT COUNT(*) AS remaining_mismatches
+FROM ${tName}
 WHERE 
   ${mismatchWhere};`;
   }
 
   const safeAuditBackupUpdateSql = `-- ============================================================================
 -- 4. Safe Staging & Audit Backup Table UPDATE
--- Pre-creates a backup audit snapshot before applying corrections to live data.
--- Allows instant rollbacks or post-fix verification.
+-- Pre-creates a backup audit snapshot with all metric properties before applying corrections.
+-- Allows manual inspection, verification of qualifying metrics, and instant rollbacks.
+-- Captures: entity_id, ${nameCol ? 'entity_name, ' : ''}old_category, new_category, and all metric columns (${metricColumns.map((c) => c.name).join(', ')}).
 -- ============================================================================
 ${wrapTransaction(safeAuditCore, transactionMode, dialect)}`;
 

@@ -52,6 +52,16 @@ export const TOOLS_DATA: DevTool[] = [
     isPopular: true,
   },
   {
+    id: 'query-obfuscator',
+    name: 'Query Obfuscator',
+    description: 'Obfuscate & de-obfuscate SQL queries, masking tables & columns with reversible mapping keys',
+    category: 'security',
+    tags: ['SQL', 'Security', 'Obfuscator', 'Deobfuscate', 'Database', 'Query', 'Mapping', 'UPDATE'],
+    iconText: 'SQL🛡️',
+    iconType: 'shield',
+    isPopular: true,
+  },
+  {
     id: 'code-formatter',
     name: 'Code Format',
     description: 'Beautify JS, HTML & CSS',

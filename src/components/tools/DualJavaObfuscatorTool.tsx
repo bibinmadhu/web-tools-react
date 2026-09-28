@@ -43,6 +43,7 @@ import {
 import { JAVA_DUAL_PRESETS, JavaDualPreset } from '../../utils/javaDualPresets';
 import { JavaObfuscationMapping, DEFAULT_EXCLUDED_PACKAGES } from '../../utils/javaObfuscator';
 import { formatJavaCode } from '../../utils/javaFormatter';
+import { GeminiTestGeneratorPanel } from './dual-java-obfuscator/GeminiTestGeneratorPanel';
 
 export interface DualJavaObfuscatorToolProps {
   isFullScreen?: boolean;
@@ -53,7 +54,7 @@ export const DualJavaObfuscatorTool: React.FC<DualJavaObfuscatorToolProps> = ({
   isFullScreen = false,
   onToggleFullScreen,
 }) => {
-  const [activeTab, setActiveTab] = useState<'obfuscate' | 'deobfuscate' | 'mapping' | 'diff' | 'settings'>('obfuscate');
+  const [activeTab, setActiveTab] = useState<'obfuscate' | 'deobfuscate' | 'mapping' | 'diff' | 'settings' | 'ai-test-gen'>('obfuscate');
   const [selectedFileTab, setSelectedFileTab] = useState<'both' | 'main' | 'test'>('both');
   const [viewMode, setViewMode] = useState<'split' | 'code'>('split');
   const [wrapLines, setWrapLines] = useState<boolean>(false);
@@ -395,9 +396,13 @@ How to De-obfuscate:
                 <Shield className="w-5 h-5" />
               </div>
               <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                Java Class & Test Obfuscator
+                Java Class & Test Dual Obfuscator
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                   Synchronized Mapping
+                </span>
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-amber-300" />
+                  Gemini Test Gen
                 </span>
               </h2>
             </div>
@@ -537,6 +542,21 @@ How to De-obfuscate:
           >
             <ArrowRightLeft className="w-3.5 h-3.5" />
             <span>De-Obfuscate Modified Code</span>
+          </button>
+          <button
+            id="tab-ai-test-gen"
+            onClick={() => setActiveTab('ai-test-gen')}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all relative ${
+              activeTab === 'ai-test-gen'
+                ? 'bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 text-white shadow-sm'
+                : 'text-purple-300 hover:text-white hover:bg-purple-950/40'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+            <span>AI Test Generator</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-purple-500/30 text-purple-200 font-bold border border-purple-400/40">
+              Gemini
+            </span>
           </button>
           <button
             id="tab-mapping"
@@ -875,10 +895,20 @@ How to De-obfuscate:
                   {/* Obfuscated Output */}
                   <div>
                     <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
-                      <span className="text-purple-400 font-semibold flex items-center gap-1">
-                        <Sparkles className="w-3.5 h-3.5" />
-                        Obfuscated Test Output:
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-purple-400 font-semibold flex items-center gap-1">
+                          <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                          Obfuscated Test Output:
+                        </span>
+                        <button
+                          onClick={() => setActiveTab('ai-test-gen')}
+                          className="px-2.5 py-0.5 rounded-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-[10px] font-bold flex items-center gap-1 shadow-xs transition-all cursor-pointer"
+                          title="Generate 100% line & branch coverage unit tests using Gemini API"
+                        >
+                          <Sparkles className="w-3 h-3 text-amber-300" />
+                          <span>Generate Tests with Gemini</span>
+                        </button>
+                      </div>
                       <div className="flex items-center gap-2">
                         <span>{result.testClassFile.obfuscatedCode.split('\n').length} lines • {result.testClassFile.obfuscatedCode.length} chars</span>
                         <button
@@ -1612,6 +1642,39 @@ How to De-obfuscate:
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* TAB 6: AI UNIT TEST GENERATOR (GEMINI) */}
+      {activeTab === 'ai-test-gen' && (
+        <div id="tab-content-ai-test-gen" className="space-y-4">
+          <GeminiTestGeneratorPanel
+            mainFileName={result.mainClassFile.fileName}
+            mainCode={result.mainClassFile.obfuscatedCode}
+            testFileName={result.testClassFile.fileName}
+            testCode={result.testClassFile.obfuscatedCode}
+            result={result}
+            onApplyMergedTest={(mergedObfuscatedCode, deobfuscatedCode) => {
+              setResult((prev) => ({
+                ...prev,
+                testClassFile: {
+                  ...prev.testClassFile,
+                  obfuscatedCode: mergedObfuscatedCode,
+                },
+              }));
+              setRestoredTestCode(deobfuscatedCode);
+              setDeobfTestCode(mergedObfuscatedCode);
+              showStatus('Updated obfuscated test class with generated branch tests applied!');
+            }}
+            onNavigateToDeobfuscator={(deobfMain, deobfTest) => {
+              setDeobfMainCode(deobfMain);
+              setDeobfTestCode(deobfTest);
+              setDeobfMappingInput(JSON.stringify(result.mapping, null, 2));
+              setActiveTab('deobfuscate');
+              showStatus('Loaded updated obfuscated code into De-Obfuscator tab!');
+            }}
+            isFullScreen={isFullScreen}
+          />
         </div>
       )}
     </div>

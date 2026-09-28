@@ -148,6 +148,15 @@ import {
   sortMatchedRows,
   tryParseNumericValue,
 } from './dataSetMatcher';
+import {
+  obfuscateSqlQuery,
+  deobfuscateSqlQuery,
+  validateImportedMapping,
+  tokenizeSql,
+  analyzeSqlTokens,
+  DEFAULT_OBFUSCATION_OPTIONS,
+  SQL_QUERY_PRESETS,
+} from './sqlQueryObfuscator';
 import { TestSuiteSummary, UnitTestResult } from '../types';
 
 export async function runAllUnitTests(): Promise<TestSuiteSummary> {
@@ -2640,6 +2649,24 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
       targetColumn: 'custom_override_column',
     });
     assertTrue(overrideResult.dynamicFullTableUpdateSql.includes('SET "custom_override_column"'), 'Explicit targetColumn option should override rules column');
+
+    // 7. Verify Safe Staging & Audit Backup includes all relevant properties (All metric columns)
+    const auditSql = fixResult.safeAuditBackupUpdateSql;
+    assertTrue(auditSql.includes('CREATE TABLE IF NOT EXISTS "business_entities_category_fix_audit"'), 'Must create audit table');
+    assertTrue(auditSql.includes('"no_of_employees" INTEGER'), 'Audit table DDL must include no_of_employees metric column with type');
+    assertTrue(auditSql.includes('"annual_turnover" NUMERIC'), 'Audit table DDL must include annual_turnover metric column with type');
+    assertTrue(auditSql.includes('"balance_sheet" NUMERIC'), 'Audit table DDL must include balance_sheet metric column with type');
+    assertTrue(auditSql.includes('"no_of_employees", "annual_turnover", "balance_sheet"'), 'INSERT statement must insert all metric columns');
+
+    // 8. Verify MySQL dialect audit snapshot includes all metric columns
+    const mysqlFixResult = generateCategoryMismatchFixQueries(DEFAULT_MATCHER_CONFIG, {
+      dialect: 'mysql',
+    });
+    const mysqlAuditSql = mysqlFixResult.safeAuditBackupUpdateSql;
+    assertTrue(mysqlAuditSql.includes('`business_entities_category_fix_audit`'), 'MySQL must use backtick quotes');
+    assertTrue(mysqlAuditSql.includes('`no_of_employees`'), 'MySQL audit table must select no_of_employees');
+    assertTrue(mysqlAuditSql.includes('`annual_turnover`'), 'MySQL audit table must select annual_turnover');
+    assertTrue(mysqlAuditSql.includes('`balance_sheet`'), 'MySQL audit table must select balance_sheet');
   });
 
   // =========================================================================
@@ -2857,6 +2884,129 @@ Each deliverable must adhere strictly to Client’s security standards, GDPR com
     // 6. Reset to original order when sortField is null
     const originalOrder = sortMatchedRows(sortedByKeyDesc, null, 'asc', result.rows);
     assertEqual(originalOrder[0].rowId, result.rows[0].rowId, 'Should restore original index');
+  });
+
+  // =========================================================================
+  // Query Obfuscator Test Suites
+  // =========================================================================
+  test('Query Obfuscator', 'Table & Column Name Obfuscation in UPDATE Queries', () => {
+    const updateSql = `UPDATE "business_entities"
+SET "current_category" = 'SME', "annual_turnover" = 5000000
+WHERE "no_of_employees" <= 249;`;
+
+    const res = obfuscateSqlQuery(updateSql, {
+      dialect: 'postgres',
+      namingStyle: 'prefixed',
+      tablePrefix: 'tbl_sec_',
+      columnPrefix: 'col_sec_',
+      excludedIdentifiers: [],
+    });
+
+    assertTrue(res.obfuscatedSql.includes('UPDATE "tbl_sec_01"'), 'Table name business_entities must be obfuscated');
+    assertTrue(res.obfuscatedSql.includes('SET "col_sec_01" = \'SME\''), 'Column current_category must be obfuscated');
+    assertTrue(res.obfuscatedSql.includes('"col_sec_02" = 5000000'), 'Column annual_turnover must be obfuscated');
+    assertTrue(res.obfuscatedSql.includes('"col_sec_03" <= 249'), 'Column no_of_employees in WHERE must be obfuscated');
+    assertTrue(res.obfuscatedSql.includes('WHERE'), 'SQL Keyword WHERE must be preserved');
+    assertTrue(res.obfuscatedSql.includes('UPDATE'), 'SQL Keyword UPDATE must be preserved');
+
+    // Verify mapping dictionary
+    assertEqual(res.mapping.tables['business_entities'], 'tbl_sec_01', 'Table mapping must match');
+    assertEqual(res.mapping.columns['current_category'], 'col_sec_01', 'Column mapping must match');
+    assertEqual(res.mapping.reverseMapping['tbl_sec_01'], 'business_entities', 'Reverse mapping for table must match');
+    assertEqual(res.mapping.reverseMapping['col_sec_01'], 'current_category', 'Reverse mapping for column must match');
+  });
+
+  test('Query Obfuscator', 'Reversible De-obfuscation with 100% Roundtrip Guarantee', () => {
+    for (const preset of SQL_QUERY_PRESETS) {
+      const obf = obfuscateSqlQuery(preset.sql, { dialect: preset.dialect });
+      const deob = deobfuscateSqlQuery(obf.obfuscatedSql, obf.mapping);
+
+      assertEqual(
+        deob.deobfuscatedSql,
+        preset.sql,
+        `Roundtrip de-obfuscation must match original query for preset: ${preset.id}`
+      );
+      assertEqual(deob.unrecognizedTokens.length, 0, 'No unrecognized tokens should remain after de-obfuscation');
+      assertTrue(deob.restoredCount > 0, 'Should have restored at least one identifier');
+    }
+  });
+
+  test('Query Obfuscator', 'Dialect Quoting Styles: MySQL Backticks & SQL Server Brackets', () => {
+    // MySQL with backticks
+    const mysqlSql = 'SELECT `user_id`, `email` FROM `users` WHERE `status` = 1;';
+    const mysqlRes = obfuscateSqlQuery(mysqlSql, {
+      dialect: 'mysql',
+      excludedIdentifiers: [],
+    });
+    assertTrue(mysqlRes.obfuscatedSql.includes('`tbl_01`'), 'MySQL backticks around table name must be retained');
+    assertTrue(mysqlRes.obfuscatedSql.includes('`col_01`'), 'MySQL backticks around column names must be retained');
+    const mysqlDeob = deobfuscateSqlQuery(mysqlRes.obfuscatedSql, mysqlRes.mapping);
+    assertEqual(mysqlDeob.deobfuscatedSql, mysqlSql, 'MySQL roundtrip must match exactly');
+
+    // SQL Server with square brackets
+    const tsql = 'SELECT [BalanceAmount] FROM [Customers] WHERE [IsActive] = 1;';
+    const tsqlRes = obfuscateSqlQuery(tsql, {
+      dialect: 'sqlserver',
+      excludedIdentifiers: [],
+    });
+    assertTrue(tsqlRes.obfuscatedSql.includes('[tbl_01]'), 'SQL Server brackets around table name must be retained');
+    assertTrue(tsqlRes.obfuscatedSql.includes('[col_01]'), 'SQL Server brackets around column name must be retained');
+    const tsqlDeob = deobfuscateSqlQuery(tsqlRes.obfuscatedSql, tsqlRes.mapping);
+    assertEqual(tsqlDeob.deobfuscatedSql, tsql, 'SQL Server roundtrip must match exactly');
+  });
+
+  test('Query Obfuscator', 'Mapping JSON Export & Import Validation', () => {
+    const originalSql = 'SELECT first_name, last_name FROM employees;';
+    const obf = obfuscateSqlQuery(originalSql, { excludedIdentifiers: [] });
+
+    // 1. Export structure validation
+    const exportedJson = JSON.stringify(obf.mapping);
+    assertTrue(exportedJson.includes('"format":"devhub-sql-obfuscator-mapping"'), 'JSON must include format identifier');
+    assertTrue(exportedJson.includes('"tables"'), 'JSON must include tables object');
+    assertTrue(exportedJson.includes('"columns"'), 'JSON must include columns object');
+
+    // 2. Validate import of full DevHub mapping
+    const importRes = validateImportedMapping(exportedJson);
+    assertTrue(importRes.success, 'Valid DevHub mapping JSON should succeed import');
+    assertEqual(importRes.mapping?.tables['employees'], 'tbl_01', 'Imported table mapping should match');
+
+    // 3. Validate import of simplified key-value mapping
+    const simpleJson = JSON.stringify({
+      tables: { customers: 'tbl_custom' },
+      columns: { email: 'col_custom' },
+    });
+    const simpleImport = validateImportedMapping(simpleJson);
+    assertTrue(simpleImport.success, 'Simple dictionary mapping JSON should succeed import');
+    assertEqual(simpleImport.mapping?.tables['customers'], 'tbl_custom', 'Simple table mapping imported');
+    assertEqual(simpleImport.mapping?.reverseMapping['tbl_custom'], 'customers', 'Auto-generated reverse mapping');
+
+    // 4. Invalid JSON rejection
+    const invalidJson = '{ not valid json';
+    const failRes = validateImportedMapping(invalidJson);
+    assertTrue(!failRes.success, 'Malformed JSON should fail gracefully');
+    assertTrue(failRes.error !== undefined, 'Error message should be provided');
+  });
+
+  test('Query Obfuscator', 'Excluded Identifiers & Naming Styles', () => {
+    const query = 'SELECT id, created_at, full_name FROM customers WHERE status = \'ACTIVE\';';
+    
+    // Test with default exclusions (id, created_at, status)
+    const res = obfuscateSqlQuery(query, {
+      excludedIdentifiers: ['id', 'created_at', 'status'],
+    });
+
+    assertTrue(res.obfuscatedSql.includes('id,'), 'Excluded column id must NOT be obfuscated');
+    assertTrue(res.obfuscatedSql.includes('created_at,'), 'Excluded column created_at must NOT be obfuscated');
+    assertTrue(res.obfuscatedSql.includes('WHERE status ='), 'Excluded column status must NOT be obfuscated');
+    assertTrue(!res.obfuscatedSql.includes('full_name'), 'Non-excluded column full_name must be obfuscated');
+
+    // Test Pseudonym naming style
+    const pseudoRes = obfuscateSqlQuery(query, {
+      namingStyle: 'pseudonym',
+      excludedIdentifiers: [],
+    });
+    assertTrue(pseudoRes.mapping.tables['customers'] !== undefined, 'Customer table must have pseudonym mapping');
+    assertTrue(pseudoRes.mapping.tables['customers'].length > 2, 'Pseudonym table name must be populated');
   });
 
   const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
