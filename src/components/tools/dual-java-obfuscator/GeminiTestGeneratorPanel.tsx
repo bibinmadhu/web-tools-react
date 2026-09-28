@@ -27,6 +27,8 @@ import {
   ChevronDown,
   ChevronRight,
   Zap,
+  Layers,
+  Info,
 } from 'lucide-react';
 import { DualJavaObfuscationResult } from '../../../utils/javaDualObfuscator';
 import {
@@ -34,6 +36,8 @@ import {
   extractJavaMethods,
   generateJavaTestsWithGemini,
   GeneratedTestsResult,
+  createScopedObfuscatedJavaClasses,
+  ScopedObfuscatedClasses,
 } from '../../../utils/geminiJavaTestGenerator';
 import { deobfuscateJavaCode } from '../../../utils/javaObfuscator';
 import { formatJavaCode } from '../../../utils/javaFormatter';
@@ -77,11 +81,15 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
   const [coverageGoal, setCoverageGoal] = useState<'all_lines_and_branches' | 'boundary_and_exceptions' | 'edge_cases'>('all_lines_and_branches');
   const [testFramework, setTestFramework] = useState<'junit5' | 'junit4' | 'testng'>('junit5');
 
-  // Method Selection
-  const [sourceFilter, setSourceFilter] = useState<'test' | 'main' | 'all'>('test');
+  // Method Selection (Class Target Methods is the Primary option)
+  const [sourceFilter, setSourceFilter] = useState<'main' | 'test' | 'all'>('main');
   const [methodSearch, setMethodSearch] = useState<string>('');
   const [selectedMethodIds, setSelectedMethodIds] = useState<Set<string>>(new Set());
   const [expandedMethodBodyId, setExpandedMethodBodyId] = useState<string | null>(null);
+
+  // Scoped AI Context preview states (Collapsed by default)
+  const [isScopedSectionExpanded, setIsScopedSectionExpanded] = useState<boolean>(false);
+  const [scopedViewTab, setScopedViewTab] = useState<'main' | 'test' | 'side-by-side'>('main');
 
   // Generation status
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
@@ -157,17 +165,34 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
     return [...testMethods, ...mainMethods];
   }, [testMethods, mainMethods]);
 
-  // Pre-select the first test method or primary target method on initial mount
+  // Pre-select the primary class target method on initial mount
   useEffect(() => {
     if (selectedMethodIds.size === 0) {
-      const candidates = testMethods.filter((m) => m.name !== 'setUp' && m.name !== 'tearDown');
-      if (candidates.length > 0) {
-        setSelectedMethodIds(new Set([candidates[0].id]));
-      } else if (mainMethods.length > 0) {
+      if (mainMethods.length > 0) {
         setSelectedMethodIds(new Set([mainMethods[0].id]));
+      } else if (testMethods.length > 0) {
+        const candidates = testMethods.filter((m) => m.name !== 'setUp' && m.name !== 'tearDown');
+        if (candidates.length > 0) {
+          setSelectedMethodIds(new Set([candidates[0].id]));
+        }
       }
     }
-  }, [testMethods, mainMethods]);
+  }, [mainMethods, testMethods]);
+
+  // Selected methods list
+  const selectedMethodsList = useMemo(() => {
+    return allMethods.filter((m) => selectedMethodIds.has(m.id));
+  }, [allMethods, selectedMethodIds]);
+
+  // Scoped obfuscated classes (only selected methods + dependent private methods + setup & related tests)
+  const scopedContext = useMemo(() => {
+    return createScopedObfuscatedJavaClasses(
+      result.mainClassFile.obfuscatedCode,
+      result.testClassFile.obfuscatedCode,
+      selectedMethodsList,
+      result.mapping
+    );
+  }, [result.mainClassFile.obfuscatedCode, result.testClassFile.obfuscatedCode, selectedMethodsList, result.mapping]);
 
   // Filtered methods display list
   const filteredMethods = useMemo(() => {
@@ -207,11 +232,6 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
     setSelectedMethodIds(new Set());
   };
 
-  // Get array of selected ParsedJavaMethod objects
-  const selectedMethodsList = useMemo(() => {
-    return allMethods.filter((m) => selectedMethodIds.has(m.id));
-  }, [allMethods, selectedMethodIds]);
-
   // Execute Gemini test generation
   const handleGenerateTests = async () => {
     if (!apiKey.trim()) {
@@ -235,13 +255,14 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
     setGenerationStep('Analyzing obfuscated signatures & branch pathways...');
 
     try {
-      setGenerationStep('Sending obfuscated code context to Gemini API...');
+      setGenerationStep('Sending scoped obfuscated code context to Gemini API...');
       const genRes = await generateJavaTestsWithGemini({
         apiKey: apiKey.trim(),
         model: selectedModel,
         selectedMethods: selectedMethodsList,
-        obfuscatedClassCode: result.mainClassFile.obfuscatedCode,
-        obfuscatedTestCode: result.testClassFile.obfuscatedCode,
+        obfuscatedClassCode: scopedContext.scopedClassCode,
+        obfuscatedTestCode: scopedContext.scopedTestCode,
+        fullObfuscatedTestCode: result.testClassFile.obfuscatedCode,
         mainClassName: result.mainClassFile.fileName,
         testClassName: result.testClassFile.fileName,
         coverageGoal,
@@ -295,14 +316,14 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
     <div id="gemini-test-generator-container" className="space-y-6">
       {/* Toast Notification */}
       {statusMessage && (
-        <div className="fixed bottom-5 right-5 z-50 bg-slate-900 border border-indigo-500/50 text-slate-100 text-xs px-4 py-2.5 rounded-xl shadow-xl flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
+        <div className="fixed bottom-5 right-5 z-50 bg-slate-900 dark:bg-slate-900 border border-indigo-500/50 text-slate-100 text-xs px-4 py-2.5 rounded-xl shadow-xl flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
           <span>{statusMessage}</span>
         </div>
       )}
 
       {/* Feature Header Banner */}
-      <div className="bg-gradient-to-r from-purple-950/40 via-indigo-950/30 to-slate-900 border border-purple-500/30 rounded-xl p-5 shadow-sm">
+      <div className="bg-gradient-to-r from-purple-50 via-indigo-50/50 to-slate-50 dark:from-purple-950/40 dark:via-indigo-950/30 dark:to-slate-900 border border-purple-200 dark:border-purple-500/30 rounded-xl p-5 shadow-sm">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2.5">
@@ -310,13 +331,13 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                 <Sparkles className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
                   Gemini Unit Test Generator for Obfuscated Methods
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-500/30">
                     Line & Branch Coverage
                   </span>
                 </h3>
-                <p className="text-xs text-slate-400">
+                <p className="text-xs text-slate-600 dark:text-slate-400">
                   Select obfuscated test or target methods. Gemini synthesizes rigorous unit tests targeting every execution branch and edge case, merges them with the obfuscated test class, and enables instant 1-click de-obfuscation back to clean human-readable code.
                 </p>
               </div>
@@ -325,32 +346,32 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
 
           {/* Quick Stats or Status Pill */}
           <div className="flex items-center gap-2 flex-wrap text-xs">
-            <div className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-300 flex items-center gap-1.5">
-              <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
+            <div className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 shadow-xs flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-purple-500 dark:text-purple-400" />
               <span>Target Class:</span>
-              <code className="text-indigo-300 font-mono font-bold">{result.testClassFile.fileName}</code>
+              <code className="text-indigo-600 dark:text-indigo-300 font-mono font-bold">{result.testClassFile.fileName}</code>
             </div>
-            <div className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-300 flex items-center gap-1.5">
-              <Zap className="w-3.5 h-3.5 text-amber-400" />
+            <div className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 shadow-xs flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
               <span>Methods Available:</span>
-              <span className="font-bold text-amber-300">{allMethods.length}</span>
+              <span className="font-bold text-amber-600 dark:text-amber-300">{allMethods.length}</span>
             </div>
           </div>
         </div>
       </div>
 
       {/* SECTION 1: GEMINI API KEY CONFIGURATION */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-slate-200 text-sm font-semibold">
-            <Key className="w-4 h-4 text-purple-400" />
+          <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 text-sm font-semibold">
+            <Key className="w-4 h-4 text-purple-600 dark:text-purple-400" />
             <span>Google AI Studio / Gemini API Key</span>
             {apiKey.trim() ? (
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-normal flex items-center gap-1">
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20 font-medium flex items-center gap-1">
                 <Check className="w-3 h-3" /> Key Configured
               </span>
             ) : (
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 font-normal flex items-center gap-1">
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20 font-medium flex items-center gap-1">
                 <AlertTriangle className="w-3 h-3" /> Key Required
               </span>
             )}
@@ -360,7 +381,7 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
             href="https://aistudio.google.com/apikey"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1 transition-colors underline underline-offset-2"
+            className="text-xs text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 flex items-center gap-1 transition-colors underline underline-offset-2"
           >
             <span>Get a free API key at Google AI Studio</span>
             <ExternalLink className="w-3 h-3" />
@@ -369,11 +390,11 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
 
         {/* API Key Missing Notice */}
         {!apiKey.trim() && (
-          <div className="bg-amber-950/20 border border-amber-500/30 rounded-lg p-3 flex items-start gap-2.5 text-xs text-amber-300/90">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-500/30 rounded-lg p-3 flex items-start gap-2.5 text-xs text-amber-800 dark:text-amber-300/90">
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <span className="font-bold text-amber-300">API Key is required for this operation:</span>
-              <p className="text-slate-300 text-[11px]">
+              <span className="font-bold text-amber-800 dark:text-amber-300">API Key is required for this operation:</span>
+              <p className="text-slate-600 dark:text-slate-300 text-[11px]">
                 Please enter your Google AI Studio or Gemini API key below to enable automatic branch test generation. Your key remains strictly in your local browser session and is used solely for requesting unit tests from the Gemini API.
               </p>
             </div>
@@ -389,16 +410,16 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
               value={apiKey}
               onChange={(e) => handleApiKeyChange(e.target.value)}
               placeholder="Enter your Gemini API key (e.g. AIzaSy...)"
-              className={`w-full bg-slate-950 text-slate-200 text-xs font-mono border rounded-lg pl-3 pr-10 py-2 focus:outline-none transition-all ${
+              className={`w-full bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 text-xs font-mono border rounded-lg pl-3 pr-10 py-2 focus:outline-none transition-all ${
                 apiKeyMissingWarning || (!apiKey.trim() && generationError)
-                  ? 'border-amber-500 ring-2 ring-amber-500/30 bg-amber-950/20'
-                  : 'border-slate-700/80 focus:border-purple-500'
+                  ? 'border-amber-500 ring-2 ring-amber-500/30 bg-amber-50 dark:bg-amber-950/20'
+                  : 'border-slate-300 dark:border-slate-700/80 focus:border-purple-500'
               }`}
             />
             <button
               type="button"
               onClick={() => setShowApiKey(!showApiKey)}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-1"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1"
               title={showApiKey ? 'Hide API key' : 'Show API key'}
             >
               {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -409,7 +430,7 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
             <select
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
-              className="bg-slate-950 text-slate-200 text-xs border border-slate-700 rounded-lg px-2.5 py-2 focus:outline-none focus:border-purple-500 cursor-pointer"
+              className="bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 text-xs border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-2 focus:outline-none focus:border-purple-500 cursor-pointer"
             >
               <option value="gemini-3.8-flash">gemini-3.8-flash (Recommended)</option>
               <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
@@ -418,7 +439,7 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
             {apiKey.trim() && (
               <button
                 onClick={handleClearApiKey}
-                className="px-2.5 py-2 bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-red-400 border border-slate-700 rounded-lg text-xs transition-colors"
+                className="px-2.5 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-600 dark:text-slate-400 hover:text-red-500 dark:hover:text-red-400 border border-slate-200 dark:border-slate-700 rounded-lg text-xs transition-colors"
                 title="Clear API key from session"
               >
                 Clear
@@ -431,55 +452,60 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
       {/* SECTION 2: METHOD SELECTION & COVERAGE GOALS */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column: Method Selector */}
-        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3 flex flex-col">
+        <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3 flex flex-col shadow-sm">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
-              <h4 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-                <Code2 className="w-4 h-4 text-indigo-400" />
+              <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+                <Code2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
                 Select Obfuscated Methods for Test Generation
               </h4>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 Choose one or multiple methods to synthesize thorough branch and line coverage test cases for.
               </p>
             </div>
 
             {/* Selection Counter */}
             <div className="flex items-center gap-2">
-              <span className="text-xs px-2.5 py-1 rounded-lg bg-purple-500/10 text-purple-300 border border-purple-500/20 font-medium">
+              <span className="text-xs px-2.5 py-1 rounded-lg bg-purple-100 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-500/20 font-medium">
                 {selectedMethodsList.length} of {allMethods.length} selected
               </span>
             </div>
           </div>
 
           {/* Controls: Source filter tabs + Search bar + Quick Select */}
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
-            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
-              <button
-                onClick={() => setSourceFilter('test')}
-                className={`px-2.5 py-1 rounded transition-colors ${
-                  sourceFilter === 'test'
-                    ? 'bg-purple-600 text-white font-semibold'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                Test Methods ({testMethods.length})
-              </button>
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-slate-800/80">
+            <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-950 p-1 rounded-lg border border-slate-200 dark:border-slate-800 text-xs">
               <button
                 onClick={() => setSourceFilter('main')}
-                className={`px-2.5 py-1 rounded transition-colors ${
+                className={`px-3 py-1 rounded-md transition-colors flex items-center gap-1.5 ${
                   sourceFilter === 'main'
-                    ? 'bg-indigo-600 text-white font-semibold'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
-                Class Target Methods ({mainMethods.length})
+                <Code2 className="w-3.5 h-3.5" />
+                <span>Class Target Methods ({mainMethods.length})</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/30 text-indigo-200 font-bold border border-indigo-400/40">
+                  Primary
+                </span>
+              </button>
+              <button
+                onClick={() => setSourceFilter('test')}
+                className={`px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 ${
+                  sourceFilter === 'test'
+                    ? 'bg-purple-600 text-white font-bold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                <TestTube2 className="w-3.5 h-3.5" />
+                <span>Test Methods ({testMethods.length})</span>
               </button>
               <button
                 onClick={() => setSourceFilter('all')}
-                className={`px-2.5 py-1 rounded transition-colors ${
+                className={`px-2.5 py-1 rounded-md transition-colors ${
                   sourceFilter === 'all'
-                    ? 'bg-slate-800 text-slate-200 font-semibold'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-200 font-bold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
                 All ({allMethods.length})
@@ -488,26 +514,26 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
 
             <div className="flex items-center gap-2 flex-1 sm:flex-initial">
               <div className="relative flex-1 sm:w-48">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
                 <input
                   type="text"
                   value={methodSearch}
                   onChange={(e) => setMethodSearch(e.target.value)}
                   placeholder="Filter methods..."
-                  className="w-full bg-slate-950 text-slate-200 text-xs pl-8 pr-2 py-1 rounded-lg border border-slate-800 focus:outline-none focus:border-purple-500"
+                  className="w-full bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 text-xs pl-8 pr-2 py-1 rounded-lg border border-slate-300 dark:border-slate-800 focus:outline-none focus:border-purple-500"
                 />
               </div>
 
               <button
                 onClick={handleSelectAllFiltered}
-                className="px-2 py-1 bg-slate-800 hover:bg-slate-750 text-slate-300 rounded text-xs transition-colors"
+                className="px-2 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded text-xs transition-colors"
                 title="Select all currently visible methods"
               >
                 Select All
               </button>
               <button
                 onClick={handleClearSelection}
-                className="px-2 py-1 bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-slate-200 rounded text-xs transition-colors"
+                className="px-2 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-700 rounded text-xs transition-colors"
                 title="Deselect all methods"
               >
                 Clear
@@ -518,7 +544,7 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
           {/* Methods List */}
           <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1 flex-1">
             {filteredMethods.length === 0 ? (
-              <div className="text-center py-8 text-slate-500 text-xs">
+              <div className="text-center py-8 text-slate-400 dark:text-slate-500 text-xs">
                 No methods match the current search filter.
               </div>
             ) : (
@@ -531,44 +557,44 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                     key={method.id}
                     className={`rounded-lg border transition-all ${
                       isSelected
-                        ? 'bg-purple-950/20 border-purple-500/40 shadow-xs'
-                        : 'bg-slate-950/60 border-slate-800/80 hover:border-slate-700'
+                        ? 'bg-purple-50/70 dark:bg-purple-950/20 border-purple-300 dark:border-purple-500/40 shadow-xs'
+                        : 'bg-slate-50/60 dark:bg-slate-950/60 border-slate-200 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700'
                     }`}
                   >
                     <div className="p-3 flex items-start gap-3">
                       <button
                         type="button"
                         onClick={() => handleToggleMethod(method.id)}
-                        className="mt-0.5 text-purple-400 hover:text-purple-300 transition-colors"
+                        className="mt-0.5 text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 transition-colors"
                       >
                         {isSelected ? (
-                          <CheckSquare className="w-4 h-4 text-purple-400" />
+                          <CheckSquare className="w-4 h-4 text-purple-600 dark:text-purple-400" />
                         ) : (
-                          <Square className="w-4 h-4 text-slate-600" />
+                          <Square className="w-4 h-4 text-slate-400 dark:text-slate-600" />
                         )}
                       </button>
 
                       <div className="flex-1 min-w-0" onClick={() => handleToggleMethod(method.id)}>
                         <div className="flex flex-wrap items-center gap-2 cursor-pointer">
-                          <code className="text-xs font-mono font-bold text-slate-200">
+                          <code className="text-xs font-mono font-bold text-slate-800 dark:text-slate-200">
                             {method.name}()
                           </code>
 
                           {method.originalName && (
-                            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-indigo-100 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/20">
                               orig: {method.originalName}
                             </span>
                           )}
 
-                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-200/70 dark:bg-slate-800 text-slate-700 dark:text-slate-400 font-mono">
                             {method.returnType}
                           </span>
 
                           <span
                             className={`text-[10px] px-1.5 py-0.2 rounded font-medium ${
                               method.sourceClassType === 'test'
-                                ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
-                                : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                                ? 'bg-purple-100 dark:bg-purple-500/10 text-purple-700 dark:text-purple-400 border border-purple-200 dark:border-purple-500/20'
+                                : 'bg-blue-100 dark:bg-blue-500/10 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20'
                             }`}
                           >
                             {method.sourceClassType === 'test' ? 'Test Method' : 'Production Method'}
@@ -577,14 +603,14 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                           {method.annotations.map((ann, idx) => (
                             <span
                               key={idx}
-                              className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-300/90 border border-amber-500/20 truncate max-w-[200px]"
+                              className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-500/10 text-amber-800 dark:text-amber-300/90 border border-amber-200 dark:border-amber-500/20 truncate max-w-[200px]"
                             >
                               {ann}
                             </span>
                           ))}
                         </div>
 
-                        <p className="text-[11px] text-slate-400 font-mono mt-1 truncate">
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono mt-1 truncate">
                           {method.rawDeclaration}
                         </p>
                       </div>
@@ -597,7 +623,7 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                             setSelectedMethodIds(new Set([method.id]));
                             showStatus(`Selected only ${method.name}()`);
                           }}
-                          className="px-2 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 text-[10px] font-semibold border border-purple-500/20 transition-colors"
+                          className="px-2 py-0.5 rounded bg-purple-100 hover:bg-purple-200 dark:bg-purple-500/10 dark:hover:bg-purple-500/20 text-purple-700 dark:text-purple-300 text-[10px] font-semibold border border-purple-200 dark:border-purple-500/20 transition-colors"
                           title="Select only this method for test generation"
                         >
                           Select Only
@@ -607,7 +633,7 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                             e.stopPropagation();
                             setExpandedMethodBodyId(isExpanded ? null : method.id);
                           }}
-                          className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
+                          className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
                           title={isExpanded ? 'Collapse method code' : 'Preview method body'}
                         >
                           {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -617,12 +643,12 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
 
                     {/* Expandable Method Body Preview */}
                     {isExpanded && (
-                      <div className="px-3 pb-3 border-t border-slate-800/80 pt-2">
-                        <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
+                      <div className="px-3 pb-3 border-t border-slate-200 dark:border-slate-800/80 pt-2">
+                        <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1">
                           <span>Method Body ({method.endLine - method.startLine + 1} lines):</span>
                           <span>Lines {method.startLine} - {method.endLine}</span>
                         </div>
-                        <pre className="text-[11px] font-mono bg-slate-950 text-slate-300 p-2.5 rounded border border-slate-800 overflow-x-auto leading-relaxed max-h-40 whitespace-pre">
+                        <pre className="text-[11px] font-mono bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-300 p-2.5 rounded border border-slate-200 dark:border-slate-800 overflow-x-auto leading-relaxed max-h-40 whitespace-pre">
                           {method.body}
                         </pre>
                       </div>
@@ -635,18 +661,18 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
         </div>
 
         {/* Right Column: Generation Configuration & Actions */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4 flex flex-col justify-between">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-4 flex flex-col justify-between shadow-sm">
           <div className="space-y-4">
-            <h4 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <Sliders className="w-4 h-4 text-purple-400" />
+            <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+              <Sliders className="w-4 h-4 text-purple-600 dark:text-purple-400" />
               Coverage & Synthesis Options
             </h4>
 
             {/* Coverage Goal */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-300">Coverage Goal:</label>
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">Coverage Goal:</label>
               <div className="space-y-1.5 text-xs">
-                <label className="flex items-start gap-2 p-2 rounded-lg bg-slate-950/60 border border-slate-800 cursor-pointer hover:border-slate-700">
+                <label className="flex items-start gap-2 p-2 rounded-lg bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-slate-300 dark:hover:border-slate-700">
                   <input
                     type="radio"
                     name="coverageGoal"
@@ -655,14 +681,14 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                     className="mt-0.5 text-purple-600"
                   />
                   <div>
-                    <span className="font-semibold text-slate-200">100% Lines & Branches</span>
-                    <p className="text-[11px] text-slate-400">
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">100% Lines & Branches</span>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
                       Positive execution, negative paths, boundary numbers, exceptions, and loops.
                     </p>
                   </div>
                 </label>
 
-                <label className="flex items-start gap-2 p-2 rounded-lg bg-slate-950/60 border border-slate-800 cursor-pointer hover:border-slate-700">
+                <label className="flex items-start gap-2 p-2 rounded-lg bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-slate-300 dark:hover:border-slate-700">
                   <input
                     type="radio"
                     name="coverageGoal"
@@ -671,14 +697,14 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                     className="mt-0.5 text-purple-600"
                   />
                   <div>
-                    <span className="font-semibold text-slate-200">Boundaries & Exception Branches</span>
-                    <p className="text-[11px] text-slate-400">
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">Boundaries & Exception Branches</span>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
                       assertThrows, invalid inputs, 0, -1, MAX_VALUE, error codes.
                     </p>
                   </div>
                 </label>
 
-                <label className="flex items-start gap-2 p-2 rounded-lg bg-slate-950/60 border border-slate-800 cursor-pointer hover:border-slate-700">
+                <label className="flex items-start gap-2 p-2 rounded-lg bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-slate-300 dark:hover:border-slate-700">
                   <input
                     type="radio"
                     name="coverageGoal"
@@ -687,8 +713,8 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                     className="mt-0.5 text-purple-600"
                   />
                   <div>
-                    <span className="font-semibold text-slate-200">Null & Edge Case Guards</span>
-                    <p className="text-[11px] text-slate-400">
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">Null & Edge Case Guards</span>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
                       NullPointer checks, empty collections, malformed arguments.
                     </p>
                   </div>
@@ -698,11 +724,11 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
 
             {/* Test Framework */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-300">Test Framework:</label>
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">Test Framework:</label>
               <select
                 value={testFramework}
                 onChange={(e) => setTestFramework(e.target.value as 'junit5' | 'junit4' | 'testng')}
-                className="w-full bg-slate-950 text-slate-200 text-xs border border-slate-800 rounded-lg p-2 focus:outline-none focus:border-purple-500 cursor-pointer"
+                className="w-full bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 text-xs border border-slate-300 dark:border-slate-800 rounded-lg p-2 focus:outline-none focus:border-purple-500 cursor-pointer"
               >
                 <option value="junit5">JUnit 5 (Jupiter) - @Test, assertThrows, @DisplayName</option>
                 <option value="junit4">JUnit 4 - org.junit.Test, expected exception</option>
@@ -710,26 +736,60 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
               </select>
             </div>
 
-            {/* Selected Summary */}
-            <div className="bg-slate-950/80 rounded-lg p-3 border border-slate-800/80 text-xs space-y-1.5">
-              <div className="flex items-center justify-between text-slate-400">
+            {/* Selected Summary & Scoped AI Context Pill */}
+            <div className="bg-slate-50 dark:bg-slate-950/80 rounded-lg p-3 border border-slate-200 dark:border-slate-800/80 text-xs space-y-2">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
                 <span>Selected Methods:</span>
-                <span className="font-bold text-purple-300">{selectedMethodsList.length}</span>
+                <span className="font-bold text-purple-600 dark:text-purple-300 font-mono">
+                  {selectedMethodsList.length} of {allMethods.length}
+                </span>
               </div>
-              <div className="flex items-center justify-between text-slate-400">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
                 <span>Target Test File:</span>
-                <span className="font-mono text-slate-300">{result.testClassFile.fileName}</span>
+                <span className="font-mono text-slate-700 dark:text-slate-300">{result.testClassFile.fileName}</span>
               </div>
-              <div className="flex items-center justify-between text-slate-400">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
                 <span>Model:</span>
-                <span className="font-mono text-slate-300">{selectedModel}</span>
+                <span className="font-mono text-slate-700 dark:text-slate-300">{selectedModel}</span>
+              </div>
+
+              {/* Scoped Context Preview Status */}
+              <div className="pt-2 border-t border-slate-200 dark:border-slate-800/80 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                    <Layers className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                    Scoped AI Context:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsScopedSectionExpanded(!isScopedSectionExpanded)}
+                    className="text-[11px] text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 underline underline-offset-2 flex items-center gap-0.5 cursor-pointer"
+                  >
+                    <span>{isScopedSectionExpanded ? 'Hide Scoped Code' : 'Inspect Scoped Code'}</span>
+                    {isScopedSectionExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                  </button>
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 space-y-0.5 font-mono">
+                  <div className="flex items-center justify-between">
+                    <span>Target Class:</span>
+                    <span className="text-indigo-600 dark:text-indigo-300 font-semibold">
+                      {scopedContext.retainedMainMethods.length} methods ({scopedContext.dependentPrivateMethods.length} private)
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Test Class:</span>
+                    <span className="text-purple-600 dark:text-purple-300 font-semibold">
+                      {scopedContext.setupTestMethods.length} setup + {scopedContext.relatedTestMethods.length} tests
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 
             {/* Error Message */}
             {generationError && (
-              <div className="bg-red-950/30 border border-red-500/30 rounded-lg p-3 text-xs text-red-300 flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-500/30 rounded-lg p-3 text-xs text-red-700 dark:text-red-300 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-500 dark:text-red-400 shrink-0 mt-0.5" />
                 <span>{generationError}</span>
               </div>
             )}
@@ -758,23 +818,301 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
         </div>
       </div>
 
+      {/* SECTION 2.5: SCOPED OBFUSCATED CLASSES FOR AI CONTEXT (COLLAPSIBLE) */}
+      <div id="scoped-classes-container" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden transition-all shadow-sm">
+        {/* Collapsed / Expandable Header Bar */}
+        <button
+          type="button"
+          onClick={() => setIsScopedSectionExpanded(!isScopedSectionExpanded)}
+          className="w-full p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-purple-100 dark:bg-purple-500/10 border border-purple-200 dark:border-purple-500/20 rounded-lg text-purple-600 dark:text-purple-400 shrink-0">
+              <Layers className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                  Scoped Obfuscated Classes for AI Context
+                </span>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-500/30 font-semibold">
+                  Selected Target Methods & Dependent Private Helpers
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Sends an updated copy of the class with only selected methods and dependent private methods, plus setup fixtures and related tests in the test class (all obfuscated).
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 shrink-0 self-end sm:self-auto">
+            <div className="hidden lg:flex items-center gap-2 text-xs">
+              <span className="px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 border border-slate-200 dark:border-slate-700 font-mono text-[11px]">
+                Class: {scopedContext.retainedMainMethods.length} methods ({scopedContext.dependentPrivateMethods.length} priv)
+              </span>
+              <span className="px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 text-purple-700 dark:text-purple-300 border border-slate-200 dark:border-slate-700 font-mono text-[11px]">
+                Test: {scopedContext.setupTestMethods.length} setup + {scopedContext.relatedTestMethods.length} tests
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 text-xs font-semibold border border-slate-200 dark:border-slate-700 transition-colors">
+              <span>{isScopedSectionExpanded ? 'Collapse Scoped Classes' : 'Expand & Check Scoped Classes'}</span>
+              {isScopedSectionExpanded ? (
+                <ChevronDown className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+              )}
+            </div>
+          </div>
+        </button>
+
+        {/* Expanded Content Body */}
+        {isScopedSectionExpanded && (
+          <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/40 space-y-4 animate-in fade-in duration-200">
+            {/* Context optimization notice */}
+            <div className="bg-indigo-50/70 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-500/30 rounded-lg p-3 text-xs text-slate-700 dark:text-slate-300 flex items-start gap-2.5">
+              <Info className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <span className="font-semibold text-indigo-900 dark:text-indigo-200">
+                  Target-Focused AI Context Optimization:
+                </span>
+                <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                  Only your selected target methods and their dependent private helper methods are preserved in the obfuscated production class. Unrelated production methods are omitted to eliminate model distractions. Similarly, the companion test class is pruned to retain only setup mocks (<code className="text-indigo-600 dark:text-indigo-300 font-mono">@BeforeEach</code>, mocks, fixtures) and related tests that reference the target methods.
+                </p>
+              </div>
+            </div>
+
+            {/* Methods Breakdown Badges */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              {/* Production Class Methods Breakdown */}
+              <div className="bg-white dark:bg-slate-900/80 rounded-lg p-3 border border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <Code2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                    Production Class ({result.mainClassFile.fileName})
+                  </span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {scopedContext.retainedMainMethods.length} included • {scopedContext.omittedMainMethods.length} omitted
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {scopedContext.retainedMainMethods.map((m) => {
+                    const isDependent = scopedContext.dependentPrivateMethods.some((d) => d.id === m.id);
+                    return (
+                      <span
+                        key={m.id}
+                        className={`px-2 py-0.5 rounded text-[11px] font-mono flex items-center gap-1 border ${
+                          isDependent
+                            ? 'bg-purple-100 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-500/30'
+                            : 'bg-emerald-100 dark:bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30'
+                        }`}
+                      >
+                        <span>{m.name}()</span>
+                        <span className="text-[9px] px-1 rounded bg-slate-200/80 dark:bg-black/30 font-sans">
+                          {isDependent ? 'private helper' : 'target'}
+                        </span>
+                      </span>
+                    );
+                  })}
+                  {scopedContext.omittedMainMethods.length > 0 && (
+                    <span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 text-[11px] font-mono border border-slate-200 dark:border-slate-700/60">
+                      +{scopedContext.omittedMainMethods.length} omitted methods
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Test Class Methods Breakdown */}
+              <div className="bg-white dark:bg-slate-900/80 rounded-lg p-3 border border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <TestTube2 className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                    Companion Test Class ({result.testClassFile.fileName})
+                  </span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {scopedContext.setupTestMethods.length + scopedContext.relatedTestMethods.length} included • {scopedContext.omittedTestMethods.length} omitted
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {scopedContext.setupTestMethods.map((m) => (
+                    <span
+                      key={m.id}
+                      className="px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30 text-[11px] font-mono flex items-center gap-1"
+                    >
+                      <span>{m.name}()</span>
+                      <span className="text-[9px] px-1 rounded bg-slate-200/80 dark:bg-black/30 font-sans">setup fixture</span>
+                    </span>
+                  ))}
+                  {scopedContext.relatedTestMethods.map((m) => (
+                    <span
+                      key={m.id}
+                      className="px-2 py-0.5 rounded bg-indigo-100 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 text-[11px] font-mono flex items-center gap-1"
+                    >
+                      <span>{m.name}()</span>
+                      <span className="text-[9px] px-1 rounded bg-slate-200/80 dark:bg-black/30 font-sans">related test</span>
+                    </span>
+                  ))}
+                  {scopedContext.omittedTestMethods.length > 0 && (
+                    <span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 text-[11px] font-mono border border-slate-200 dark:border-slate-700/60">
+                      +{scopedContext.omittedTestMethods.length} omitted tests
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* View Tab Selector + Copy Actions */}
+            <div className="flex items-center justify-between gap-2 flex-wrap pt-2">
+              <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-900 p-1 rounded-lg border border-slate-200 dark:border-slate-800 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setScopedViewTab('main')}
+                  className={`px-3 py-1 rounded-md transition-colors ${
+                    scopedViewTab === 'main'
+                      ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                  }`}
+                >
+                  Scoped Production Class ({scopedContext.retainedMainMethods.length} methods)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScopedViewTab('test')}
+                  className={`px-3 py-1 rounded-md transition-colors ${
+                    scopedViewTab === 'test'
+                      ? 'bg-purple-600 text-white font-bold shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                  }`}
+                >
+                  Scoped Test Class ({scopedContext.setupTestMethods.length + scopedContext.relatedTestMethods.length} methods)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScopedViewTab('side-by-side')}
+                  className={`px-3 py-1 rounded-md transition-colors ${
+                    scopedViewTab === 'side-by-side'
+                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                  }`}
+                >
+                  Side-by-Side View
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    copyToClipboard(
+                      scopedViewTab === 'test' ? scopedContext.scopedTestCode : scopedContext.scopedClassCode,
+                      'scoped-code-copy'
+                    )
+                  }
+                  className="px-2.5 py-1 rounded bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 text-xs font-medium flex items-center gap-1 border border-slate-200 dark:border-slate-700 transition-colors shadow-xs"
+                >
+                  {copiedKey === 'scoped-code-copy' ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5 text-slate-400" />
+                  )}
+                  <span>Copy Active Scoped Class</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Code Display */}
+            {scopedViewTab === 'side-by-side' ? (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+                  <div className="bg-slate-100 dark:bg-slate-900 px-3.5 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
+                    <span className="font-mono font-bold text-indigo-700 dark:text-indigo-300">
+                      Scoped {result.mainClassFile.fileName}
+                    </span>
+                    <span className="text-[11px] text-slate-500">
+                      {scopedContext.scopedClassCode.split('\n').length} lines
+                    </span>
+                  </div>
+                  <textarea
+                    readOnly
+                    value={scopedContext.scopedClassCode}
+                    rows={12}
+                    className="w-full font-mono text-xs bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-200 p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
+                  />
+                </div>
+
+                <div className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+                  <div className="bg-slate-100 dark:bg-slate-900 px-3.5 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
+                    <span className="font-mono font-bold text-purple-700 dark:text-purple-300">
+                      Scoped {result.testClassFile.fileName}
+                    </span>
+                    <span className="text-[11px] text-slate-500">
+                      {scopedContext.scopedTestCode.split('\n').length} lines
+                    </span>
+                  </div>
+                  <textarea
+                    readOnly
+                    value={scopedContext.scopedTestCode}
+                    rows={12}
+                    className="w-full font-mono text-xs bg-slate-50 dark:bg-slate-950 text-emerald-800 dark:text-emerald-300/90 p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
+                  />
+                </div>
+              </div>
+            ) : scopedViewTab === 'main' ? (
+              <div className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                <div className="bg-slate-100 dark:bg-slate-900 px-4 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
+                  <span className="font-mono font-bold text-indigo-700 dark:text-indigo-300">
+                    Scoped Obfuscated Production Class ({result.mainClassFile.fileName})
+                  </span>
+                  <span className="text-[11px] text-slate-500 font-mono">
+                    {scopedContext.scopedClassCode.split('\n').length} lines • {scopedContext.retainedMainMethods.length} methods
+                  </span>
+                </div>
+                <textarea
+                  readOnly
+                  value={scopedContext.scopedClassCode}
+                  rows={14}
+                  className="w-full font-mono text-xs bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-200 p-3.5 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
+                />
+              </div>
+            ) : (
+              <div className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                <div className="bg-slate-100 dark:bg-slate-900 px-4 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
+                  <span className="font-mono font-bold text-purple-700 dark:text-purple-300">
+                    Scoped Obfuscated Test Class ({result.testClassFile.fileName})
+                  </span>
+                  <span className="text-[11px] text-slate-500 font-mono">
+                    {scopedContext.scopedTestCode.split('\n').length} lines • {scopedContext.setupTestMethods.length + scopedContext.relatedTestMethods.length} methods
+                  </span>
+                </div>
+                <textarea
+                  readOnly
+                  value={scopedContext.scopedTestCode}
+                  rows={14}
+                  className="w-full font-mono text-xs bg-slate-50 dark:bg-slate-950 text-emerald-800 dark:text-emerald-300/90 p-3.5 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* SECTION 3: GENERATED TEST OUTPUT & DE-OBFUSCATION PANEL */}
       {generatedResult && (
-        <div id="gemini-results-section" className="bg-slate-900 border border-purple-500/30 rounded-xl p-5 space-y-4 shadow-sm animate-in fade-in duration-300">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-3 border-b border-slate-800">
+        <div id="gemini-results-section" className="bg-white dark:bg-slate-900 border border-purple-200 dark:border-purple-500/30 rounded-xl p-5 space-y-4 shadow-sm animate-in fade-in duration-300">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-3 border-b border-slate-200 dark:border-slate-800">
             <div>
               <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg">
+                <span className="p-1.5 bg-emerald-100 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20 rounded-lg">
                   <CheckCircle2 className="w-4 h-4" />
                 </span>
-                <h4 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                <h4 className="text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
                   Tests Generated Successfully
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/20">
                     +{generatedResult.stats.methodsGenerated} test methods • +{generatedResult.stats.linesAdded} lines
                   </span>
                 </h4>
               </div>
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
                 The generated unit tests use the exact obfuscated names and are ready to be integrated into the obfuscated test suite or de-obfuscated back into clean code.
               </p>
             </div>
@@ -812,10 +1150,10 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                     generatedResult.mergedObfuscatedTestCode
                   )
                 }
-                className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition-colors"
+                className="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 text-xs font-medium flex items-center gap-1.5 transition-colors"
                 title="Open in dedicated De-Obfuscate tab"
               >
-                <Share2 className="w-3.5 h-3.5 text-purple-400" />
+                <Share2 className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
                 <span>Open in De-Obfuscator Tab</span>
               </button>
             </div>
@@ -823,13 +1161,13 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
 
           {/* View Mode Toggle: Split View, Merged Obfuscated, De-Obfuscated Restored, New Tests Only */}
           <div className="flex items-center justify-between gap-2 flex-wrap pt-1">
-            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
+            <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-950 p-1 rounded-lg border border-slate-200 dark:border-slate-800 text-xs">
               <button
                 onClick={() => setActiveResultView('split')}
                 className={`px-3 py-1 rounded-md transition-colors ${
                   activeResultView === 'split'
-                    ? 'bg-purple-600 text-white font-bold'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-purple-600 text-white font-bold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
                 Side-by-Side (Obfuscated vs Restored)
@@ -838,8 +1176,8 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                 onClick={() => setActiveResultView('merged')}
                 className={`px-3 py-1 rounded-md transition-colors ${
                   activeResultView === 'merged'
-                    ? 'bg-purple-600 text-white font-bold'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-purple-600 text-white font-bold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
                 Updated Obfuscated Test Class
@@ -848,8 +1186,8 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                 onClick={() => setActiveResultView('deobfuscated')}
                 className={`px-3 py-1 rounded-md transition-colors ${
                   activeResultView === 'deobfuscated'
-                    ? 'bg-emerald-600 text-white font-bold'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-emerald-600 text-white font-bold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
                 Restored De-Obfuscated Test Class
@@ -858,8 +1196,8 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                 onClick={() => setActiveResultView('new-tests')}
                 className={`px-3 py-1 rounded-md transition-colors ${
                   activeResultView === 'new-tests'
-                    ? 'bg-indigo-600 text-white font-bold'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
                 Generated Test Snippets ({generatedResult.individualMethods.length})
@@ -868,8 +1206,8 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                 onClick={() => setActiveResultView('diff')}
                 className={`px-3 py-1 rounded-md transition-colors ${
                   activeResultView === 'diff'
-                    ? 'bg-amber-600 text-white font-bold'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-amber-600 text-white font-bold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
                 <span className="flex items-center gap-1">
@@ -889,10 +1227,10 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                     'active-view-copy'
                   )
                 }
-                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-medium flex items-center gap-1 border border-slate-700 transition-colors"
+                className="px-2.5 py-1 rounded bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 text-xs font-medium flex items-center gap-1 border border-slate-200 dark:border-slate-700 transition-colors shadow-xs"
               >
                 {copiedKey === 'active-view-copy' ? (
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
                 ) : (
                   <Copy className="w-3.5 h-3.5 text-slate-400" />
                 )}
@@ -906,7 +1244,7 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                     result.testClassFile.fileName
                   )
                 }
-                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-medium flex items-center gap-1 border border-slate-700 transition-colors"
+                className="px-2.5 py-1 rounded bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 text-xs font-medium flex items-center gap-1 border border-slate-200 dark:border-slate-700 transition-colors shadow-xs"
                 title="Download updated obfuscated test file"
               >
                 <Download className="w-3.5 h-3.5 text-slate-400" />
@@ -919,11 +1257,11 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
           {activeResultView === 'split' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Left Column: Obfuscated Merged Test */}
-              <div className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden flex flex-col">
-                <div className="bg-slate-900/90 px-3.5 py-2.5 border-b border-slate-800 flex items-center justify-between text-xs">
+              <div className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+                <div className="bg-slate-100/90 dark:bg-slate-900/90 px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
                   <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-purple-400"></span>
-                    <span className="font-bold text-purple-300">
+                    <span className="w-2 h-2 rounded-full bg-purple-500 dark:bg-purple-400"></span>
+                    <span className="font-bold text-purple-700 dark:text-purple-300">
                       Updated Obfuscated Test Class ({result.testClassFile.fileName})
                     </span>
                   </div>
@@ -931,11 +1269,11 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                     onClick={() =>
                       copyToClipboard(generatedResult.mergedObfuscatedTestCode, 'split-obf-copy')
                     }
-                    className="p-1 text-slate-400 hover:text-slate-200"
+                    className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
                     title="Copy obfuscated test code"
                   >
                     {copiedKey === 'split-obf-copy' ? (
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
                     ) : (
                       <Copy className="w-3.5 h-3.5" />
                     )}
@@ -945,16 +1283,16 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                   readOnly
                   value={generatedResult.mergedObfuscatedTestCode}
                   rows={isFullScreen ? 22 : 14}
-                  className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
+                  className="w-full font-mono text-xs bg-slate-50 dark:bg-slate-950 text-emerald-800 dark:text-emerald-300/90 p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
                 />
               </div>
 
               {/* Right Column: De-Obfuscated Restored Test */}
-              <div className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden flex flex-col">
-                <div className="bg-slate-900/90 px-3.5 py-2.5 border-b border-slate-800 flex items-center justify-between text-xs">
+              <div className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+                <div className="bg-slate-100/90 dark:bg-slate-900/90 px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
                   <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                    <span className="font-bold text-emerald-300">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 dark:bg-emerald-400"></span>
+                    <span className="font-bold text-emerald-700 dark:text-emerald-300">
                       De-Obfuscated Restored Test Class ({testFileName})
                     </span>
                   </div>
@@ -966,11 +1304,11 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                           'split-deobf-copy'
                         )
                       }
-                      className="p-1 text-slate-400 hover:text-slate-200"
+                      className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
                       title="Copy de-obfuscated restored test code"
                     >
                       {copiedKey === 'split-deobf-copy' ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
                       ) : (
                         <Copy className="w-3.5 h-3.5" />
                       )}
@@ -979,7 +1317,7 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                       onClick={() =>
                         downloadFile(generatedResult.deobfuscatedMergedTestCode, testFileName)
                       }
-                      className="p-1 text-slate-400 hover:text-slate-200"
+                      className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
                       title="Download de-obfuscated test file"
                     >
                       <Download className="w-3.5 h-3.5" />
@@ -990,7 +1328,7 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                   readOnly
                   value={generatedResult.deobfuscatedMergedTestCode}
                   rows={isFullScreen ? 22 : 14}
-                  className="w-full font-mono text-xs bg-slate-950 text-slate-200 p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
+                  className="w-full font-mono text-xs bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-200 p-3 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
                 />
               </div>
             </div>
@@ -998,19 +1336,19 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
 
           {/* VIEW: SINGLE UPDATED OBFUSCATED TEST CLASS */}
           {activeResultView === 'merged' && (
-            <div className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
-              <div className="bg-slate-900/90 px-4 py-2.5 border-b border-slate-800 flex items-center justify-between text-xs">
-                <span className="font-bold text-purple-300 font-mono">
+            <div className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+              <div className="bg-slate-100/90 dark:bg-slate-900/90 px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
+                <span className="font-bold text-purple-700 dark:text-purple-300 font-mono">
                   {result.testClassFile.fileName} (Updated with {generatedResult.stats.methodsGenerated} new branch tests)
                 </span>
                 <button
                   onClick={() =>
                     copyToClipboard(generatedResult.mergedObfuscatedTestCode, 'merged-obf-view')
                   }
-                  className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-medium flex items-center gap-1"
+                  className="px-2 py-0.5 rounded bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 text-xs font-medium flex items-center gap-1 shadow-xs"
                 >
                   {copiedKey === 'merged-obf-view' ? (
-                    <Check className="w-3 h-3 text-emerald-400" />
+                    <Check className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
                   ) : (
                     <Copy className="w-3 h-3 text-slate-400" />
                   )}
@@ -1021,20 +1359,20 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                 readOnly
                 value={generatedResult.mergedObfuscatedTestCode}
                 rows={isFullScreen ? 24 : 16}
-                className="w-full font-mono text-xs bg-slate-950 text-emerald-300/90 p-4 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
+                className="w-full font-mono text-xs bg-slate-50 dark:bg-slate-950 text-emerald-800 dark:text-emerald-300/90 p-4 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
               />
             </div>
           )}
 
           {/* VIEW: RESTORED DE-OBFUSCATED TEST CLASS */}
           {activeResultView === 'deobfuscated' && (
-            <div className="bg-slate-950 rounded-xl border border-emerald-500/30 overflow-hidden">
-              <div className="bg-slate-900/90 px-4 py-2.5 border-b border-slate-800 flex items-center justify-between text-xs">
+            <div className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-emerald-300 dark:border-emerald-500/30 overflow-hidden">
+              <div className="bg-slate-100/90 dark:bg-slate-900/90 px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2">
-                  <span className="font-bold text-emerald-300 font-mono">
+                  <span className="font-bold text-emerald-700 dark:text-emerald-300 font-mono">
                     {testFileName} (De-Obfuscated with AI Generated Branch Coverage Tests)
                   </span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-500/10 text-emerald-800 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
                     Restored Human-Readable Identifiers
                   </span>
                 </div>
@@ -1043,10 +1381,10 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                     onClick={() =>
                       copyToClipboard(generatedResult.deobfuscatedMergedTestCode, 'deobf-view')
                     }
-                    className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-medium flex items-center gap-1"
+                    className="px-2 py-0.5 rounded bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 text-xs font-medium flex items-center gap-1 shadow-xs"
                   >
                     {copiedKey === 'deobf-view' ? (
-                      <Check className="w-3 h-3 text-emerald-400" />
+                      <Check className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
                     ) : (
                       <Copy className="w-3 h-3 text-slate-400" />
                     )}
@@ -1067,7 +1405,7 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                 readOnly
                 value={generatedResult.deobfuscatedMergedTestCode}
                 rows={isFullScreen ? 24 : 16}
-                className="w-full font-mono text-xs bg-slate-950 text-slate-200 p-4 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
+                className="w-full font-mono text-xs bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-200 p-4 focus:outline-none resize-y whitespace-pre overflow-x-auto leading-relaxed"
               />
             </div>
           )}
@@ -1076,27 +1414,27 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
           {activeResultView === 'new-tests' && (
             <div className="space-y-3">
               {generatedResult.individualMethods.map((m, idx) => (
-                <div key={idx} className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
-                  <div className="bg-slate-900/90 px-3.5 py-2 border-b border-slate-800 flex items-center justify-between text-xs">
+                <div key={idx} className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                  <div className="bg-slate-100/90 dark:bg-slate-900/90 px-3.5 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
                     <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-purple-300">{m.name}</span>
-                      <span className="text-[11px] px-2 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                      <span className="font-mono font-bold text-purple-700 dark:text-purple-300">{m.name}</span>
+                      <span className="text-[11px] px-2 py-0.5 rounded bg-purple-100 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-500/20">
                         {m.branchDescription}
                       </span>
                     </div>
                     <button
                       onClick={() => copyToClipboard(m.code, `snippet-${idx}`)}
-                      className="p-1 text-slate-400 hover:text-slate-200"
+                      className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
                       title="Copy this test method"
                     >
                       {copiedKey === `snippet-${idx}` ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
                       ) : (
                         <Copy className="w-3.5 h-3.5" />
                       )}
                     </button>
                   </div>
-                  <pre className="text-xs font-mono p-3 text-emerald-300/90 overflow-x-auto whitespace-pre leading-relaxed">
+                  <pre className="text-xs font-mono p-3 bg-slate-50 dark:bg-slate-950 text-emerald-800 dark:text-emerald-300/90 overflow-x-auto whitespace-pre leading-relaxed">
                     {m.code}
                   </pre>
                 </div>
@@ -1106,26 +1444,26 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
 
           {/* VIEW: DIFF (ORIGINAL OBFUSCATED TEST VS UPDATED OBFUSCATED TEST) */}
           {activeResultView === 'diff' && (
-            <div className="bg-slate-950 rounded-xl border border-amber-500/30 overflow-hidden">
-              <div className="bg-slate-900/90 px-4 py-2.5 border-b border-slate-800 flex items-center justify-between text-xs">
+            <div className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-amber-300 dark:border-amber-500/30 overflow-hidden">
+              <div className="bg-slate-100/90 dark:bg-slate-900/90 px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2">
-                  <GitCompare className="w-4 h-4 text-amber-400" />
-                  <span className="font-bold text-slate-200">
+                  <GitCompare className="w-4 h-4 text-amber-500 dark:text-amber-400" />
+                  <span className="font-bold text-slate-800 dark:text-slate-200">
                     Line Difference: Original Obfuscated vs Merged Obfuscated
                   </span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/20">
                     +{generatedResult.stats.linesAdded} lines added
                   </span>
                 </div>
                 <button
                   onClick={() => copyToClipboard(generatedResult.mergedObfuscatedTestCode, 'diff-copy')}
-                  className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-medium flex items-center gap-1 border border-slate-700"
+                  className="px-2.5 py-1 rounded bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 text-xs font-medium flex items-center gap-1 shadow-xs"
                 >
-                  {copiedKey === 'diff-copy' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedKey === 'diff-copy' ? <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-slate-400" />}
                   <span>Copy Updated Code</span>
                 </button>
               </div>
-              <div className="p-3 text-xs font-mono max-h-[500px] overflow-y-auto leading-relaxed divide-y divide-slate-800/40">
+              <div className="p-3 text-xs font-mono max-h-[500px] overflow-y-auto leading-relaxed divide-y divide-slate-200 dark:divide-slate-800/40 bg-slate-50 dark:bg-slate-950">
                 {generatedResult.mergedObfuscatedTestCode.split('\n').map((line, idx) => {
                   const isGenerated =
                     line.includes('[AI GENERATED OBFUSCATED TESTS') ||
@@ -1137,11 +1475,11 @@ export const GeminiTestGeneratorPanel: React.FC<GeminiTestGeneratorPanelProps> =
                       key={idx}
                       className={`flex items-start gap-3 px-2 py-0.5 ${
                         isGenerated
-                          ? 'bg-emerald-950/30 text-emerald-300 border-l-2 border-emerald-500'
-                          : 'text-slate-400 hover:text-slate-300'
+                          ? 'bg-emerald-100/80 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-300 border-l-2 border-emerald-500'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-300 hover:bg-slate-100/50 dark:hover:bg-slate-900/50'
                       }`}
                     >
-                      <span className="w-8 shrink-0 text-right text-slate-600 select-none text-[11px]">
+                      <span className="w-8 shrink-0 text-right text-slate-400 dark:text-slate-600 select-none text-[11px]">
                         {idx + 1}
                       </span>
                       <span className="w-4 shrink-0 text-center select-none font-bold">

@@ -272,10 +272,44 @@ export function obfuscateDualJavaFiles(
       }
     : { classes: {}, variables: {}, methods: {}, packages: {}, reverseMapping: {} };
 
+  // Ensure reverseMapping contains all entries from existing mapping
+  Object.entries(mapping.classes).forEach(([orig, obf]) => {
+    if (obf) mapping.reverseMapping[obf] = orig;
+  });
+  Object.entries(mapping.methods).forEach(([orig, obf]) => {
+    if (obf) mapping.reverseMapping[obf] = orig;
+  });
+  Object.entries(mapping.variables).forEach(([orig, obf]) => {
+    if (obf) mapping.reverseMapping[obf] = orig;
+  });
+  Object.entries(mapping.packages).forEach(([orig, obf]) => {
+    if (obf) mapping.reverseMapping[obf] = orig;
+  });
+
   let classCount = Object.keys(mapping.classes).length;
   let varCount = Object.keys(mapping.variables).length;
   let methodCount = Object.keys(mapping.methods).length;
   let pkgCount = Object.keys(mapping.packages).length;
+
+  // Collision-free unique name generator that never clashes with existing mapping
+  const getUniqueObfuscatedName = (
+    category: 'class' | 'variable' | 'method' | 'package',
+    customPrefix?: string
+  ): string => {
+    let candidate = '';
+    do {
+      const idx =
+        category === 'class'
+          ? classCount++
+          : category === 'method'
+          ? methodCount++
+          : category === 'variable'
+          ? varCount++
+          : pkgCount++;
+      candidate = generateName(idx, category, opts.namingStyle, customPrefix);
+    } while (mapping.reverseMapping[candidate]);
+    return candidate;
+  };
 
   // 4. DISCOVERY: Packages across both files
   if (opts.obfuscatePackages) {
@@ -291,7 +325,7 @@ export function obfuscateDualJavaFiles(
         const parts = pkgName.split('.');
         parts.forEach((part: string) => {
           if (!exclusionSet.has(part) && !mapping.packages[part]) {
-            const newPkg = generateName(pkgCount++, 'package', opts.namingStyle, opts.customVarPrefix);
+            const newPkg = getUniqueObfuscatedName('package', opts.customVarPrefix);
             mapping.packages[part] = newPkg;
             mapping.reverseMapping[newPkg] = part;
           }
@@ -312,7 +346,7 @@ export function obfuscateDualJavaFiles(
       while ((match = classDeclRegex.exec(codeToScan)) !== null) {
         const className = match[2];
         if (!exclusionSet.has(className) && !mapping.classes[className]) {
-          const newClass = generateName(classCount++, 'class', opts.namingStyle, opts.customClassPrefix);
+          const newClass = getUniqueObfuscatedName('class', opts.customClassPrefix);
           mapping.classes[className] = newClass;
           mapping.reverseMapping[newClass] = className;
         }
@@ -332,7 +366,7 @@ export function obfuscateDualJavaFiles(
 
         const isExcludedPkg = opts.excludedPackages.some((p) => pkgPath.startsWith(p));
         if (!isExcludedPkg && !exclusionSet.has(className) && !mapping.classes[className]) {
-          const newClass = generateName(classCount++, 'class', opts.namingStyle, opts.customClassPrefix);
+          const newClass = getUniqueObfuscatedName('class', opts.customClassPrefix);
           mapping.classes[className] = newClass;
           mapping.reverseMapping[newClass] = className;
         }
@@ -364,7 +398,7 @@ export function obfuscateDualJavaFiles(
 
         if (isAnnotation) continue;
 
-        const newClass = generateName(classCount++, 'class', opts.namingStyle, opts.customClassPrefix);
+        const newClass = getUniqueObfuscatedName('class', opts.customClassPrefix);
         mapping.classes[className] = newClass;
         mapping.reverseMapping[newClass] = className;
       }
@@ -414,7 +448,7 @@ export function obfuscateDualJavaFiles(
         }
 
         if (!mapping.methods[methodName]) {
-          const newMethod = generateName(methodCount++, 'method', opts.namingStyle, opts.customMethodPrefix);
+          const newMethod = getUniqueObfuscatedName('method', opts.customMethodPrefix);
           mapping.methods[methodName] = newMethod;
           mapping.reverseMapping[newMethod] = methodName;
         }
@@ -439,7 +473,7 @@ export function obfuscateDualJavaFiles(
           !mapping.classes[varName] &&
           !mapping.variables[varName]
         ) {
-          const newVar = generateName(varCount++, 'variable', opts.namingStyle, opts.customVarPrefix);
+          const newVar = getUniqueObfuscatedName('variable', opts.customVarPrefix);
           mapping.variables[varName] = newVar;
           mapping.reverseMapping[newVar] = varName;
         }

@@ -10,6 +10,7 @@ export interface ParsedJavaMethod {
   parameters: string;
   annotations: string[];
   isTestMethod: boolean;
+  isPrivate?: boolean;
   startLine: number;
   endLine: number;
   rawDeclaration: string;
@@ -23,6 +24,7 @@ export interface GenerateTestsOptions {
   selectedMethods: ParsedJavaMethod[];
   obfuscatedClassCode: string;
   obfuscatedTestCode: string;
+  fullObfuscatedTestCode?: string;
   mainClassName?: string;
   testClassName?: string;
   coverageGoal?: 'all_lines_and_branches' | 'boundary_and_exceptions' | 'edge_cases';
@@ -71,6 +73,7 @@ export function extractJavaMethods(
   const methodRegex = /^(?:@[a-zA-Z0-9_$.()"\s=,]+\s+)*(?:(?:public|protected|private|static|final|synchronized|abstract|default)\s+)*([a-zA-Z0-9_<>[\]?]+)\s+([a-zA-Z0-9_$]+)\s*\(([^)]*)\)(?:\s+throws\s+[^{]+)?\s*\{?$/;
 
   let currentAnnotations: string[] = [];
+  let annotationStartLine = 1;
   let inComment = false;
 
   for (let i = 0; i < lines.length; i++) {
@@ -87,6 +90,9 @@ export function extractJavaMethods(
 
     // Collect annotations
     if (trimmed.startsWith('@')) {
+      if (currentAnnotations.length === 0) {
+        annotationStartLine = i + 1;
+      }
       currentAnnotations.push(trimmed);
       continue;
     }
@@ -118,11 +124,13 @@ export function extractJavaMethods(
           methodName.startsWith('test') ||
           sourceClassType === 'test';
 
+        const isPrivate = /\bprivate\b/.test(trimmed) || currentAnnotations.some((a) => /\bprivate\b/.test(a));
+
         // Extract method body by matching braces
         let bodyLines: string[] = [];
         let braceCount = 0;
         let foundOpenBrace = false;
-        let startLine = i + 1;
+        let startLine = currentAnnotations.length > 0 ? annotationStartLine : i + 1;
         let endLine = i + 1;
 
         for (let j = i; j < lines.length; j++) {
@@ -155,6 +163,7 @@ export function extractJavaMethods(
           parameters,
           annotations: [...currentAnnotations],
           isTestMethod,
+          isPrivate,
           startLine,
           endLine,
           rawDeclaration: `${currentAnnotations.join(' ')} ${returnType} ${methodName}(${parameters})`.trim(),
@@ -170,6 +179,207 @@ export function extractJavaMethods(
   }
 
   return methods;
+}
+
+export interface ScopedObfuscatedClasses {
+  scopedClassCode: string;
+  scopedTestCode: string;
+  selectedMethods: ParsedJavaMethod[];
+  dependentPrivateMethods: ParsedJavaMethod[];
+  retainedMainMethods: ParsedJavaMethod[];
+  omittedMainMethods: ParsedJavaMethod[];
+  setupTestMethods: ParsedJavaMethod[];
+  relatedTestMethods: ParsedJavaMethod[];
+  omittedTestMethods: ParsedJavaMethod[];
+}
+
+/**
+ * Creates an updated copy of the production class containing ONLY the selected target methods
+ * and their dependent private/helper methods, along with setup methods and related test methods
+ * in the companion test class - all in obfuscated code.
+ */
+export function createScopedObfuscatedJavaClasses(
+  obfuscatedClassCode: string,
+  obfuscatedTestCode: string,
+  selectedMethods: ParsedJavaMethod[],
+  mapping?: JavaObfuscationMapping
+): ScopedObfuscatedClasses {
+  const allMainMethods = extractJavaMethods(obfuscatedClassCode, 'main', mapping);
+  const allTestMethods = extractJavaMethods(obfuscatedTestCode, 'test', mapping);
+
+  // 1. Identify selected target methods (from production class or test class)
+  const selectedMainMethods = selectedMethods.filter((m) => m.sourceClassType === 'main');
+  const selectedTestMethods = selectedMethods.filter((m) => m.sourceClassType === 'test');
+
+  // If user selected test methods only, find the corresponding target methods in the production class
+  let targetMainMethods = [...selectedMainMethods];
+  if (targetMainMethods.length === 0 && selectedTestMethods.length > 0) {
+    for (const testMethod of selectedTestMethods) {
+      for (const mainMethod of allMainMethods) {
+        const regex = new RegExp(`\\b${mainMethod.name}\\s*\\(`, 'g');
+        if (regex.test(testMethod.body) && !targetMainMethods.some((m) => m.id === mainMethod.id)) {
+          targetMainMethods.push(mainMethod);
+        }
+      }
+    }
+  }
+
+  // If still none selected, default to all main methods
+  if (targetMainMethods.length === 0) {
+    targetMainMethods = [...allMainMethods];
+  }
+
+  // 2. Transitive dependency analysis for dependent private/helper methods in the production class
+  const retainedMainMethodIds = new Set<string>(targetMainMethods.map((m) => m.id));
+  const dependentPrivateMethods: ParsedJavaMethod[] = [];
+
+  let addedMore = true;
+  while (addedMore) {
+    addedMore = false;
+    const currentRetainedBodies = allMainMethods
+      .filter((m) => retainedMainMethodIds.has(m.id))
+      .map((m) => m.body)
+      .join('\n');
+
+    for (const candidate of allMainMethods) {
+      if (!retainedMainMethodIds.has(candidate.id)) {
+        // Is candidate called by any retained method?
+        const callRegex = new RegExp(`\\b${candidate.name}\\s*\\(`, 'g');
+        if (callRegex.test(currentRetainedBodies)) {
+          retainedMainMethodIds.add(candidate.id);
+          dependentPrivateMethods.push(candidate);
+          addedMore = true;
+        }
+      }
+    }
+  }
+
+  const retainedMainMethods = allMainMethods.filter((m) => retainedMainMethodIds.has(m.id));
+  const omittedMainMethods = allMainMethods.filter((m) => !retainedMainMethodIds.has(m.id));
+
+  // 3. Construct Scoped Obfuscated Production Class Code
+  let scopedClassCode = obfuscatedClassCode;
+  if (omittedMainMethods.length > 0) {
+    const classLines = obfuscatedClassCode.split('\n');
+    const linesToOmit = new Set<number>();
+    for (const omitted of omittedMainMethods) {
+      for (let l = omitted.startLine - 1; l < omitted.endLine; l++) {
+        linesToOmit.add(l);
+      }
+    }
+
+    const filteredLines: string[] = [];
+    let inOmittedBlock = false;
+    for (let i = 0; i < classLines.length; i++) {
+      if (linesToOmit.has(i)) {
+        if (!inOmittedBlock) {
+          filteredLines.push('    // [DevHub AI Scoping: Unrelated production methods omitted to focus AI generation]');
+          inOmittedBlock = true;
+        }
+      } else {
+        inOmittedBlock = false;
+        filteredLines.push(classLines[i]);
+      }
+    }
+
+    scopedClassCode = filteredLines.join('\n');
+    try {
+      scopedClassCode = formatJavaCode(scopedClassCode, { indentSize: 4 });
+    } catch {
+      // keep
+    }
+  }
+
+  // 4. Test Class Scoping: Setup methods + Related test methods
+  const setupTestMethods: ParsedJavaMethod[] = [];
+  const relatedTestMethods: ParsedJavaMethod[] = [];
+  const omittedTestMethods: ParsedJavaMethod[] = [];
+
+  const targetNames = new Set(retainedMainMethods.map((m) => m.name));
+  const targetOrigNames = new Set(retainedMainMethods.map((m) => m.originalName).filter(Boolean) as string[]);
+
+  for (const testMethod of allTestMethods) {
+    const isSetup =
+      testMethod.annotations.some((a) =>
+        /@(BeforeEach|Before|BeforeAll|BeforeClass|AfterEach|After|AfterAll|AfterClass)\b/i.test(a)
+      ) || /^(setUp|tearDown|init|initMocks|before|after)$/i.test(testMethod.name);
+
+    if (isSetup) {
+      setupTestMethods.push(testMethod);
+      continue;
+    }
+
+    const isExplicitlySelected = selectedTestMethods.some((m) => m.id === testMethod.id);
+    let referencesTarget = isExplicitlySelected;
+
+    if (!referencesTarget) {
+      for (const tName of targetNames) {
+        if (new RegExp(`\\b${tName}\\b`).test(testMethod.body) || testMethod.name.toLowerCase().includes(tName.toLowerCase())) {
+          referencesTarget = true;
+          break;
+        }
+      }
+    }
+    if (!referencesTarget && targetOrigNames.size > 0) {
+      for (const oName of targetOrigNames) {
+        if (testMethod.name.toLowerCase().includes(oName.toLowerCase()) || testMethod.body.includes(oName)) {
+          referencesTarget = true;
+          break;
+        }
+      }
+    }
+
+    if (referencesTarget) {
+      relatedTestMethods.push(testMethod);
+    } else {
+      omittedTestMethods.push(testMethod);
+    }
+  }
+
+  // Construct Scoped Obfuscated Test Class Code
+  let scopedTestCode = obfuscatedTestCode;
+  if (omittedTestMethods.length > 0) {
+    const testLines = obfuscatedTestCode.split('\n');
+    const testLinesToOmit = new Set<number>();
+    for (const omitted of omittedTestMethods) {
+      for (let l = omitted.startLine - 1; l < omitted.endLine; l++) {
+        testLinesToOmit.add(l);
+      }
+    }
+
+    const filteredTestLines: string[] = [];
+    let inOmittedTestBlock = false;
+    for (let i = 0; i < testLines.length; i++) {
+      if (testLinesToOmit.has(i)) {
+        if (!inOmittedTestBlock) {
+          filteredTestLines.push('    // [DevHub AI Scoping: Unrelated test methods omitted to focus AI generation]');
+          inOmittedTestBlock = true;
+        }
+      } else {
+        inOmittedTestBlock = false;
+        filteredTestLines.push(testLines[i]);
+      }
+    }
+
+    scopedTestCode = filteredTestLines.join('\n');
+    try {
+      scopedTestCode = formatJavaCode(scopedTestCode, { indentSize: 4 });
+    } catch {
+      // keep
+    }
+  }
+
+  return {
+    scopedClassCode,
+    scopedTestCode,
+    selectedMethods,
+    dependentPrivateMethods,
+    retainedMainMethods,
+    omittedMainMethods,
+    setupTestMethods,
+    relatedTestMethods,
+    omittedTestMethods,
+  };
 }
 
 /**
@@ -550,9 +760,10 @@ ${prompt}`,
       ];
     }
 
-    // Merge generated tests into the obfuscated test class
+    // Merge generated tests into the obfuscated test class (using full test code if provided)
+    const baseTestCodeForMerge = options.fullObfuscatedTestCode || obfuscatedTestCode;
     const mergedObfuscatedTestCode = mergeGeneratedTestsIntoObfuscatedTest(
-      obfuscatedTestCode,
+      baseTestCodeForMerge,
       generatedTestsCode,
       newImports
     );

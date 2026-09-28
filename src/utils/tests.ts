@@ -32,6 +32,13 @@ import { obfuscateJavaCode, deobfuscateJavaCode } from './javaObfuscator';
 import { obfuscateDualJavaFiles, deobfuscateDualJavaFiles } from './javaDualObfuscator';
 import { JAVA_DUAL_PRESETS } from './javaDualPresets';
 import {
+  parseAndNormalizeMapping,
+  mergeProjectMappings,
+  exportMappingContent,
+  computeMappingStats,
+  createEmptyMapping,
+} from './projectMappingManager';
+import {
   createSamplePdf,
   getPdfMetadata,
   signPdfDocument,
@@ -521,6 +528,144 @@ public class TokenValidatorTest {
       assertTrue(res.stats.crossFileTokensCount >= 1, `Preset ${preset.id} must have synchronized cross-file tokens`);
       assertTrue(!res.mainClassFile.obfuscatedCode.includes(preset.mainFile.fileName.replace('.java', '')), `Primary class in ${preset.id} should be obfuscated`);
     }
+  });
+
+  test('Java Class & Test Dual Obfuscator', 'Imports and normalizes various mapping formats (bundle, json, proguard, flat)', () => {
+    // 1. Project Bundle JSON
+    const bundleInput = JSON.stringify({
+      version: '2.0',
+      projectName: 'PaymentGateway',
+      mapping: {
+        classes: { PaymentProcessor: 'Cls_1', CardValidator: 'Cls_2' },
+        methods: { processCharge: 'mth_1', validateCard: 'mth_2' },
+        variables: { cardNumber: 'v_1', authCode: 'v_2' },
+        packages: { gateway: 'pkg_1' },
+      },
+    });
+
+    const parsedBundle = parseAndNormalizeMapping(bundleInput);
+    assertTrue(parsedBundle.success, 'Bundle parsing should succeed');
+    assertEqual(parsedBundle.format, 'project-bundle', 'Format should be project-bundle');
+    assertEqual(parsedBundle.projectName, 'PaymentGateway', 'Project name should be extracted');
+    assertEqual(parsedBundle.stats.classesCount, 2, 'Should find 2 classes');
+    assertEqual(parsedBundle.stats.methodsCount, 2, 'Should find 2 methods');
+    assertEqual(parsedBundle.mapping.reverseMapping['Cls_1'], 'PaymentProcessor', 'Reverse mapping must be populated');
+
+    // 2. ProGuard format text
+    const proguardText = `com.acme.service.OrderService -> com.acme.service.Cls_1:
+    void placeOrder(java.lang.String) -> mth_1
+    int orderId -> v_1`;
+
+    const parsedProGuard = parseAndNormalizeMapping(proguardText);
+    assertTrue(parsedProGuard.success, 'ProGuard text parsing should succeed');
+    assertEqual(parsedProGuard.format, 'proguard', 'Format should be proguard');
+    assertEqual(parsedProGuard.mapping.classes['OrderService'], 'Cls_1', 'Class should be extracted from ProGuard map');
+    assertEqual(parsedProGuard.mapping.methods['placeOrder'], 'mth_1', 'Method should be extracted');
+    assertEqual(parsedProGuard.mapping.variables['orderId'], 'v_1', 'Variable should be extracted');
+
+    // 3. Flat Dictionary JSON
+    const flatInput = JSON.stringify({
+      AccountService: 'Cls_A',
+      depositFunds: 'mth_A',
+      accountBalance: 'v_A',
+    });
+    const parsedFlat = parseAndNormalizeMapping(flatInput);
+    assertTrue(parsedFlat.success, 'Flat dictionary parsing should succeed');
+    assertEqual(parsedFlat.mapping.classes['AccountService'], 'Cls_A', 'Class in flat map should be categorized');
+  });
+
+  test('Java Class & Test Dual Obfuscator', 'Reuses past imported mapping across separate runs without collisions', () => {
+    // Session 1: Obfuscate OrderService
+    const orderClass = `package com.acme;
+public class OrderService {
+    public void placeOrder(String item) { System.out.println(item); }
+}`;
+    const orderTest = `package com.acme;
+import org.junit.jupiter.api.Test;
+public class OrderServiceTest {
+    @Test
+    void testPlaceOrder() { new OrderService().placeOrder("Laptop"); }
+}`;
+
+    const res1 = obfuscateDualJavaFiles({
+      mainClassFile: { fileName: 'OrderService.java', code: orderClass },
+      testClassFile: { fileName: 'OrderServiceTest.java', code: orderTest },
+    });
+
+    const mappingFromSession1 = res1.mapping;
+    const obfOrderClassName = mappingFromSession1.classes['OrderService'];
+    assertTrue(Boolean(obfOrderClassName), 'OrderService must be mapped in Session 1');
+
+    // Session 2: Obfuscate PaymentService (which calls OrderService) passing existing mapping
+    const paymentClass = `package com.acme;
+public class PaymentService {
+    private OrderService orderService;
+    public void processPayment() {
+        orderService.placeOrder("Processed");
+    }
+}`;
+    const paymentTest = `package com.acme;
+import org.junit.jupiter.api.Test;
+public class PaymentServiceTest {
+    @Test
+    void testPayment() { new PaymentService().processPayment(); }
+}`;
+
+    const res2 = obfuscateDualJavaFiles(
+      {
+        mainClassFile: { fileName: 'PaymentService.java', code: paymentClass },
+        testClassFile: { fileName: 'PaymentServiceTest.java', code: paymentTest },
+      },
+      {},
+      mappingFromSession1
+    );
+
+    // Verifications:
+    // 1. OrderService in PaymentService must use the EXACT same obfuscated name from Session 1
+    assertEqual(
+      res2.mapping.classes['OrderService'],
+      obfOrderClassName,
+      'OrderService in Session 2 must reuse the exact obfuscated class name from Session 1'
+    );
+    assertTrue(
+      res2.mainClassFile.obfuscatedCode.includes(obfOrderClassName),
+      'PaymentService obfuscated code must reference the shared obfuscated class name'
+    );
+
+    // 2. Newly discovered PaymentService class has a distinct, non-colliding name
+    const obfPaymentClassName = res2.mapping.classes['PaymentService'];
+    assertTrue(Boolean(obfPaymentClassName), 'PaymentService must have a mapped name');
+    assertTrue(
+      obfPaymentClassName !== obfOrderClassName,
+      'PaymentService name must not collide with OrderService name'
+    );
+
+    // 3. Merging creates cumulative project dictionary containing both
+    const merged = mergeProjectMappings(mappingFromSession1, res2.mapping, 'preserve');
+    assertEqual(merged.addedCount >= 1, true, 'Merged mapping should record added symbols');
+    assertEqual(merged.merged.classes['OrderService'], obfOrderClassName, 'Preserves OrderService');
+    assertEqual(merged.merged.classes['PaymentService'], obfPaymentClassName, 'Adds PaymentService');
+  });
+
+  test('Java Class & Test Dual Obfuscator', 'Exports project mappings in bundle, standard, and ProGuard formats', () => {
+    const mapping = createEmptyMapping();
+    mapping.classes['InvoiceService'] = 'Cls_1';
+    mapping.methods['issueInvoice'] = 'mth_1';
+    mapping.variables['invoiceAmount'] = 'v_1';
+
+    // 1. Project bundle export
+    const bundleText = exportMappingContent(mapping, 'project-bundle', { projectName: 'Billing' });
+    assertTrue(bundleText.includes('"projectName": "Billing"'), 'Bundle must contain project name');
+    assertTrue(bundleText.includes('"Cls_1"'), 'Bundle must contain mapped values');
+
+    // 2. Standard JSON export
+    const standardText = exportMappingContent(mapping, 'standard-json');
+    assertTrue(standardText.includes('"InvoiceService": "Cls_1"'), 'Standard JSON must format direct class mapping');
+
+    // 3. ProGuard format export
+    const proguardText = exportMappingContent(mapping, 'proguard', { projectName: 'Billing' });
+    assertTrue(proguardText.includes('InvoiceService -> Cls_1:'), 'ProGuard export must format class arrow mapping');
+    assertTrue(proguardText.includes('void issueInvoice() -> mth_1'), 'ProGuard export must format method arrow mapping');
   });
 
   // --- Suite 10: PDF Signer & Annotator ---
